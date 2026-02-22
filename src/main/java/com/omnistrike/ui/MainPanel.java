@@ -36,6 +36,7 @@ public class MainPanel extends JPanel {
     private final ModuleListPanel moduleListPanel;
     private final JTextField scopeField;
     private final JTextField threadField;
+    private final JTextField rateLimitField;
     private final JToggleButton startStopBtn;
     private final JLabel statusLabel;
     private final JLabel threadStatusLabel;
@@ -112,13 +113,41 @@ public class MainPanel extends JPanel {
         });
         topBar.add(threadField);
 
+        topBar.add(new JLabel("Rate Limit (ms):"));
+        rateLimitField = new JTextField("0", 4);
+        rateLimitField.setToolTipText("Global delay (ms) before each scan task. 0 = no limit. Applies to all modules. Per-module delays stack on top of this.");
+        rateLimitField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+        });
+        topBar.add(rateLimitField);
+
         startStopBtn = new JToggleButton("Start");
         startStopBtn.setBackground(new Color(50, 150, 50));
         startStopBtn.setForeground(Color.WHITE);
         startStopBtn.setFocusPainted(false);
-        startStopBtn.setToolTipText("Start or stop the active scanning engine");
+        startStopBtn.setToolTipText("Start or stop the automated traffic interception scanner");
         startStopBtn.addActionListener(e -> toggleScanning());
         topBar.add(startStopBtn);
+
+        JButton stopScansBtn = new JButton("Stop Scans");
+        stopScansBtn.setBackground(new Color(200, 50, 50));
+        stopScansBtn.setForeground(Color.WHITE);
+        stopScansBtn.setFocusPainted(false);
+        stopScansBtn.setToolTipText("Stop all running manual scans (right-click context menu scans)");
+        stopScansBtn.addActionListener(e -> {
+            int stopped = interceptor.stopManualScans();
+            if (stopped > 0) {
+                logPanel.log("INFO", "Framework", "Stopped " + stopped + " manual scan task(s).");
+            } else {
+                logPanel.log("INFO", "Framework", "No manual scans running.");
+            }
+        });
+        topBar.add(stopScansBtn);
 
         // Select All / Deselect All buttons for modules
         JButton selectAllBtn = new JButton("Select All");
@@ -255,6 +284,23 @@ public class MainPanel extends JPanel {
             updateThreadStatus();
         });
         updateTimer.start();
+    }
+
+    /**
+     * Applies the global rate limit from the UI field to the executor.
+     */
+    private void applyRateLimit() {
+        String text = rateLimitField.getText().trim();
+        if (text.isEmpty()) {
+            executor.setRateLimitMs(0);
+            return;
+        }
+        try {
+            int value = Integer.parseInt(text);
+            executor.setRateLimitMs(value);
+        } catch (NumberFormatException ignored) {
+            // Invalid input — keep current value
+        }
     }
 
     /**

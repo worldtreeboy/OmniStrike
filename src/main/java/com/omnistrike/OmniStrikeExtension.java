@@ -38,7 +38,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.01 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.11 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -106,7 +106,7 @@ public class OmniStrikeExtension implements BurpExtension {
         registry.registerModule(deser);
 
         GraphqlTool graphql = new GraphqlTool();
-        graphql.setDependencies(dedup, findingsStore);
+        graphql.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(graphql);
 
         XxeScanner xxe = new XxeScanner();
@@ -225,7 +225,7 @@ public class OmniStrikeExtension implements BurpExtension {
             api.logging().logToOutput("OmniStrike unloaded. Goodbye!");
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.01 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.11 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");

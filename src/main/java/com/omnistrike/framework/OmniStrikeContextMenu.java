@@ -2,9 +2,6 @@ package com.omnistrike.framework;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
-import burp.api.montoya.scanner.AuditConfiguration;
-import burp.api.montoya.scanner.BuiltInAuditConfiguration;
-import burp.api.montoya.scanner.audit.Audit;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.omnistrike.model.ScanModule;
@@ -16,7 +13,6 @@ import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Adds right-click context menu items in Burp's Proxy, Repeater, etc.
@@ -55,9 +51,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
     private final TrafficInterceptor interceptor;
     private final OmniStrikeScanCheck scanCheck;
 
-    // Track active audit tasks so they can be stopped
-    private final CopyOnWriteArrayList<Audit> activeAudits = new CopyOnWriteArrayList<>();
-    private volatile boolean hasStartedScans = false;
 
     // Static file extensions where active injection testing is pointless
     private static final Set<String> STATIC_EXTENSIONS = Set.of(
@@ -118,15 +111,12 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             }
             int total = passive + active;
 
-            scanCheck.queueForScan(reqResp.request().url(), moduleIds);
-
-            // Use passive audit for static resources to prevent Burp's built-in active scanner
-            // from sending injection payloads against static file URLs
-            if (staticResource) {
-                startPassiveAuditSafe(reqResp);
-            } else {
-                startAuditSafe(reqResp);
-            }
+            // Run modules directly via the interceptor's thread pool.
+            // Previously this used scanCheck.queueForScan() + startAuditSafe(), which
+            // relied on Burp's scanner calling passiveAudit() — but Burp's scanner queue
+            // is unreliable and the URL matching is fragile. Direct execution is instant.
+            // Findings still appear in Dashboard via DashboardReporter.
+            interceptor.scanRequest(reqResp, moduleIds);
 
             String staticNote = staticResource
                     ? "\n(Static resource — active scanners skipped)" : "";
@@ -160,21 +150,9 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 boolean aiSelected = selectedIds.remove(ModuleRegistry.AI_MODULE_ID);
                 List<String> nonAiIds = selectedIds;
 
-                // Queue non-AI modules through the normal ScanCheck pipeline
+                // Run non-AI modules directly via interceptor thread pool
                 if (!nonAiIds.isEmpty()) {
-                    scanCheck.queueForScan(reqResp.request().url(), nonAiIds);
-
-                    boolean hasActive = false;
-                    for (String id : nonAiIds) {
-                        ScanModule m = registry.getModule(id);
-                        if (m != null && !m.isPassive()) { hasActive = true; break; }
-                    }
-
-                    if (hasActive && !staticResource) {
-                        startAuditSafe(reqResp);
-                    } else {
-                        startPassiveAuditSafe(reqResp);
-                    }
+                    interceptor.scanRequest(reqResp, nonAiIds);
                 }
 
                 // Run AI analysis via manualScan() if AI was selected
@@ -275,68 +253,15 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         // ============ "Stop OmniStrike Scans" ============
-        cleanupCompletedAudits();
-        if (hasStartedScans) {
+        int running = interceptor.getManualScanCount();
+        if (running > 0) {
             items.add(new JSeparator());
-            int running = activeAudits.size();
-
-            if (running == 0) {
-                JMenuItem stopItem = new JMenuItem("Stop OmniStrike Scans (none running)");
-                stopItem.setEnabled(false);
-                items.add(stopItem);
-            } else if (running == 1) {
-                JMenuItem stopItem = new JMenuItem("Stop OmniStrike Scan");
-                stopItem.addActionListener(e -> {
-                    for (Audit audit : activeAudits) {
-                        try { audit.delete(); } catch (Exception ex) {
-                            api.logging().logToError("[OmniStrike] Error stopping audit: " + ex.getMessage());
-                        }
-                    }
-                    activeAudits.clear();
-                    showToast("Scan Stopped", "Stopped OmniStrike audit task.");
-                });
-                items.add(stopItem);
-            } else {
-                JMenu stopMenu = new JMenu("Stop OmniStrike Scans (" + running + " running)");
-
-                JMenuItem stopAll = new JMenuItem("Stop All (" + running + ")");
-                stopAll.addActionListener(e -> {
-                    int count = activeAudits.size();
-                    for (Audit audit : activeAudits) {
-                        try { audit.delete(); } catch (Exception ex) {
-                            api.logging().logToError("[OmniStrike] Error stopping audit: " + ex.getMessage());
-                        }
-                    }
-                    activeAudits.clear();
-                    showToast("Scans Stopped", "Stopped " + count + " OmniStrike audit task(s).");
-                });
-                stopMenu.add(stopAll);
-                stopMenu.addSeparator();
-
-                for (int i = 0; i < activeAudits.size(); i++) {
-                    Audit audit = activeAudits.get(i);
-                    String status = "running";
-                    try {
-                        String msg = audit.statusMessage();
-                        if (msg != null && !msg.isEmpty()) status = msg;
-                    } catch (Exception ignored) {}
-
-                    JMenuItem item = new JMenuItem("Scan #" + (i + 1) + " — " + truncate(status, 40));
-                    final int idx = i;
-                    item.addActionListener(e -> {
-                        try {
-                            audit.delete();
-                            activeAudits.remove(audit);
-                            showToast("Scan Stopped", "Stopped scan #" + (idx + 1) + ".");
-                        } catch (Exception ex) {
-                            api.logging().logToError("[OmniStrike] Error stopping audit: " + ex.getMessage());
-                        }
-                    });
-                    stopMenu.add(item);
-                }
-
-                items.add(stopMenu);
-            }
+            JMenuItem stopItem = new JMenuItem("Stop OmniStrike Scans (" + running + " running)");
+            stopItem.addActionListener(e -> {
+                int stopped = interceptor.stopManualScans();
+                showToast("Scans Stopped", "Stopped " + stopped + " scan task(s).");
+            });
+            items.add(stopItem);
         }
 
         return items;
@@ -374,14 +299,8 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         JMenuItem normalItem = new JMenuItem("Normal Scan");
         normalItem.setToolTipText("Run " + moduleName + " (no AI)");
         normalItem.addActionListener(e -> {
-            scanCheck.queueForScan(reqResp.request().url(), List.of(moduleId));
-            // Always use passive audit for static resources to prevent Burp's built-in
-            // active scanner from injection-testing static file URLs (e.g., /app.js)
-            if (module.isPassive() || isStatic) {
-                startPassiveAuditSafe(reqResp);
-            } else {
-                startAuditSafe(reqResp);
-            }
+            // Run module directly via interceptor thread pool
+            interceptor.scanRequest(reqResp, List.of(moduleId));
             showToast(moduleName,
                     "Normal scan started\n" + url);
         });
@@ -467,56 +386,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         return null;
     }
 
-    /**
-     * Starts a passive-only Dashboard audit (no active requests sent to target).
-     * Used for passive modules like Client-Side Analyzer.
-     */
-    private void startPassiveAuditSafe(HttpRequestResponse reqResp) {
-        try {
-            Audit audit = api.scanner().startAudit(
-                    AuditConfiguration.auditConfiguration(
-                            BuiltInAuditConfiguration.LEGACY_PASSIVE_AUDIT_CHECKS));
-            audit.addRequestResponse(reqResp);
-            activeAudits.add(audit);
-            hasStartedScans = true;
-            api.logging().logToOutput("[OmniStrike] Passive audit started: " + reqResp.request().url());
-        } catch (Exception ex) {
-            api.logging().logToError("[OmniStrike] Could not start passive audit: " + ex.getMessage());
-        }
-    }
-
-    /**
-     * Starts an active Dashboard audit task and tracks it for stop capability.
-     */
-    private void startAuditSafe(HttpRequestResponse reqResp) {
-        try {
-            Audit audit = api.scanner().startAudit(
-                    AuditConfiguration.auditConfiguration(
-                            BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS));
-            audit.addRequestResponse(reqResp);
-            activeAudits.add(audit);
-            hasStartedScans = true;
-            api.logging().logToOutput("[OmniStrike] Dashboard audit started: " + reqResp.request().url());
-        } catch (Exception ex) {
-            api.logging().logToError("[OmniStrike] Could not start audit task: " + ex.getMessage());
-        }
-    }
-
-    /**
-     * Removes completed or errored audit tasks from the tracking list.
-     */
-    private void cleanupCompletedAudits() {
-        activeAudits.removeIf(audit -> {
-            try {
-                String status = audit.statusMessage();
-                return status != null && (status.contains("finished")
-                        || status.contains("complete")
-                        || status.contains("cancelled"));
-            } catch (Exception e) {
-                return true;
-            }
-        });
-    }
 
     /**
      * Shows a brief auto-dismissing toast notification.

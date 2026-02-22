@@ -12,6 +12,7 @@ public class ActiveScanExecutor {
 
     private volatile ExecutorService executor;
     private volatile int threadPoolSize;
+    private volatile int rateLimitMs = 0;
     private final Object resizeLock = new Object();
 
     private static final int MAX_QUEUE_SIZE = 5000;
@@ -38,11 +39,53 @@ public class ActiveScanExecutor {
         ExecutorService ex = executor;
         if (ex != null && !ex.isShutdown()) {
             try {
-                ex.submit(task);
+                ex.submit(wrapWithRateLimit(task));
             } catch (RejectedExecutionException ignored) {
                 // Pool shutting down or queue full — discard gracefully
             }
         }
+    }
+
+    /**
+     * Submits a task and returns its Future for cancellation support.
+     * Returns null if the task could not be submitted.
+     */
+    public Future<?> submitTracked(Runnable task) {
+        ExecutorService ex = executor;
+        if (ex != null && !ex.isShutdown()) {
+            try {
+                return ex.submit(wrapWithRateLimit(task));
+            } catch (RejectedExecutionException ignored) {
+                // Pool shutting down or queue full
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Wraps a task with a rate limit delay before execution.
+     */
+    private Runnable wrapWithRateLimit(Runnable task) {
+        return () -> {
+            int delay = rateLimitMs;
+            if (delay > 0) {
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            task.run();
+        };
+    }
+
+    public int getRateLimitMs() {
+        return rateLimitMs;
+    }
+
+    public void setRateLimitMs(int ms) {
+        this.rateLimitMs = Math.max(0, ms);
     }
 
     public void resize(int newSize) {

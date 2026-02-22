@@ -7,6 +7,7 @@ import burp.api.montoya.proxy.http.*;
 import com.omnistrike.model.Finding;
 import com.omnistrike.model.ScanModule;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
@@ -27,6 +28,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
     // Executor for passive modules so they don't block the proxy thread
     private final ExecutorService passiveExecutor;
+
+    // Track futures from manual scans (context menu) so they can be cancelled
+    private final CopyOnWriteArrayList<Future<?>> manualScanFutures = new CopyOnWriteArrayList<>();
 
     public TrafficInterceptor(MontoyaApi api, ModuleRegistry registry,
                               FindingsStore findingsStore, ActiveScanExecutor executor,
@@ -118,13 +122,17 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     /**
      * Manually scan a specific request/response with selected modules.
      * Called from the context menu "Send to OmniStrike" action.
-     * Runs active modules on the executor thread pool, passive modules inline.
+     * Runs active modules on the executor thread pool, passive modules on passive executor.
+     * Tracks futures so scans can be stopped via stopManualScans().
      */
     public void scanRequest(HttpRequestResponse reqResp, List<String> moduleIds) {
         if (reqResp == null) return;
 
-        List<ScanModule> passiveModules = new java.util.ArrayList<>();
-        List<ScanModule> activeModules = new java.util.ArrayList<>();
+        // Clean up completed futures before adding new ones
+        manualScanFutures.removeIf(Future::isDone);
+
+        List<ScanModule> passiveModules = new ArrayList<>();
+        List<ScanModule> activeModules = new ArrayList<>();
 
         for (String id : moduleIds) {
             ScanModule m = registry.getModule(id);
@@ -139,7 +147,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
         String url = reqResp.request().url();
         uiLog("ManualScan", "Scanning " + url + " with " + moduleIds.size() + " module(s)");
-        processWithModules(reqResp, passiveModules, activeModules);
+        processWithModulesTracked(reqResp, passiveModules, activeModules);
     }
 
     /**
@@ -190,6 +198,74 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 }
             });
         }
+    }
+
+    /**
+     * Like processWithModules but tracks futures for cancellation.
+     * Used by scanRequest() (context menu scans).
+     */
+    private void processWithModulesTracked(HttpRequestResponse reqResp,
+                                            List<ScanModule> passiveModules,
+                                            List<ScanModule> activeModules) {
+        for (ScanModule module : passiveModules) {
+            Future<?> f = passiveExecutor.submit(() -> {
+                try {
+                    List<Finding> findings = module.processHttpFlow(reqResp, api);
+                    if (findings != null && !findings.isEmpty()) {
+                        findingsStore.addFindings(findings);
+                    }
+                } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted()) return; // stopped
+                    uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
+                            + ": " + e.getMessage());
+                }
+            });
+            manualScanFutures.add(f);
+        }
+
+        for (ScanModule module : activeModules) {
+            Future<?> f = executor.submitTracked(() -> {
+                try {
+                    uiLog(module.getId(), "Processing: " + reqResp.request().url());
+                    List<Finding> findings = module.processHttpFlow(reqResp, api);
+                    if (findings != null && !findings.isEmpty()) {
+                        findingsStore.addFindings(findings);
+                        uiLog(module.getId(), "Found " + findings.size() + " issue(s)");
+                    }
+                } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted()) return; // stopped
+                    uiLog(module.getId(), "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
+                }
+            });
+            if (f != null) {
+                manualScanFutures.add(f);
+            }
+        }
+    }
+
+    /**
+     * Stops all running manual scans (context menu scans).
+     * Interrupts threads so modules checking Thread.interrupted() will stop.
+     * Returns the number of scans that were cancelled.
+     */
+    public int stopManualScans() {
+        int cancelled = 0;
+        for (Future<?> f : manualScanFutures) {
+            if (!f.isDone() && f.cancel(true)) {
+                cancelled++;
+            }
+        }
+        manualScanFutures.clear();
+        uiLog("ManualScan", "Stopped " + cancelled + " manual scan task(s)");
+        return cancelled;
+    }
+
+    /**
+     * Returns the number of manual scan tasks still running.
+     */
+    public int getManualScanCount() {
+        manualScanFutures.removeIf(Future::isDone);
+        return manualScanFutures.size();
     }
 
     /**

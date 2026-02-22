@@ -124,7 +124,19 @@ public class ScanConfigDialog extends JDialog {
 
         // GraphQL Tool
         KNOWN_CONFIGS.put("graphql-tool", List.of(
-                boolEntry("graphql.securityTests.enabled", true)
+                boolEntry("graphql.securityTests.enabled", true),
+                boolEntry("graphql.injection.enabled", true),
+                boolEntry("graphql.injection.sqli.enabled", true),
+                boolEntry("graphql.injection.nosqli.enabled", true),
+                boolEntry("graphql.injection.cmdi.enabled", true),
+                boolEntry("graphql.injection.ssti.enabled", true),
+                boolEntry("graphql.authz.enabled", true),
+                boolEntry("graphql.authz.idor.enabled", true),
+                intEntry("graphql.authz.idor.maxIds", 20),
+                boolEntry("graphql.dos.enabled", true),
+                boolEntry("graphql.introspection.bypass", true),
+                boolEntry("graphql.oob.enabled", true),
+                intEntry("graphql.perHostDelay", 500)
         ));
 
         // XXE Scanner
