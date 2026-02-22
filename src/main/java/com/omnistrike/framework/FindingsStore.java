@@ -110,6 +110,10 @@ public class FindingsStore {
         return (int) findings.stream().filter(f -> f.getModuleId().equals(moduleId)).count();
     }
 
+    public int getCountBySeverity(Severity severity) {
+        return (int) findings.stream().filter(f -> f.getSeverity() == severity).count();
+    }
+
     public void clear() {
         findings.clear();
         seenKeys.clear();

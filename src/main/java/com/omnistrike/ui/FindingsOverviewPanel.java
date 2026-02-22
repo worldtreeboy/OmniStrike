@@ -4,6 +4,7 @@ import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.model.Finding;
 import javax.swing.*;
+import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableRowSorter;
 import java.awt.*;
@@ -72,7 +73,7 @@ public class FindingsOverviewPanel extends JPanel {
         table.getColumnModel().getColumn(5).setPreferredWidth(80);
         table.getColumnModel().getColumn(6).setPreferredWidth(120);
 
-        // No severity coloring — plain table appearance
+        table.getColumnModel().getColumn(1).setCellRenderer(createSeverityRenderer());
 
         // Detail pane at bottom
         detailArea = new JTextArea(8, 80);
@@ -502,6 +503,32 @@ public class FindingsOverviewPanel extends JPanel {
                 JOptionPane.showMessageDialog(this, "Export failed: " + e.getMessage());
             }
         }
+    }
+
+    private DefaultTableCellRenderer createSeverityRenderer() {
+        return new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value,
+                    boolean isSelected, boolean hasFocus, int row, int column) {
+                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                if (!isSelected && value != null) {
+                    String sev = value.toString();
+                    switch (sev) {
+                        case "CRITICAL" -> { c.setBackground(new Color(180, 30, 30)); c.setForeground(Color.WHITE); }
+                        case "HIGH" -> { c.setBackground(new Color(220, 80, 40)); c.setForeground(Color.WHITE); }
+                        case "MEDIUM" -> { c.setBackground(new Color(230, 160, 30)); c.setForeground(Color.BLACK); }
+                        case "LOW" -> { c.setBackground(new Color(70, 140, 200)); c.setForeground(Color.WHITE); }
+                        case "INFO" -> { c.setBackground(new Color(130, 130, 130)); c.setForeground(Color.WHITE); }
+                        default -> { c.setBackground(table.getBackground()); c.setForeground(table.getForeground()); }
+                    }
+                } else if (!isSelected) {
+                    c.setBackground(table.getBackground());
+                    c.setForeground(table.getForeground());
+                }
+                setHorizontalAlignment(SwingConstants.CENTER);
+                return c;
+            }
+        };
     }
 
     private void exportMarkdown() {

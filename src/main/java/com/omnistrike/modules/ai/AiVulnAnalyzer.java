@@ -290,11 +290,6 @@ public class AiVulnAnalyzer implements ScanModule {
                     "SCOPE: XXE Injection ONLY — external entities, parameter entities, blind XXE with OOB, XInclude. "
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQLi, XSS, SSRF, or any other vulnerability type. "
                     + "Every payload MUST have attack_type set to \"xxe\". Any non-XXE payload will be discarded.")),
-            Map.entry("nosqli-scanner", new ModuleFocus("NoSQL Injection",
-                    "SCOPE: NoSQL Injection ONLY for MongoDB, CouchDB, Elasticsearch. "
-                    + "Generate payloads for: $gt, $ne, $where, regex injection, JavaScript injection. "
-                    + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQL injection, XSS, SSRF, or any other vulnerability type. "
-                    + "Every payload MUST have attack_type set to \"nosqli\". Any non-NoSQLi payload will be discarded.")),
             Map.entry("deser-scanner", new ModuleFocus("Insecure Deserialization",
                     "SCOPE: Insecure Deserialization ONLY for Java, .NET, PHP, Python. "
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQLi, XSS, SSRF, or any other vulnerability type. "
@@ -432,7 +427,6 @@ public class AiVulnAnalyzer implements ScanModule {
             case "cmdi-scanner" -> "cmdi";
             case "ssrf-scanner" -> "ssrf";
             case "xxe-scanner" -> "xxe";
-            case "nosqli-scanner" -> "nosqli";
             case "deser-scanner" -> "deserialization";
             case "client-side-analyzer" -> "client-side";
             default -> "unknown";
@@ -459,7 +453,6 @@ public class AiVulnAnalyzer implements ScanModule {
             case "cmdi" -> p.contains("cmdi") || p.contains("command") || p.contains("rce") || p.contains("os_command");
             case "ssrf" -> p.contains("ssrf") || p.contains("server-side request");
             case "xxe" -> p.contains("xxe") || p.contains("xml external");
-            case "nosqli" -> p.contains("nosql");
             case "deserialization" -> p.contains("deser");
             case "client-side" -> p.contains("client") || p.contains("dom") || p.contains("prototype");
             default -> p.contains(e);

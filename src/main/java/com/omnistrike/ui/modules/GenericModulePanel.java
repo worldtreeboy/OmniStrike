@@ -5,6 +5,7 @@ import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.model.Finding;
 
 import javax.swing.*;
+import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
@@ -71,6 +72,7 @@ public class GenericModulePanel extends JPanel {
         table = new JTable(tableModel);
         table.setAutoCreateRowSorter(true);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        table.getColumnModel().getColumn(0).setCellRenderer(createSeverityRenderer());
 
         // Right-click context menu on the table
         setupTableContextMenu();
@@ -344,6 +346,32 @@ public class GenericModulePanel extends JPanel {
             sb.append("[Error formatting response: ").append(e.getMessage()).append("]");
         }
         return sb.toString();
+    }
+
+    private DefaultTableCellRenderer createSeverityRenderer() {
+        return new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value,
+                    boolean isSelected, boolean hasFocus, int row, int column) {
+                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                if (!isSelected && value != null) {
+                    String sev = value.toString();
+                    switch (sev) {
+                        case "CRITICAL" -> { c.setBackground(new Color(180, 30, 30)); c.setForeground(Color.WHITE); }
+                        case "HIGH" -> { c.setBackground(new Color(220, 80, 40)); c.setForeground(Color.WHITE); }
+                        case "MEDIUM" -> { c.setBackground(new Color(230, 160, 30)); c.setForeground(Color.BLACK); }
+                        case "LOW" -> { c.setBackground(new Color(70, 140, 200)); c.setForeground(Color.WHITE); }
+                        case "INFO" -> { c.setBackground(new Color(130, 130, 130)); c.setForeground(Color.WHITE); }
+                        default -> { c.setBackground(table.getBackground()); c.setForeground(table.getForeground()); }
+                    }
+                } else if (!isSelected) {
+                    c.setBackground(table.getBackground());
+                    c.setForeground(table.getForeground());
+                }
+                setHorizontalAlignment(SwingConstants.CENTER);
+                return c;
+            }
+        };
     }
 
     /**

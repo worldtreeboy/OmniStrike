@@ -148,19 +148,6 @@ public class ScanConfigDialog extends JDialog {
                 intEntry("xxe.perHostDelay", 500)
         ));
 
-        // NoSQL Injection
-        KNOWN_CONFIGS.put("nosqli-scanner", List.of(
-                boolEntry("nosqli.authBypass.enabled", true),
-                boolEntry("nosqli.error.enabled", true),
-                boolEntry("nosqli.boolean.enabled", true),
-                boolEntry("nosqli.time.enabled", true),
-                boolEntry("nosqli.where.enabled", true),
-                boolEntry("nosqli.oob.enabled", true),
-                boolEntry("nosqli.ssji.enabled", true),
-                intEntry("nosqli.time.threshold", 4000),
-                intEntry("nosqli.perHostDelay", 500)
-        ));
-
         // CORS Misconfiguration
         KNOWN_CONFIGS.put("cors-scanner", List.of(
                 boolEntry("cors.preflight.enabled", true),

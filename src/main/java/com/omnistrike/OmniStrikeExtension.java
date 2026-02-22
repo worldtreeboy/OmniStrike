@@ -15,13 +15,13 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.14 — Entry Point
+ * OmniStrike v1.15 — Entry Point
  *
- * A unified vulnerability scanning framework for Burp Suite with 22 modules:
+ * A unified vulnerability scanning framework for Burp Suite with 21 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
  *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer
  *   Injection (Active): SQLi Detector, SSTI Scanner, SSRF Scanner, XSS Scanner,
- *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner, NoSQL Injection Scanner,
+ *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
  *       CRLF Injection, Authentication Bypass, HTTP Parameter Pollution
  *
@@ -40,7 +40,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.14 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.15 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -115,10 +115,6 @@ public class OmniStrikeExtension implements BurpExtension {
         XxeScanner xxe = new XxeScanner();
         xxe.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(xxe);
-
-        NoSqlInjectionScanner nosqli = new NoSqlInjectionScanner();
-        nosqli.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(nosqli);
 
         CorsMisconfScanner cors = new CorsMisconfScanner();
         cors.setDependencies(dedup, findingsStore, collaboratorManager);
@@ -223,7 +219,7 @@ public class OmniStrikeExtension implements BurpExtension {
             api.logging().logToOutput("OmniStrike unloaded. Goodbye!");
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.14 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.15 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");

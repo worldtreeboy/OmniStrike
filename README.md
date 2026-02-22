@@ -6,11 +6,11 @@
 
 <p align="center">
   <strong>One extension to replace them all.</strong><br>
-  22 vulnerability scanners, 4 passive analyzers, and AI-powered analysis — in a single JAR.
+  21 vulnerability scanners, 4 passive analyzers, and AI-powered analysis — in a single JAR.
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.14-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.15-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -57,7 +57,7 @@
                         │    ┌──┼──┐                      │
                         │    ▼  ▼  ▼                      │
                         │  ┌──────────────────────────┐   │
-                        │  │ 17 Active   4 Passive    │   │
+                        │  │ 16 Active   4 Passive    │   │
                         │  │ Scanners    Analyzers    │   │
                         │  │        AI Analyzer       │   │
                         │  └──────────┬───────────────┘   │
@@ -77,7 +77,7 @@
 
 ## Key Highlights
 
-**22 Modules, One JAR** &mdash; SQLi, XSS, SSRF, SSTI, RCE, XXE, deserialization, NoSQLi, GraphQL, CORS, cache poisoning, path traversal, CRLF, auth bypass, host header injection, HPP, prototype pollution, and more. All deduplicated, all in one place.
+**21 Modules, One JAR** &mdash; SQLi, XSS, SSRF, SSTI, RCE, XXE, deserialization, GraphQL, CORS, cache poisoning, path traversal, CRLF, auth bypass, host header injection, HPP, prototype pollution, and more. All deduplicated, all in one place.
 
 **Zero Configuration** &mdash; Right-click a request, select "Send to OmniStrike," and results appear in Burp's Dashboard. No scope setup required for ad-hoc scans.
 
@@ -186,7 +186,7 @@ That's it. Findings appear in Burp's Dashboard and the OmniStrike tab.
 ## Scanner Modules
 
 <details>
-<summary><strong>Active Scanners (17 Modules)</strong> &mdash; click to expand</summary>
+<summary><strong>Active Scanners (16 Modules)</strong> &mdash; click to expand</summary>
 
 <br>
 
@@ -239,12 +239,6 @@ Time-based blind (32 Unix `sleep` + 13 Windows `ping` payloads), output-based (3
 - **Node.js** — `node-serialize` IIFE/require/Buffer payloads, `cryo`, `funcster`, `js-yaml` detection, 3 OOB payloads (HTTP callback, nslookup, curl). Detects serialization library markers in responses.
 
 38 suspect cookie name patterns. Time-based, error-based, and OOB detection across all languages.
-</details>
-
-<details>
-<summary><strong>NoSQL Injection</strong></summary>
-
-MongoDB operator injection (`$gt`, `$ne`, `$regex`, `$where` JavaScript execution — 23 param + 16 JSON auth bypass, 38 error-based, 14 boolean + 12 JSON pairs, time-based + `$where` JS), CouchDB (11 payloads), Elasticsearch (14 payloads including script execution), SSJI (11 expression + 13 output + 15 OOB probes). 6 DB error pattern categories.
 </details>
 
 <details>
@@ -353,7 +347,7 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 |---|---|
 | **A01 Broken Access Control** | Auth Bypass, CORS Misconfiguration, IDOR via GraphQL |
 | **A02 Cryptographic Failures** | Security Header Analyzer (cookie flags, HSTS) |
-| **A03 Injection** | SQLi, XSS, SSTI, CMDi, NoSQLi, CRLF, XXE, HPP |
+| **A03 Injection** | SQLi, XSS, SSTI, CMDi, CRLF, XXE, HPP |
 | **A04 Insecure Design** | GraphQL schema analysis, Hidden Endpoint Finder |
 | **A05 Security Misconfiguration** | Security Headers, CORS, Cache Poisoning, Host Header |
 | **A06 Vulnerable Components** | Deserialization gadget chains (Java/.NET/PHP/Python/Ruby/Node.js), Prototype Pollution |
@@ -437,6 +431,6 @@ MIT License. See [LICENSE](LICENSE).
 ---
 
 <p align="center">
-  <strong>One JAR. 22 modules. Zero configuration.</strong><br>
+  <strong>One JAR. 21 modules. Zero configuration.</strong><br>
   <sub>Stop managing extensions. Start finding vulnerabilities.</sub>
 </p>
