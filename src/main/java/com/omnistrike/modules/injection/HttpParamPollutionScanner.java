@@ -8,6 +8,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -394,7 +395,7 @@ public class HttpParamPollutionScanner implements ScanModule {
                     String fullUrl = request.url();
                     // First update the original parameter value
                     HttpRequest modified = request.withUpdatedParameters(
-                            HttpParameter.urlParameter(target.name, firstValue));
+                            HttpParameter.urlParameter(target.name, PayloadEncoder.encode(firstValue)));
                     // Then append the duplicate to the query string
                     String modUrl = modified.url();
                     String separator = modUrl.contains("?") ? "&" : "?";
@@ -404,7 +405,7 @@ public class HttpParamPollutionScanner implements ScanModule {
                 case BODY: {
                     // Modify body directly
                     HttpRequest modified = request.withUpdatedParameters(
-                            HttpParameter.bodyParameter(target.name, firstValue));
+                            HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(firstValue)));
                     String body = modified.bodyToString();
                     if (body == null) body = "";
                     String separator = body.isEmpty() ? "" : "&";

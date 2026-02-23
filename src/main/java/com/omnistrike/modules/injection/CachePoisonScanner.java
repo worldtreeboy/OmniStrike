@@ -6,6 +6,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -374,7 +375,7 @@ public class CachePoisonScanner implements ScanModule {
         try {
             HttpRequest modified = original.request()
                     .withUpdatedParameters(
-                            burp.api.montoya.http.message.params.HttpParameter.urlParameter(paramName, value));
+                            burp.api.montoya.http.message.params.HttpParameter.urlParameter(paramName, PayloadEncoder.encode(value)));
             return api.http().sendRequest(modified);
         } catch (Exception e) {
             return null;

@@ -7,6 +7,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -339,12 +340,11 @@ public class CrlfInjectionScanner implements ScanModule {
     private HttpRequest injectPayload(HttpRequest request, CrlfTarget target, String payload) {
         switch (target.type) {
             case QUERY:
-                // Payload is already URL-encoded (contains %0d%0a etc.), pass raw
                 return request.withUpdatedParameters(
-                        HttpParameter.urlParameter(target.name, payload));
+                        HttpParameter.urlParameter(target.name, PayloadEncoder.encode(payload)));
             case BODY:
                 return request.withUpdatedParameters(
-                        HttpParameter.bodyParameter(target.name, payload));
+                        HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
             case COOKIE:
                 return request.withUpdatedParameters(
                         HttpParameter.cookieParameter(target.name, payload));
