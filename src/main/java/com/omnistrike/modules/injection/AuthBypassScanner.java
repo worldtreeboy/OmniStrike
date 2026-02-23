@@ -337,46 +337,70 @@ public class AuthBypassScanner implements ScanModule {
         String originalMethod = original.request().method();
         if ("GET".equalsIgnoreCase(originalMethod)) return;
 
+        // Only meaningful if the request has auth credentials — method override bypass
+        // only matters if stripping auth would cause a 401/403 but method override
+        // lets an unauthenticated request through.
+        boolean hasAuth = hasHeader(original.request(), "Authorization")
+                || hasHeader(original.request(), "Cookie");
+        if (!hasAuth) return;
+
+        // First establish that removing auth actually blocks access (proves auth is enforced)
+        HttpRequest noAuthRequest = original.request();
+        if (hasHeader(noAuthRequest, "Authorization")) {
+            noAuthRequest = noAuthRequest.withRemovedHeader("Authorization");
+        }
+        if (hasHeader(noAuthRequest, "Cookie")) {
+            noAuthRequest = noAuthRequest.withRemovedHeader("Cookie");
+        }
+        HttpRequestResponse noAuthResult = sendRequest(noAuthRequest);
+        if (noAuthResult == null || noAuthResult.response() == null) return;
+
+        int noAuthStatus = noAuthResult.response().statusCode();
+        // If removing auth still returns 200, the endpoint doesn't require auth — skip
+        if (noAuthStatus >= 200 && noAuthStatus < 300) return;
+
+        perHostDelay();
+
         for (String overrideHeader : METHOD_OVERRIDE_HEADERS) {
-            // Send the original method with an override header suggesting GET
-            HttpRequest modified = original.request()
-                    .withAddedHeader(overrideHeader, "GET");
+            // Strip auth AND add method override — test if the override bypasses auth
+            HttpRequest modified = noAuthRequest.withAddedHeader(overrideHeader, "GET");
             HttpRequestResponse result = sendRequest(modified);
             if (result == null || result.response() == null) continue;
 
-            // Also test: Send as GET with override header to original method
-            // Some frameworks check auth only on the actual HTTP method
+            // Also test: GET (no body/auth) with override header to original method
             HttpRequest getWithOverride = HttpRequest.httpRequest()
                     .withService(original.request().httpService())
                     .withMethod("GET")
                     .withPath(original.request().path());
-            // Copy headers from original except method-specific ones
             for (var h : original.request().headers()) {
                 String name = h.name();
-                if (!"Content-Length".equalsIgnoreCase(name) && !"Content-Type".equalsIgnoreCase(name)) {
+                if (!"Content-Length".equalsIgnoreCase(name)
+                        && !"Content-Type".equalsIgnoreCase(name)
+                        && !"Authorization".equalsIgnoreCase(name)
+                        && !"Cookie".equalsIgnoreCase(name)) {
                     getWithOverride = getWithOverride.withAddedHeader(name, h.value());
                 }
             }
             getWithOverride = getWithOverride.withAddedHeader(overrideHeader, originalMethod);
             HttpRequestResponse getResult = sendRequest(getWithOverride);
 
-            // Check if either bypass worked
+            // Check if method override restored access despite missing auth
             if (looksLikeBypass(baseline, result)) {
                 findingsStore.addFinding(Finding.builder("auth-bypass",
                                 "Authentication Bypass: HTTP Method Override (" + overrideHeader + ")",
                                 Severity.MEDIUM, Confidence.FIRM)
                         .url(url).parameter(overrideHeader)
-                        .evidence("Original " + originalMethod + ": " + baseline.statusCode + " | "
-                                + "With " + overrideHeader + ": GET: " + result.response().statusCode()
+                        .evidence("Original " + originalMethod + " (authed): " + baseline.statusCode
+                                + " | No auth: " + noAuthStatus
+                                + " | No auth + " + overrideHeader + ": GET: " + result.response().statusCode()
                                 + " (" + getBodyLength(result) + " bytes)")
-                        .description("The endpoint '" + urlPath + "' responds to method override via the '"
-                                + overrideHeader + "' header. By sending the request with " + overrideHeader
-                                + ": GET, the server may bypass authorization checks that are only applied "
-                                + "to specific HTTP methods. This can allow unauthorized access to protected "
-                                + "operations.")
+                        .description("The endpoint '" + urlPath + "' requires authentication (returns "
+                                + noAuthStatus + " without credentials), but adding the '" + overrideHeader
+                                + ": GET' header restores access without credentials. The server bypasses "
+                                + "authorization checks when a method override header is present.")
                         .remediation("Disable HTTP method override headers in production. If method override "
                                 + "is required, ensure authorization checks apply regardless of the effective "
-                                + "HTTP method. Validate the override header is only accepted from trusted sources.")
+                                + "HTTP method.")
                         .requestResponse(result)
                         .build());
                 return;
@@ -387,13 +411,14 @@ public class AuthBypassScanner implements ScanModule {
                                 "Authentication Bypass: HTTP Method Override (" + overrideHeader + ")",
                                 Severity.MEDIUM, Confidence.FIRM)
                         .url(url).parameter(overrideHeader)
-                        .evidence("Original " + originalMethod + ": " + baseline.statusCode + " | "
-                                + "GET with " + overrideHeader + ": " + originalMethod + ": "
+                        .evidence("Original " + originalMethod + " (authed): " + baseline.statusCode
+                                + " | No auth: " + noAuthStatus
+                                + " | GET (no auth) + " + overrideHeader + ": " + originalMethod + ": "
                                 + getResult.response().statusCode() + " (" + getBodyLength(getResult) + " bytes)")
-                        .description("The endpoint '" + urlPath + "' can be accessed via GET with the '"
-                                + overrideHeader + "' header overriding to " + originalMethod + ". "
-                                + "Authorization checks may only apply to the actual HTTP method (GET), "
-                                + "not the overridden method, allowing bypass.")
+                        .description("The endpoint '" + urlPath + "' requires authentication (returns "
+                                + noAuthStatus + " without credentials), but sending a GET with '"
+                                + overrideHeader + ": " + originalMethod + "' restores access. "
+                                + "Authorization checks apply to the actual HTTP method, not the overridden one.")
                         .remediation("Disable HTTP method override headers in production. If method override "
                                 + "is required, ensure authorization checks apply regardless of the effective "
                                 + "HTTP method.")
