@@ -841,15 +841,19 @@ public class XxeScanner implements ScanModule {
         String matchedEvidence = "";
 
         if (!evidencePattern.isEmpty()) {
-            // Use the specific evidence pattern
-            if (responseBody.contains(evidencePattern) && !baselineBody.contains(evidencePattern)) {
+            // Use the specific evidence pattern — but guard against empty baseline
+            boolean baselineEmpty = baselineBody == null || baselineBody.isEmpty();
+            if (responseBody.contains(evidencePattern)
+                    && (baselineEmpty ? result.response().statusCode() == 200 : !baselineBody.contains(evidencePattern))) {
                 confirmed = true;
                 matchedEvidence = evidencePattern;
             }
         } else {
             // For files without a fixed evidence pattern (e.g., /etc/hostname),
-            // check if the response changed significantly and contains plausible output
-            if (!responseBody.equals(baselineBody)
+            // check if the response changed significantly and contains plausible output.
+            // Require non-empty baseline to avoid FPs when baseline request failed.
+            if (baselineBody != null && !baselineBody.isEmpty()
+                    && !responseBody.equals(baselineBody)
                     && responseBody.length() != baselineBody.length()
                     && result.response().statusCode() == 200) {
                 // /etc/hostname typically returns a short hostname string.

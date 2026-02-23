@@ -328,6 +328,7 @@ public class SstiScanner implements ScanModule {
         HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
         if (baseline == null || baseline.response() == null) return;
         String baselineBody = baseline.response().bodyToString();
+        if (baselineBody == null) baselineBody = "";
 
         // Step 1: Error-triggering polyglot
         boolean polyglotCaused500 = false;
@@ -405,17 +406,26 @@ public class SstiScanner implements ScanModule {
 
             // Check if expected result appears in response but NOT in baseline
             // Support OR matching: "A|B|C" means any of A, B, C must be found
+            // Guard: if baseline is empty, skip math-result checks (e.g., "49") to avoid FPs
             boolean expectedFound = false;
             if (!expected.isEmpty()) {
+                boolean baselineEmpty = baselineBody.isEmpty();
                 if (expected.contains("|")) {
                     for (String exp : expected.split("\\|")) {
-                        if (responseBody.contains(exp.trim()) && !baselineBody.contains(exp.trim())) {
+                        String trimmed = exp.trim();
+                        if (baselineEmpty && trimmed.matches("\\d+")) continue; // Skip numeric matches on empty baseline
+                        if (responseBody.contains(trimmed) && !baselineBody.contains(trimmed)) {
                             expectedFound = true;
                             break;
                         }
                     }
                 } else {
-                    expectedFound = responseBody.contains(expected) && !baselineBody.contains(expected);
+                    if (baselineEmpty && expected.matches("\\d+")) {
+                        // Don't trust numeric matches (like "49") when baseline is empty
+                        expectedFound = false;
+                    } else {
+                        expectedFound = responseBody.contains(expected) && !baselineBody.contains(expected);
+                    }
                 }
             }
             if (expectedFound) {

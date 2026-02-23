@@ -167,11 +167,12 @@ public class SsrfScanner implements ScanModule {
             "file:///var/run/secrets/kubernetes.io/serviceaccount/token", // K8s service account
     };
 
-    // Patterns indicating successful internal access
+    // Patterns indicating successful internal access — only highly specific markers
+    // Removed overly generic words like "hostname" that appear in normal HTML pages
     private static final Pattern INTERNAL_RESPONSE_PATTERNS = Pattern.compile(
-            "root:x:|ami-id|instance-id|access_token|AccessKeyId|SecretAccessKey|" +
-                    "vmId|accountId|\\[extensions\\]|\\[fonts\\]|Linux version|" +
-                    "APIResourceList|hostname|local-ipv4",
+            "root:x:0:0:|ami-[0-9a-f]+|instance-id|AccessKeyId|SecretAccessKey|" +
+                    "vmId|accountId|\\[extensions\\]|\\[fonts\\]|Linux version \\d|" +
+                    "APIResourceList|local-ipv4|access_token",
             Pattern.CASE_INSENSITIVE
     );
 

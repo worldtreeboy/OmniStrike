@@ -1895,7 +1895,8 @@ public class XssScanner implements ScanModule {
             String body = result.response().bodyToString();
 
             // Check if the payload or its key marker survived in the response
-            if (!checkFor.isEmpty() && body.contains(checkFor)) {
+            // But skip if the marker was already present in the baseline (canary) response
+            if (!checkFor.isEmpty() && body.contains(checkFor) && !canaryBody.contains(checkFor)) {
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS Confirmed: " + desc + " in " + context,
                                 Severity.HIGH, Confidence.FIRM)
@@ -1911,17 +1912,17 @@ public class XssScanner implements ScanModule {
 
         // Step 5: Try adaptive evasion payloads based on char survival (Improvement 1)
         if (config.getBool("xss.evasion.enabled", true)) {
-            testFilterEvasion(original, target, url, context, charSurvival);
+            testFilterEvasion(original, target, url, context, charSurvival, canaryBody);
         }
 
         // Step 6: Client-side template injection (Improvement 2)
         if (config.getBool("xss.csti.enabled", true)) {
-            testTemplateInjection(original, target, url);
+            testTemplateInjection(original, target, url, canaryBody);
         }
 
         // Step 6.5: Framework-specific XSS payloads
         if (config.getBool("xss.frameworkXss.enabled", true) && !detectedFrameworks.isEmpty()) {
-            testFrameworkSpecificXss(original, target, url, detectedFrameworks, charSurvival);
+            testFrameworkSpecificXss(original, target, url, detectedFrameworks, charSurvival, canaryBody);
         }
 
         // Step 7: Encoding negotiation XSS (Improvement 6)
@@ -1943,7 +1944,8 @@ public class XssScanner implements ScanModule {
 
     private void testFilterEvasion(HttpRequestResponse original, XssTarget target,
                                     String url, String context,
-                                    Map<Character, Boolean> charSurvival) throws InterruptedException {
+                                    Map<Character, Boolean> charSurvival,
+                                    String canaryBody) throws InterruptedException {
         // First: try static evasion payloads, skipping those using blocked chars
         for (String[] evasion : EVASION_PAYLOADS) {
             String payload = evasion[0];
@@ -1958,7 +1960,8 @@ public class XssScanner implements ScanModule {
 
             String body = result.response().bodyToString();
 
-            if (!checkFor.isEmpty() && body.contains(checkFor)) {
+            // Skip if marker already existed in baseline response
+            if (!checkFor.isEmpty() && body.contains(checkFor) && !canaryBody.contains(checkFor)) {
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS via Filter Evasion: " + technique,
                                 Severity.HIGH, Confidence.FIRM)
@@ -1987,7 +1990,8 @@ public class XssScanner implements ScanModule {
 
             String body = result.response().bodyToString();
 
-            if (!checkFor.isEmpty() && body.contains(checkFor)) {
+            // Skip if marker already existed in baseline response
+            if (!checkFor.isEmpty() && body.contains(checkFor) && !canaryBody.contains(checkFor)) {
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS via Adaptive Evasion: " + technique,
                                 Severity.HIGH, Confidence.FIRM)
@@ -2011,7 +2015,7 @@ public class XssScanner implements ScanModule {
      * Sends template expressions and checks if they are evaluated (e.g., {{7*7}} → 49).
      */
     private void testTemplateInjection(HttpRequestResponse original, XssTarget target,
-                                        String url) throws InterruptedException {
+                                        String url, String canaryBody) throws InterruptedException {
         String[][] cstiPayloads = {
                 {"{{7*7}}", "49", "{{7*7}}", "AngularJS/Vue template expression"},
                 {"{{constructor.constructor('alert(1)')()}}", "alert(1)", "{{constructor", "AngularJS sandbox escape (< 1.6)"},
@@ -2034,10 +2038,12 @@ public class XssScanner implements ScanModule {
 
             // CSTI is confirmed if the expression was EVALUATED (result present)
             // but the template syntax itself is NOT present (it was processed)
+            // AND the eval result was NOT already in the baseline response (e.g., "49" as a price)
             boolean resultPresent = body.contains(evalResult);
             boolean syntaxPresent = body.contains(templateSyntax);
+            boolean resultInBaseline = canaryBody != null && canaryBody.contains(evalResult);
 
-            if (resultPresent && !syntaxPresent) {
+            if (resultPresent && !syntaxPresent && !resultInBaseline) {
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "Client-Side Template Injection (CSTI): " + desc,
                                 Severity.HIGH, Confidence.FIRM)
@@ -2173,7 +2179,8 @@ public class XssScanner implements ScanModule {
      */
     private void testFrameworkSpecificXss(HttpRequestResponse original, XssTarget target,
                                            String url, Set<String> frameworks,
-                                           Map<Character, Boolean> charSurvival) throws InterruptedException {
+                                           Map<Character, Boolean> charSurvival,
+                                           String canaryBody) throws InterruptedException {
         // Map framework names to their payload arrays
         Map<String, String[][]> frameworkPayloads = new LinkedHashMap<>();
         for (String fw : frameworks) {
@@ -2213,11 +2220,12 @@ public class XssScanner implements ScanModule {
                         || xssPayload.contains("<%- 7*7 %>");
                 if (isTemplateProbe) {
                     boolean resultPresent = body.contains(checkFor); // e.g., "49"
+                    boolean resultInBaseline = canaryBody != null && canaryBody.contains(checkFor);
                     // Check if the template syntax was consumed (not reflected raw)
                     String syntaxMarker = xssPayload.length() > 6 ? xssPayload.substring(0, 4) : xssPayload;
                     boolean syntaxPresent = body.contains(xssPayload);
 
-                    if (resultPresent && !syntaxPresent) {
+                    if (resultPresent && !syntaxPresent && !resultInBaseline) {
                         findingsStore.addFinding(Finding.builder("xss-scanner",
                                         "Framework XSS: " + fwName + " — " + desc,
                                         Severity.HIGH, Confidence.FIRM)
@@ -2234,7 +2242,9 @@ public class XssScanner implements ScanModule {
                     }
                 } else {
                     // For HTML/JS payloads: check if checkFor marker is present
-                    if (!checkFor.isEmpty() && body.contains(checkFor)) {
+                    // but NOT already in the baseline response
+                    boolean markerInBaseline = canaryBody != null && canaryBody.contains(checkFor);
+                    if (!checkFor.isEmpty() && body.contains(checkFor) && !markerInBaseline) {
                         findingsStore.addFinding(Finding.builder("xss-scanner",
                                         "Framework XSS: " + fwName + " — " + desc,
                                         Severity.HIGH, Confidence.FIRM)
@@ -2343,7 +2353,10 @@ public class XssScanner implements ScanModule {
 
             String body = result.response().bodyToString();
 
-            if (!checkFor.isEmpty() && body.contains(checkFor)) {
+            // Also check baseline doesn't already contain the marker
+            String encodingBaselineBody = baseline.response().bodyToString();
+            if (!checkFor.isEmpty() && body.contains(checkFor)
+                    && (encodingBaselineBody == null || !encodingBaselineBody.contains(checkFor))) {
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS via Encoding Negotiation: " + technique,
                                 Severity.MEDIUM, Confidence.FIRM)

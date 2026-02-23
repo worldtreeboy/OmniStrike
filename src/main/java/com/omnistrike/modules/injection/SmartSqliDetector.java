@@ -102,6 +102,8 @@ public class SmartSqliDetector implements ScanModule {
                 Pattern.compile("cockroach.*?error", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("CRDB", Pattern.CASE_INSENSITIVE)
         ));
+        // Generic patterns — only include SQL-specific ones; removed OperationalError, DatabaseError,
+        // ProgrammingError, DataError, IntegrityError, division by zero (too generic, match non-SQL errors)
         ERROR_PATTERNS.put("Generic", List.of(
                 Pattern.compile("syntax error.*?SQL", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("unexpected end of SQL", Pattern.CASE_INSENSITIVE),
@@ -120,12 +122,6 @@ public class SmartSqliDetector implements ScanModule {
                 Pattern.compile("org\\.hibernate", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("jdbc\\.SQLServerException", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("\\bSQLException\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\bDatabaseError\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\bOperationalError\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\bProgrammingError\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\bDataError\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\bIntegrityError\\b", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("division by zero", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("supplied argument is not a valid", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("Column count doesn't match", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("Unknown column", Pattern.CASE_INSENSITIVE),
@@ -720,9 +716,14 @@ public class SmartSqliDetector implements ScanModule {
     private void testErrorBased(HttpRequestResponse original, InjectionPoint ip, String baselineBody) {
         for (String payload : ERROR_PAYLOADS) {
             try {
-    
+
                 HttpRequestResponse result = sendWithPayload(original, ip, payload);
                 if (result == null || result.response() == null) continue;
+
+                // Skip 400 Bad Request — often just input validation rejecting the quote/payload,
+                // and the error page may contain SQL-like keywords (e.g., "syntax error in query string")
+                int statusCode = result.response().statusCode();
+                if (statusCode == 400 || statusCode == 403 || statusCode == 404) continue;
 
                 String responseBody = result.response().bodyToString();
 
@@ -731,7 +732,11 @@ public class SmartSqliDetector implements ScanModule {
                     String dbType = entry.getKey();
                     for (Pattern pattern : entry.getValue()) {
                         Matcher m = pattern.matcher(responseBody);
-                        if (m.find() && !pattern.matcher(baselineBody).find()) {
+                        // Guard: if baseline is empty, require the response to be a 500 (server error)
+                        // to avoid matching error keywords in generic error pages
+                        boolean baselineEmpty = baselineBody == null || baselineBody.isEmpty();
+                        if (baselineEmpty && statusCode != 500) continue;
+                        if (m.find() && !pattern.matcher(baselineBody != null ? baselineBody : "").find()) {
                             String evidence = m.group();
                             findingsStore.addFinding(Finding.builder("sqli-detector",
                                             "SQL Injection (Error-Based) - " + dbType,
@@ -794,17 +799,26 @@ public class SmartSqliDetector implements ScanModule {
                 List<String> signals = new ArrayList<>();
 
                 // Signal 1: Status code changed to redirect (302, 303) — classic login redirect
+                // But NOT if redirecting to an error/block/login page (WAF/security filter)
                 if ((baselineStatus == 200 || baselineStatus == 401 || baselineStatus == 403)
                         && (resultStatus == 302 || resultStatus == 303)) {
                     String location = "";
                     for (var h : result.response().headers()) {
                         if (h.name().equalsIgnoreCase("Location")) {
-                            location = h.value();
+                            location = h.value().toLowerCase();
                             break;
                         }
                     }
-                    signals.add("Redirect: HTTP " + baselineStatus + " → " + resultStatus
-                            + (location.isEmpty() ? "" : " (Location: " + location + ")"));
+                    // Skip redirects to error/block/login pages — these are WAF/security rejections, not auth bypass
+                    boolean isBlockRedirect = location.contains("error") || location.contains("block")
+                            || location.contains("denied") || location.contains("security")
+                            || location.contains("waf") || location.contains("captcha")
+                            || location.contains("login") || location.contains("signin")
+                            || location.contains("unauthorized") || location.contains("forbidden");
+                    if (!isBlockRedirect) {
+                        signals.add("Redirect: HTTP " + baselineStatus + " → " + resultStatus
+                                + (location.isEmpty() ? "" : " (Location: " + location + ")"));
+                    }
                 }
 
                 // Signal 2: Status code changed from error to success
