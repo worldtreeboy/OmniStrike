@@ -1792,13 +1792,11 @@ public class DeserializationScanner implements ScanModule {
                     break;
                 case "body_param":
                     modified = request.withUpdatedParameters(
-                            HttpParameter.bodyParameter(dp.name,
-                                    URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                            HttpParameter.bodyParameter(dp.name, payload));
                     break;
                 case "url_param":
                     modified = request.withUpdatedParameters(
-                            HttpParameter.urlParameter(dp.name,
-                                    URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                            HttpParameter.urlParameter(dp.name, payload));
                     break;
                 case "header":
                     modified = request.withRemovedHeader(dp.name).withAddedHeader(dp.name, payload);

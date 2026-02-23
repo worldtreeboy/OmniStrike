@@ -10,7 +10,6 @@ import com.omnistrike.framework.FindingsStore;
 
 import com.omnistrike.model.*;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -2596,13 +2595,11 @@ public class XssScanner implements ScanModule {
             switch (target.type) {
                 case QUERY:
                     modified = original.request().withUpdatedParameters(
-                            HttpParameter.urlParameter(target.name,
-                                    URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                            HttpParameter.urlParameter(target.name, payload));
                     break;
                 case BODY:
                     modified = original.request().withUpdatedParameters(
-                            HttpParameter.bodyParameter(target.name,
-                                    URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                            HttpParameter.bodyParameter(target.name, payload));
                     break;
                 case COOKIE:
                     modified = original.request().withUpdatedParameters(
@@ -2695,8 +2692,8 @@ public class XssScanner implements ScanModule {
 
             if (segmentIndex < 0 || segmentIndex >= segments.length) return null;
 
-            // Replace the segment with the payload (URL-encoded)
-            segments[segmentIndex] = URLEncoder.encode(payload, StandardCharsets.UTF_8);
+            // Replace the segment with the payload
+            segments[segmentIndex] = payload;
             String newPath = String.join("/", segments);
 
             // Reconstruct the URL with the new path

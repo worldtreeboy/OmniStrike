@@ -13,7 +13,6 @@ import com.omnistrike.framework.ModuleRegistry;
 
 import com.google.gson.*;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
@@ -1135,20 +1134,19 @@ public class AiVulnAnalyzer implements ScanModule {
     // ==================== Request modification ====================
 
     private HttpRequest injectPayload(HttpRequest original, FuzzPayload payload) {
-        String encoded = URLEncoder.encode(payload.payload, StandardCharsets.UTF_8);
         return switch (payload.injectionPoint.toLowerCase()) {
             case "query", "url" -> original.withParameter(
-                    HttpParameter.parameter(payload.parameter, encoded, HttpParameterType.URL));
+                    HttpParameter.parameter(payload.parameter, payload.payload, HttpParameterType.URL));
             case "body" -> original.withParameter(
-                    HttpParameter.parameter(payload.parameter, encoded, HttpParameterType.BODY));
+                    HttpParameter.parameter(payload.parameter, payload.payload, HttpParameterType.BODY));
             case "header" -> original
                     .withRemovedHeader(payload.parameter)
                     .withAddedHeader(payload.parameter, payload.payload);
             case "cookie" -> original
                     .withRemovedHeader("Cookie")
-                    .withAddedHeader("Cookie", payload.parameter + "=" + URLEncoder.encode(payload.payload, StandardCharsets.UTF_8));
+                    .withAddedHeader("Cookie", payload.parameter + "=" + payload.payload);
             default -> original.withParameter(
-                    HttpParameter.parameter(payload.parameter, encoded, HttpParameterType.URL));
+                    HttpParameter.parameter(payload.parameter, payload.payload, HttpParameterType.URL));
         };
     }
 

@@ -13,7 +13,6 @@ import com.omnistrike.framework.FindingsStore;
 
 import com.omnistrike.model.*;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
@@ -1985,12 +1984,10 @@ public class XxeScanner implements ScanModule {
         switch (target.type) {
             case QUERY:
                 return request.withUpdatedParameters(
-                        HttpParameter.urlParameter(target.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        HttpParameter.urlParameter(target.name, payload));
             case BODY:
                 return request.withUpdatedParameters(
-                        HttpParameter.bodyParameter(target.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        HttpParameter.bodyParameter(target.name, payload));
             case COOKIE:
                 return request.withUpdatedParameters(
                         HttpParameter.cookieParameter(target.name, payload));

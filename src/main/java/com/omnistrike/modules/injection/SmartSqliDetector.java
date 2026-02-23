@@ -11,7 +11,6 @@ import com.omnistrike.framework.FindingsStore;
 
 import com.omnistrike.model.*;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1561,12 +1560,10 @@ public class SmartSqliDetector implements ScanModule {
         switch (ip.type) {
             case QUERY:
                 return request.withUpdatedParameters(
-                        burp.api.montoya.http.message.params.HttpParameter.urlParameter(ip.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        burp.api.montoya.http.message.params.HttpParameter.urlParameter(ip.name, payload));
             case BODY:
                 return request.withUpdatedParameters(
-                        burp.api.montoya.http.message.params.HttpParameter.bodyParameter(ip.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        burp.api.montoya.http.message.params.HttpParameter.bodyParameter(ip.name, payload));
             case COOKIE:
                 return request.withUpdatedParameters(
                         burp.api.montoya.http.message.params.HttpParameter.cookieParameter(ip.name, payload));
