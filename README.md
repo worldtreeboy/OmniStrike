@@ -248,12 +248,6 @@ Time-based blind (32 Unix `sleep` + 13 Windows `ping` payloads), output-based (3
 </details>
 
 <details>
-<summary><strong>Authentication Bypass</strong></summary>
-
-6-phase auth enforcement testing: strip Authorization/Cookie/custom auth headers, empty/null auth values, HTTP method override bypass, path manipulation bypass (double slash, dot segment, semicolon traversal, URL-encoded). Response comparison with 15% body length tolerance and auth-failure keyword detection.
-</details>
-
-<details>
 <summary><strong>CORS Misconfiguration</strong></summary>
 
 Reflected `Origin` header, `null` origin trust, subdomain trust validation, scheme downgrade (HTTPS to HTTP), wildcard with credentials, preflight request bypass.
@@ -431,6 +425,6 @@ MIT License. See [LICENSE](LICENSE).
 ---
 
 <p align="center">
-  <strong>One JAR. 21 modules. Zero configuration.</strong><br>
+  <strong>One JAR. 20 modules. Zero configuration.</strong><br>
   <sub>Stop managing extensions. Start finding vulnerabilities.</sub>
 </p>

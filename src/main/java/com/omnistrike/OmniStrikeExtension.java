@@ -17,13 +17,13 @@ import javax.swing.*;
 /**
  * OmniStrike v1.15 — Entry Point
  *
- * A unified vulnerability scanning framework for Burp Suite with 21 modules:
+ * A unified vulnerability scanning framework for Burp Suite with 20 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
  *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer
  *   Injection (Active): SQLi Detector, SSTI Scanner, SSRF Scanner, XSS Scanner,
  *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
- *       CRLF Injection, Authentication Bypass, HTTP Parameter Pollution
+ *       CRLF Injection, HTTP Parameter Pollution
  *
  * Built exclusively on the Montoya API.
  */
@@ -139,10 +139,6 @@ public class OmniStrikeExtension implements BurpExtension {
         CrlfInjectionScanner crlfInjection = new CrlfInjectionScanner();
         crlfInjection.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(crlfInjection);
-
-        AuthBypassScanner authBypass = new AuthBypassScanner();
-        authBypass.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(authBypass);
 
         HttpParamPollutionScanner hpp = new HttpParamPollutionScanner();
         hpp.setDependencies(dedup, findingsStore, collaboratorManager);
