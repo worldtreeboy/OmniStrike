@@ -79,7 +79,7 @@
 
 **21 Modules, One JAR** &mdash; SQLi, XSS, SSRF, SSTI, RCE, XXE, deserialization, GraphQL, CORS, cache poisoning, path traversal, CRLF, auth bypass, host header injection, HPP, prototype pollution, and more. All deduplicated, all in one place.
 
-**Scan While You Browse** &mdash; Set your target scope, click Start, and just browse. OmniStrike automatically scans every in-scope request in real time — no manual triggering needed. Want more control? Right-click any request to scan it ad-hoc.
+${\color{#FF0000}\textbf{S}}{\color{#FF4500}\textbf{c}}{\color{#FF8C00}\textbf{a}}{\color{#FFA500}\textbf{n}}$ ${\color{#FFD700}\textbf{W}}{\color{#ADFF2F}\textbf{h}}{\color{#32CD32}\textbf{i}}{\color{#00CC00}\textbf{l}}{\color{#00CED1}\textbf{e}}$ ${\color{#1E90FF}\textbf{Y}}{\color{#4169E1}\textbf{o}}{\color{#6A5ACD}\textbf{u}}$ ${\color{#8A2BE2}\textbf{B}}{\color{#9400D3}\textbf{r}}{\color{#BA55D3}\textbf{o}}{\color{#FF00FF}\textbf{w}}{\color{#FF1493}\textbf{s}}{\color{#FF69B4}\textbf{e}}$ &mdash; Set your target scope, click Start, and just browse. OmniStrike automatically scans every in-scope request in real time — no manual triggering needed. Want more control? Right-click any request to scan it ad-hoc.
 
 **AI-Augmented** &mdash; Optionally delegate analysis to Claude, Gemini, Codex, or OpenCode CLI. The AI generates targeted payloads, bypasses WAFs, and performs multi-round adaptive scanning.
 
