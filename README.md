@@ -331,6 +331,7 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 | **Multi-step timing verification** | 3-step confirmation: stable baseline → true condition delays → false condition does NOT delay. Baseline stability check rejects unstable endpoints. |
 | **2-round boolean confirmation** | Boolean-blind findings require reproducible distinction across 2 independent rounds (4 consistency checks). |
 | **Structural content validation** | Path traversal confirms file reads via file-specific signatures, not response differences. PHP wrappers decode and validate content. |
+| **Raw payload injection** | All scanners inject payloads without re-encoding — pre-encoded bypass sequences (`%0a`, `%00`, `%252e`, `%3C`, `%0d%0a`) are preserved as-is for WAF evasion and encoding bypass attacks. |
 | **Smart filter probing** | Probes which characters survive server-side filtering, then selects only viable payloads and generates adaptive evasions |
 | **Context-aware XSS** | Payloads adapt to 6 distinct reflection contexts with per-context evasion strategies |
 | **Comment & library awareness** | Passive analyzer auto-skips minified libraries and discards matches inside HTML/JS comments |
