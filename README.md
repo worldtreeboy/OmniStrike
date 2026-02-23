@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.16-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.17-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -312,10 +312,11 @@ Server-side `__proto__` and `constructor.prototype` injection with **canary pers
 
 | Mode | Description |
 |---|---|
-| **Smart Fuzzing** | LLM analyzes the HTTP exchange and generates targeted payloads based on parameter names, content types, and technology indicators. |
+| **Smart Fuzzing** | LLM analyzes the HTTP exchange and generates targeted payloads based on parameter names, content types, and technology indicators. Priority-ordered prompts per vulnerability class (e.g., error-based SQLi before blind). |
 | **WAF Bypass** | When payloads are blocked, the LLM generates evasion variants specific to the observed blocking behavior. |
-| **Adaptive Scanning** | Multi-round testing where each round's results inform the next payload set. |
+| **Adaptive Scanning** | Multi-round testing where each round's results inform the next payload set. Timing-aware — detects time-based blind injection via response latency analysis. |
 | **Cross-File Batch Scan** | Queue multiple JS/HTML responses and analyze them together for cross-file DOM XSS, shared prototype pollution chains, and cross-file data flows. |
+| **Hardened Detection** | SSTI uses large unique math canaries (131803, 3072383) instead of generic `7*7=49`. XSS only confirms verbatim payload reflection. CMDi uses OS-specific output patterns. Time-based blind detection for SQLi and CMDi (>5s threshold). No generic 500-error findings. |
 
 Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No API keys configured in the extension — uses locally authenticated CLI tools.
 

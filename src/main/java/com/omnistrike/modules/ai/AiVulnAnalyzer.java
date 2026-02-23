@@ -143,12 +143,14 @@ public class AiVulnAnalyzer implements ScanModule {
             You are an expert penetration tester. Analyze this HTTP request and generate targeted security test payloads.
 
             For each injectable parameter (URL query params, POST body params, headers, cookies), generate the most effective payloads targeting:
-            - SQL Injection (error-based, blind, UNION, time-based)
-            - Cross-Site Scripting (reflected, DOM-based)
-            - Server-Side Template Injection (Jinja2, Twig, Freemarker, Velocity)
-            - Command Injection (Linux and Windows variants)
-            - Path Traversal / LFI
-            - SSRF (internal IPs, cloud metadata endpoints)
+            - SQL Injection: error-based FIRST (single/double quote, comment), then UNION, then boolean blind, then time-based (SLEEP(5), WAITFOR DELAY, pg_sleep(5))
+            - Cross-Site Scripting: reflected (script tags, event handlers, SVG), DOM-based
+            - Server-Side Template Injection: ALWAYS use large unique math like {{133*991}} (=131803), ${7739*397} (=3072383). NEVER use 7*7 — '49' appears on normal pages
+            - Command Injection: pipe, semicolon, backtick, $() — include time-based (;sleep 5;, |ping -c 5 127.0.0.1|)
+            - Path Traversal / LFI: ../../etc/passwd, ....//....//etc/passwd, ..%252f..%252f variants
+            - SSRF: internal IPs, cloud metadata (169.254.169.254), URL scheme abuse
+
+            For time-based blind payloads, use a 5-second delay so it's clearly distinguishable from normal response times.
 
             Focus on payloads most likely to succeed based on the parameter names, values, content type, and technology stack visible in the traffic.
 
@@ -192,11 +194,12 @@ public class AiVulnAnalyzer implements ScanModule {
             %s
 
             Instructions:
-            1. If any payload caused an error, stack trace, or unusual response — generate more targeted variants of that payload
-            2. If you detected a specific technology (e.g., MySQL, PostgreSQL, Node.js) — generate technology-specific payloads
-            3. If WAF patterns were detected — suggest evasion techniques
+            1. If any payload caused a database error, stack trace, or unusual response — generate more targeted variants of that exact payload
+            2. If you detected a specific technology (e.g., MySQL, PostgreSQL, Node.js, Jinja2) — generate technology-specific payloads
+            3. If WAF patterns were detected — suggest evasion techniques for the SPECIFIC WAF
             4. If a parameter reflected input — try XSS and SSTI variants
-            5. Focus on the most promising attack vectors from the previous round
+            5. If a time-based payload caused a noticeably longer response (>5 seconds) — generate more time-based variants with different delays to confirm (e.g., SLEEP(3) vs SLEEP(7)) and look for proportional delay
+            6. Focus on the most promising attack vectors from the previous round
 
             Generate as many payloads as needed for this round. When you believe all attack vectors have been exhausted, return an empty list to stop.
 
@@ -261,8 +264,14 @@ public class AiVulnAnalyzer implements ScanModule {
 
     private static final Map<String, ModuleFocus> MODULE_FOCUS = Map.ofEntries(
             Map.entry("sqli-detector", new ModuleFocus("SQL Injection",
-                    "SCOPE: SQL Injection ONLY (error-based, blind, UNION, time-based, stacked queries, second-order). "
-                    + "Generate payloads for: single quote, double quote, comment-based, UNION SELECT, SLEEP/WAITFOR, boolean conditions. "
+                    "SCOPE: SQL Injection ONLY.\n"
+                    + "PRIORITY ORDER (test in this order — error-based confirms fastest):\n"
+                    + "1. Error-based: single quote ('), double quote (\"), parenthesis closers (), comment sequences (--, #, /**/)\n"
+                    + "2. UNION-based: ' UNION SELECT NULL-- with increasing column counts\n"
+                    + "3. Boolean blind: ' AND 1=1-- vs ' AND 1=2-- (compare response diff)\n"
+                    + "4. Time-based blind: ' AND SLEEP(5)--, '; WAITFOR DELAY '0:0:5'--, ' AND pg_sleep(5)--\n"
+                    + "5. Stacked queries: '; SELECT ...--, second-order patterns\n\n"
+                    + "Test EVERY injectable parameter. Use BOTH single and double quotes.\n"
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for XSS, SSTI, command injection, SSRF, path traversal, or any other vulnerability type. "
                     + "Every payload MUST have attack_type set to \"sqli\". Any non-SQLi payload will be discarded.")),
             Map.entry("xss-scanner", new ModuleFocus("Cross-Site Scripting (XSS)",
@@ -271,9 +280,20 @@ public class AiVulnAnalyzer implements ScanModule {
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQLi, SSTI, SSRF, command injection, or any other vulnerability type. "
                     + "Every payload MUST have attack_type set to \"xss\". Any non-XSS payload will be discarded.")),
             Map.entry("ssti-scanner", new ModuleFocus("Server-Side Template Injection (SSTI)",
-                    "SCOPE: Server-Side Template Injection ONLY for Jinja2, Twig, Freemarker, Velocity, Pebble, Mako, ERB, Smarty. "
-                    + "Generate payloads for: math expressions ({{7*7}}), object traversal, RCE chains. "
-                    + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQLi, XSS, SSRF, command injection, or any other vulnerability type. "
+                    "SCOPE: Server-Side Template Injection ONLY for Jinja2, Twig, Freemarker, Velocity, Pebble, Mako, ERB, Smarty, Thymeleaf.\n"
+                    + "PRIORITY ORDER:\n"
+                    + "1. Math expression probes (ALWAYS start with these — they confirm SSTI with zero FPs):\n"
+                    + "   - {{133*991}} → expect 131803 (Jinja2/Twig)\n"
+                    + "   - ${133*991} → expect 131803 (Freemarker/Velocity/Thymeleaf)\n"
+                    + "   - #{133*991} → expect 131803 (Thymeleaf/EL)\n"
+                    + "   - <%= 133*991 %> → expect 131803 (ERB)\n"
+                    + "   - {133*991} → expect 131803 (Smarty)\n"
+                    + "   IMPORTANT: Use LARGE UNIQUE products like 133*991=131803, 7739*397=3072383, 9281*473=4389913. "
+                    + "NEVER use 7*7=49 — '49' appears on normal pages. The computed result must be a number "
+                    + "that would NEVER appear naturally in HTML.\n"
+                    + "2. Object traversal / class introspection (Jinja2: ''.__class__.__mro__, Twig: _self.env, etc.)\n"
+                    + "3. RCE chains (only after confirming SSTI with math probes)\n\n"
+                    + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for XSS, SQLi, SSRF, command injection, or any other type. "
                     + "Every payload MUST have attack_type set to \"ssti\". Any non-SSTI payload will be discarded.")),
             Map.entry("cmdi-scanner", new ModuleFocus("Command Injection",
                     "SCOPE: OS Command Injection ONLY (Linux and Windows). "
@@ -707,12 +727,14 @@ public class AiVulnAnalyzer implements ScanModule {
                     // Replace {COLLAB} placeholders with real tracked Collaborator payloads
                     FuzzPayload resolvedPayload = resolveCollaboratorPlaceholders(payload, exchange.getUrl(), reqRespRef, targetModuleId);
                     HttpRequest modified = injectPayload(originalReqResp.request(), resolvedPayload);
+                    long startTime = System.currentTimeMillis();
                     HttpRequestResponse response = api.http().sendRequest(modified);
+                    long elapsed = System.currentTimeMillis() - startTime;
                     reqRespRef.set(response); // Now OOB callback can read the request/response
                     fuzzRequestsSent.incrementAndGet();
 
                     boolean wafDetected = isWafBlocked(response);
-                    FuzzResult result = new FuzzResult(resolvedPayload, response, wafDetected);
+                    FuzzResult result = new FuzzResult(resolvedPayload, response, wafDetected, elapsed);
                     allResults.add(result);
 
                     // Check for immediate vulnerability indicators
@@ -800,12 +822,14 @@ public class AiVulnAnalyzer implements ScanModule {
                             ), originalRequest.url(), reqRespRef, targetModuleId);
 
                     HttpRequest modified = injectPayload(originalRequest, bypassPayload);
+                    long startTime = System.currentTimeMillis();
                     HttpRequestResponse response = api.http().sendRequest(modified);
+                    long elapsed = System.currentTimeMillis() - startTime;
                     reqRespRef.set(response);
                     fuzzRequestsSent.incrementAndGet();
 
                     boolean stillBlocked = isWafBlocked(response);
-                    FuzzResult result = new FuzzResult(bypassPayload, response, stillBlocked);
+                    FuzzResult result = new FuzzResult(bypassPayload, response, stillBlocked, elapsed);
                     results.add(result);
 
                     if (!stillBlocked) {
@@ -859,12 +883,14 @@ public class AiVulnAnalyzer implements ScanModule {
                     AtomicReference<HttpRequestResponse> reqRespRef = new AtomicReference<>();
                     FuzzPayload resolved = resolveCollaboratorPlaceholders(payload, originalRequest.url(), reqRespRef, targetModuleId);
                     HttpRequest modified = injectPayload(originalRequest, resolved);
+                    long startTime = System.currentTimeMillis();
                     HttpRequestResponse response = api.http().sendRequest(modified);
+                    long elapsed = System.currentTimeMillis() - startTime;
                     reqRespRef.set(response);
                     fuzzRequestsSent.incrementAndGet();
 
                     boolean wafDetected = isWafBlocked(response);
-                    FuzzResult result = new FuzzResult(resolved, response, wafDetected);
+                    FuzzResult result = new FuzzResult(resolved, response, wafDetected, elapsed);
                     results.add(result);
                     checkForVulnIndicators(result, originalRequest.url(), targetModuleId);
                 } catch (Exception e) {
@@ -902,57 +928,91 @@ public class AiVulnAnalyzer implements ScanModule {
                     reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.FIRM,
                             "SQL Injection — database error triggered",
                             "Database error '" + indicator + "' found in response after injecting: "
-                                    + truncate(result.payload.payload, 100));
+                                    + truncate(result.payload.payload, 200));
+                    return;
+                }
+            }
+            // Time-based blind SQLi: payload contains SLEEP/WAITFOR/pg_sleep AND response took >5s
+            if (result.responseTimeMs > 5000) {
+                String payloadLower = result.payload.payload.toLowerCase();
+                if (payloadLower.contains("sleep") || payloadLower.contains("waitfor")
+                        || payloadLower.contains("pg_sleep") || payloadLower.contains("benchmark")) {
+                    reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.TENTATIVE,
+                            "Possible Blind SQL Injection — time delay detected",
+                            "Response took " + result.responseTimeMs + "ms after time-based payload: "
+                                    + truncate(result.payload.payload, 200));
                     return;
                 }
             }
         }
 
-        // XSS reflection
+        // XSS reflection — only check if the actual injected payload is reflected verbatim
         if (result.payload.attackType.equals("xss")) {
-            if (body.contains(result.payload.payload) || body.contains("<script>")) {
+            if (body.contains(result.payload.payload)) {
                 reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.FIRM,
-                        "Reflected XSS — payload reflected in response",
-                        "Injected payload reflected unescaped in response body: "
-                                + truncate(result.payload.payload, 100));
+                        "Reflected XSS — payload reflected unescaped in response",
+                        "Injected payload reflected verbatim in response body: "
+                                + truncate(result.payload.payload, 200));
                 return;
             }
         }
 
-        // Command injection indicators
+        // Command injection indicators — use specific OS output patterns, not generic words
         if (result.payload.attackType.equals("cmdi")) {
-            for (String indicator : List.of("root:x:0:0", "uid=", "windows", "volume serial",
-                    "/bin/", "command not found", "is not recognized")) {
+            for (String indicator : List.of("root:x:0:0:", "uid=0(root)", "uid=",
+                    "volume serial number", "/bin/bash", "/bin/sh")) {
                 if (bodyLower.contains(indicator)) {
                     reportFuzzFinding(result, url, targetModuleId, Severity.CRITICAL, Confidence.FIRM,
                             "Command Injection — OS command output detected",
                             "OS-level output '" + indicator + "' detected after injecting: "
-                                    + truncate(result.payload.payload, 100));
+                                    + truncate(result.payload.payload, 200));
+                    return;
+                }
+            }
+            // Time-based blind command injection
+            if (result.responseTimeMs > 5000) {
+                String payloadLower = result.payload.payload.toLowerCase();
+                if (payloadLower.contains("sleep") || payloadLower.contains("ping")
+                        || payloadLower.contains("timeout")) {
+                    reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.TENTATIVE,
+                            "Possible Blind Command Injection — time delay detected",
+                            "Response took " + result.responseTimeMs + "ms after time-based payload: "
+                                    + truncate(result.payload.payload, 200));
                     return;
                 }
             }
         }
 
-        // SSTI indicators
+        // SSTI indicators — use large unique math canaries that never appear naturally
         if (result.payload.attackType.equals("ssti")) {
-            // Check for computed math expressions (e.g., 49 for {{7*7}})
-            if (body.contains("49") && result.payload.payload.contains("7*7")) {
-                reportFuzzFinding(result, url, targetModuleId, Severity.CRITICAL, Confidence.FIRM,
-                        "Server-Side Template Injection — expression evaluated",
-                        "Template expression evaluated: " + truncate(result.payload.payload, 100));
-                return;
+            var mathCanaries = Map.of(
+                    "133*991", "131803",
+                    "7739*397", "3072383",
+                    "9281*473", "4389913",
+                    "8123*547", "4443281",
+                    "3571*661", "2360431"
+            );
+            for (var entry : mathCanaries.entrySet()) {
+                if (result.payload.payload.contains(entry.getKey()) && body.contains(entry.getValue())) {
+                    reportFuzzFinding(result, url, targetModuleId, Severity.CRITICAL, Confidence.FIRM,
+                            "Server-Side Template Injection — math expression evaluated",
+                            "Template expression '" + entry.getKey() + "' evaluated to '"
+                                    + entry.getValue() + "' in response. Payload: "
+                                    + truncate(result.payload.payload, 200));
+                    return;
+                }
             }
         }
 
-        // Path traversal indicators
+        // Path traversal indicators — use specific file content patterns, not generic XML/HTML
         if (result.payload.attackType.equals("path_traversal")) {
-            for (String indicator : List.of("root:x:", "[boot loader]", "[extensions]",
-                    "<?xml", "<!doctype")) {
+            for (String indicator : List.of("root:x:0:0:", "[boot loader]",
+                    "[extensions]", "[fonts]", "PATH=", "HOME=")) {
                 if (bodyLower.contains(indicator) && status == 200) {
                     reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.FIRM,
                             "Path Traversal — file content leaked",
                             "File content indicator '" + indicator + "' found after injecting: "
-                                    + truncate(result.payload.payload, 100));
+                                    + truncate(result.payload.payload, 200));
                     return;
                 }
             }
@@ -966,18 +1026,10 @@ public class AiVulnAnalyzer implements ScanModule {
                     reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.TENTATIVE,
                             "Possible SSRF — internal resource indicator in response",
                             "Internal indicator '" + indicator + "' found after injecting: "
-                                    + truncate(result.payload.payload, 100));
+                                    + truncate(result.payload.payload, 200));
                     return;
                 }
             }
-        }
-
-        // Generic: 500 errors often indicate injection success
-        if (status == 500 && !result.wafDetected) {
-            reportFuzzFinding(result, url, targetModuleId, Severity.MEDIUM, Confidence.FIRM,
-                    "Server Error (500) triggered by " + result.payload.attackType.toUpperCase() + " payload",
-                    "HTTP 500 triggered by payload in param '" + result.payload.parameter + "': "
-                            + truncate(result.payload.payload, 100));
         }
     }
 
@@ -1236,12 +1288,13 @@ public class AiVulnAnalyzer implements ScanModule {
             sb.append("Parameter: ").append(r.payload.parameter)
                     .append(" (").append(r.payload.injectionPoint).append(")\n");
             sb.append("Attack: ").append(r.payload.attackType).append("\n");
-            sb.append("Payload: ").append(truncate(r.payload.payload, 200)).append("\n");
+            sb.append("Payload: ").append(truncate(r.payload.payload, 500)).append("\n");
+            sb.append("Response Time: ").append(r.responseTimeMs).append("ms\n");
             sb.append("WAF Blocked: ").append(r.wafDetected).append("\n");
             if (r.response != null && r.response.response() != null) {
                 sb.append("Status: ").append(r.response.response().statusCode()).append("\n");
                 String body = r.response.response().bodyToString();
-                sb.append("Response snippet: ").append(truncate(body, 500)).append("\n");
+                sb.append("Response snippet: ").append(truncate(body, 1000)).append("\n");
             }
             sb.append("\n");
         }
@@ -1254,7 +1307,7 @@ public class AiVulnAnalyzer implements ScanModule {
                                 String payload, String attackType, String description) {}
 
     private record FuzzResult(FuzzPayload payload, HttpRequestResponse response,
-                               boolean wafDetected) {}
+                               boolean wafDetected, long responseTimeMs) {}
 
     private record WafBypass(String payload, String technique, String description) {}
 
