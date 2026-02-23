@@ -126,7 +126,7 @@ A typical Burp setup for thorough testing requires 15-20 standalone extensions: 
            Adaptive payload: <img src=x onerror=alert`1`>  (backtick call — parens blocked)
 
  HIGH      SSTI: Jinja2 Detected — param 'q'
-           Probe: {{7*7}} → Response contains '49' (expression evaluated)
+           Probe: {{133*991}} → Response contains '131881' (expression evaluated)
            Engine confirmed via {{ config.items() }} error pattern
 
  MEDIUM    CORS Misconfiguration: Reflected Origin
