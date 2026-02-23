@@ -158,11 +158,15 @@ public class MainPanel extends JPanel {
         stopScansBtn.setToolTipText("Stop all running manual scans (right-click context menu scans)");
         stopScansBtn.addActionListener(e -> {
             int stopped = interceptor.stopManualScans();
-            if (stopped > 0) {
-                logPanel.log("INFO", "Framework", "Stopped " + stopped + " manual scan task(s).");
+            int purged = executor.cancelAll();
+            if (stopped > 0 || purged > 0) {
+                logPanel.log("INFO", "Framework",
+                        "Stopped " + stopped + " scan task(s), purged " + purged + " queued.");
             } else {
-                logPanel.log("INFO", "Framework", "No manual scans running.");
+                logPanel.log("INFO", "Framework", "No scans running.");
             }
+            MainPanel.this.progressBar.setIndeterminate(false);
+            MainPanel.this.progressBar.setVisible(false);
         });
         row2.add(stopScansBtn);
 
@@ -425,6 +429,7 @@ public class MainPanel extends JPanel {
         } else {
             // Stop scanning
             interceptor.setRunning(false);
+            executor.cancelAll();
             startStopBtn.setText("Start");
             startStopBtn.setBackground(new Color(50, 150, 50));
             statusLabel.setText("Stopped");

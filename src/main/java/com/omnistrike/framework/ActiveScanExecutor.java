@@ -1,5 +1,6 @@
 package com.omnistrike.framework;
 
+import java.util.List;
 import java.util.concurrent.*;
 
 /**
@@ -118,6 +119,26 @@ public class ActiveScanExecutor {
             return ((ThreadPoolExecutor) ex).getActiveCount();
         }
         return 0;
+    }
+
+    /**
+     * Immediately stop all running and queued scans.
+     * Shuts down the current thread pool (interrupting workers) and creates a fresh one.
+     * Returns the number of tasks that were purged (queued + not-yet-started).
+     */
+    public int cancelAll() {
+        synchronized (resizeLock) {
+            ExecutorService old = this.executor;
+            if (old == null) return 0;
+            int purged = 0;
+            if (old instanceof ThreadPoolExecutor tpe) {
+                purged = tpe.getQueue().size();
+            }
+            List<Runnable> notRun = old.shutdownNow();
+            purged += notRun.size();
+            this.executor = createPool(threadPoolSize);
+            return purged;
+        }
     }
 
     public void shutdown() {

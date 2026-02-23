@@ -79,7 +79,7 @@
 
 **21 Modules, One JAR** &mdash; SQLi, XSS, SSRF, SSTI, RCE, XXE, deserialization, GraphQL, CORS, cache poisoning, path traversal, CRLF, auth bypass, host header injection, HPP, prototype pollution, and more. All deduplicated, all in one place.
 
-**Zero Configuration** &mdash; Right-click a request, select "Send to OmniStrike," and results appear in Burp's Dashboard. No scope setup required for ad-hoc scans.
+**Scan While You Browse** &mdash; Set your target scope, click Start, and just browse. OmniStrike automatically scans every in-scope request in real time — no manual triggering needed. Want more control? Right-click any request to scan it ad-hoc.
 
 **AI-Augmented** &mdash; Optionally delegate analysis to Claude, Gemini, Codex, or OpenCode CLI. The AI generates targeted payloads, bypasses WAFs, and performs multi-round adaptive scanning.
 
@@ -366,11 +366,11 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 2. Select **Send to OmniStrike (All Modules)** for comprehensive scanning, or choose a specific module.
 3. Findings appear in Burp's Dashboard and the OmniStrike tab.
 
-### Automated Scope-Based Scanning
+### Automated Scope-Based Scanning (Hands-Free)
 
 1. Open the **OmniStrike** tab. Enter target domains in **Target Scope**.
 2. Toggle modules on/off in the sidebar. Click **Start**.
-3. Browse through Burp Proxy. OmniStrike scans in-scope traffic automatically.
+3. That's it — just browse normally through Burp Proxy. Every in-scope request is **automatically intercepted and scanned** by all enabled modules in real time. No need to manually select requests or click "scan." You browse, OmniStrike hunts.
 
 ### AI Scanning Setup
 
