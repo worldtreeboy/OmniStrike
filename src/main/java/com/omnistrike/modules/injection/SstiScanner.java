@@ -378,6 +378,10 @@ public class SstiScanner implements ScanModule {
             HttpRequestResponse result = sendPayload(original, target, payload);
             if (result == null || result.response() == null) continue;
 
+            // Skip error responses — template evaluation should produce a 200, not a 4xx/5xx
+            int responseStatus = result.response().statusCode();
+            if (responseStatus >= 400) continue;
+
             String responseBody = result.response().bodyToString();
 
             // Special case: Spring EL returns random number

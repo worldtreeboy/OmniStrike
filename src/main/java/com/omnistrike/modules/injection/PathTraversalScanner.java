@@ -162,6 +162,9 @@ public class PathTraversalScanner implements ScanModule {
                 HttpRequestResponse result = sendPayload(original, target, traversal);
                 if (result == null || result.response() == null) continue;
 
+                // Skip error responses — file read should produce a 200, not a 4xx/5xx error page
+                if (result.response().statusCode() >= 400) continue;
+
                 String body = result.response().bodyToString();
                 if (body == null) continue;
 
@@ -210,6 +213,9 @@ public class PathTraversalScanner implements ScanModule {
                 String traversal = "..\\".repeat(depth) + targetFile;
                 HttpRequestResponse result = sendPayload(original, target, traversal);
                 if (result == null || result.response() == null) continue;
+
+                // Skip error responses — file read should produce a 200, not a 4xx/5xx error page
+                if (result.response().statusCode() >= 400) continue;
 
                 String body = result.response().bodyToString();
                 if (body == null) continue;
@@ -309,6 +315,9 @@ public class PathTraversalScanner implements ScanModule {
 
             HttpRequestResponse result = sendPayload(original, target, payload);
             if (result == null || result.response() == null) continue;
+
+            // Skip error responses
+            if (result.response().statusCode() >= 400) continue;
 
             String body = result.response().bodyToString();
             if (body == null) continue;

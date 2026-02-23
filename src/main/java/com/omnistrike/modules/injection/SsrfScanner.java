@@ -376,7 +376,14 @@ public class SsrfScanner implements ScanModule {
             if (status == 200 && !body.equals(baselineBody)) {
                 if (!expectedPatterns.isEmpty()) {
                     for (String pattern : expectedPatterns.split("\\|")) {
-                        if (body.contains(pattern.trim())) {
+                        String trimmed = pattern.trim();
+                        boolean patternMatched;
+                        if (trimmed.startsWith("REGEX:")) {
+                            patternMatched = Pattern.compile(trimmed.substring(6)).matcher(body).find();
+                        } else {
+                            patternMatched = body.contains(trimmed);
+                        }
+                        if (patternMatched) {
                             Severity severity = description.contains("credential") || description.contains("token")
                                     ? Severity.CRITICAL : Severity.HIGH;
                             findingsStore.addFinding(Finding.builder("ssrf-scanner",

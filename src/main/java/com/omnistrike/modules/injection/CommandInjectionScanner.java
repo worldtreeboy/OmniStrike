@@ -139,10 +139,10 @@ public class CommandInjectionScanner implements ScanModule {
             {"$(expr 41 + 1)", "42", "expr math subshell (Unix)"},
             // Backtick nesting with $IFS
             {"`cat${IFS}/etc/passwd`", "root:", "/etc/passwd via IFS backtick (Unix)"},
-            // whoami
-            {";whoami;", "REGEX:\\w+", "whoami (Unix)"},
-            {"|whoami", "REGEX:\\w+", "whoami piped (Unix)"},
-            {"$(whoami)", "REGEX:\\w+", "whoami subshell (Unix)"},
+            // whoami — use unique echo wrapper to avoid false positives from generic \w+ matching error pages
+            {";echo cmdi_$(whoami)_confirmed;", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped (Unix)"},
+            {"|echo cmdi_$(whoami)_confirmed", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped piped (Unix)"},
+            {"$(echo cmdi_$(whoami)_confirmed)", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped subshell (Unix)"},
             // hostname
             {";hostname;", "", "hostname (Unix)"},
             // env/printenv
@@ -153,8 +153,8 @@ public class CommandInjectionScanner implements ScanModule {
             // ls
             {";ls /;", "bin", "ls root (Unix)"},
             {"|ls /", "bin", "ls root piped (Unix)"},
-            // pwd
-            {";pwd;", "/", "pwd (Unix)"},
+            // pwd — require a Unix-like path, not just a bare slash
+            {";pwd;", "REGEX:/(?:home|root|var|tmp|usr|opt|srv|app|www)/", "pwd (Unix)"},
             // Perl execution
             {";perl -e 'print 42';", "42", "perl eval (Unix)"},
             // Python execution
@@ -170,8 +170,8 @@ public class CommandInjectionScanner implements ScanModule {
     };
 
     private static final String[][] OUTPUT_PAYLOADS_WINDOWS = {
-            {"& whoami &", "REGEX:\\w+\\\\\\w+", "whoami (Windows)"},
-            {"| whoami", "REGEX:\\w+\\\\\\w+", "whoami piped (Windows)"},
+            {"& echo cmdi_%username%_confirmed &", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped (Windows)"},
+            {"| echo cmdi_%username%_confirmed", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped piped (Windows)"},
             {"& type C:\\Windows\\win.ini &", "[fonts]", "win.ini read (Windows)"},
             {"| type C:\\Windows\\win.ini", "[fonts]", "win.ini piped (Windows)"},
             {"& echo cmdi_confirmed &", "cmdi_confirmed", "echo marker (Windows)"},
@@ -181,7 +181,7 @@ public class CommandInjectionScanner implements ScanModule {
             // set /a math marker
             {"& set /a 41+1 &", "42", "set /a math marker (Windows)"},
             // Newline separator
-            {"%0awhoami%0a", "REGEX:\\w+\\\\\\w+", "whoami via newline (Windows)"},
+            {"%0aecho cmdi_%username%_confirmed%0a", "REGEX:cmdi_\\w+_confirmed", "whoami echo-wrapped newline (Windows)"},
             // cmd /c echo
             {"& cmd /c echo cmdi_confirmed &", "cmdi_confirmed", "cmd /c echo marker (Windows)"},
             // ipconfig
@@ -437,6 +437,10 @@ public class CommandInjectionScanner implements ScanModule {
             HttpRequestResponse result = sendPayload(original, target, target.originalValue + payload);
             if (result == null || result.response() == null) continue;
 
+            // Skip error responses — a 4xx/5xx status with matching text is not command execution
+            int statusCode = result.response().statusCode();
+            if (statusCode >= 400) continue;
+
             String body = result.response().bodyToString();
 
             if (!expectedOutput.isEmpty()) {
@@ -444,14 +448,14 @@ public class CommandInjectionScanner implements ScanModule {
                 boolean baselineMatched;
 
                 if (expectedOutput.startsWith("REGEX:")) {
-                    // Regex-based matching (e.g., for DOMAIN\User whoami output)
+                    // Regex-based matching (e.g., for echo-wrapped whoami output)
                     Pattern regexPattern = Pattern.compile(expectedOutput.substring(6));
                     matched = regexPattern.matcher(body).find();
-                    baselineMatched = regexPattern.matcher(baselineBody).find();
+                    baselineMatched = baselineBody.isEmpty() || regexPattern.matcher(baselineBody).find();
                 } else {
                     // Simple string contains matching
                     matched = body.contains(expectedOutput);
-                    baselineMatched = baselineBody.contains(expectedOutput);
+                    baselineMatched = baselineBody.isEmpty() || baselineBody.contains(expectedOutput);
                 }
 
                 if (matched && !baselineMatched) {
