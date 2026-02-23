@@ -217,7 +217,7 @@ Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebbl
 <details>
 <summary><strong>Command Injection</strong></summary>
 
-Time-based blind (32 Unix `sleep` + 13 Windows `ping` payloads), output-based (33 Unix + 19 Windows probes), OOB via Collaborator (26 Unix + 15 Windows). `$IFS` space bypass, `%0a` newline injection, env variable concatenation, backtick nesting, CRLF variants, double-encoding, wildcard substitution. **139 total payloads** across Unix and Windows.
+**3-step time-based verification** (true delay → control with zero delay returns within baseline → true delay again) with 80% threshold and error-page discard. **Output-based with structural regexes** — `uid=\d+` not "uid=", `Linux\s+\S+\s+\d+\.\d+` not "Linux", `inet\s+IP` not "inet", unique 6-digit math markers (131337) instead of "42". **Header injection restricted** — User-Agent, Referer, X-Forwarded-For, X-Forwarded-Host, and Origin are only tested via time-based 3-step and OOB Collaborator (never output-based — header changes cause WAF blocks and routing differences unrelated to command execution). 403/404/500 responses with body < 500 bytes automatically discarded. 31 Unix `sleep` + 13 Windows `ping` time payloads, 30 Unix + 18 Windows output probes, 26 Unix + 15 Windows OOB via Collaborator. `$IFS` space bypass, `%0a` newline injection, env variable concatenation, backtick nesting, CRLF variants, double-encoding, wildcard globbing.
 </details>
 
 <details>
