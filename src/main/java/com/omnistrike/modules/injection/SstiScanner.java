@@ -33,9 +33,9 @@ public class SstiScanner implements ScanModule {
     private final ConcurrentHashMap<String, Boolean> tested = new ConcurrentHashMap<>();
 
     // Polyglot probe payloads and their expected results
-    // Use large unique numbers (e.g., 133*991=131881) to avoid matching natural page content.
-    // "49" from 7*7 matches page numbers, dates, etc. "131881" is extremely unlikely in normal HTML.
-    private static final String SSTI_EXPECTED = "131881";
+    // Use large unique numbers (e.g., 133*991=131803) to avoid matching natural page content.
+    // "49" from 7*7 matches page numbers, dates, etc. "131803" is extremely unlikely in normal HTML.
+    private static final String SSTI_EXPECTED = "131803";
     private static final String[][] POLYGLOT_PROBES = {
             // payload, expectedResult, description
             {"{{133*991}}", SSTI_EXPECTED, "Jinja2/Twig/Angular"},
@@ -50,7 +50,7 @@ public class SstiScanner implements ScanModule {
             {"{{= 133*991}}", SSTI_EXPECTED, "doT.js"},
             {"<#assign x=133*991>${x}", SSTI_EXPECTED, "Freemarker assign"},
             {"${T(java.lang.Math).random()}", "", "Spring EL (any numeric output)"},
-            {"{if 133*991==131881}131881{/if}", SSTI_EXPECTED, "Smarty (if conditional)"},
+            {"{if 133*991==131803}131803{/if}", SSTI_EXPECTED, "Smarty (if conditional)"},
             {"@(133*991)", SSTI_EXPECTED, "Razor (.NET)"},
             {"{% debug %}", "settings|TEMPLATES|INSTALLED_APPS", "Django debug tag"},
             {"<#assign x=\"freemarker.template.utility.Execute\"?new()>${x(\"id\")}", "uid=", "Freemarker assign RCE"},
@@ -130,7 +130,7 @@ public class SstiScanner implements ScanModule {
         ENGINE_PROBES.put("Smarty", new String[][]{
                 {"{math equation=\"133*991\"}", SSTI_EXPECTED, "Smarty math"},
                 {"{$smarty.version}", "3.|4.|5.", "Smarty version leak"},
-                {"{if 133*991==131881}131881{/if}", SSTI_EXPECTED, "Smarty if conditional"},
+                {"{if 133*991==131803}131803{/if}", SSTI_EXPECTED, "Smarty if conditional"},
                 {"{php}echo 133*991;{/php}", SSTI_EXPECTED, "Smarty PHP tags (deprecated in v3+)"},
                 {"{if phpinfo()}{/if}", "PHP Version", "Smarty phpinfo (AGGRESSIVE)"},
                 {"{system('id')}", "uid=", "Smarty RCE (AGGRESSIVE)"},
@@ -439,7 +439,7 @@ public class SstiScanner implements ScanModule {
                 if (!syntaxConsumed) continue;  // Raw payload reflected = not evaluated
 
                 // Additional check: the expected value must not be a substring of the payload
-                // (e.g., if payload is "{{131881}}" and expected is "131881", the server might
+                // (e.g., if payload is "{{131803}}" and expected is "131803", the server might
                 // just be stripping the braces). Verify result appears in a different context.
                 // Skip if expected appears ONLY adjacent to remnants of the payload syntax.
 

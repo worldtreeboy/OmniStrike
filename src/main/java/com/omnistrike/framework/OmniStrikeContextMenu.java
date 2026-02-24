@@ -14,6 +14,7 @@ import com.omnistrike.ui.ScanConfigDialog;
 import javax.swing.*;
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -311,6 +312,67 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             items.add(paramSubMenu);
         }
 
+        // ============ "Scan Parameter >" — always-visible parameter picker (no selection needed) ============
+        if (!staticResource) {
+            // Collect all scannable parameter names (preserving order, no dupes)
+            LinkedHashSet<String> allParams = new LinkedHashSet<>();
+            for (ParsedHttpParameter param : reqResp.request().parameters()) {
+                allParams.add(param.name());
+            }
+
+            // Extract params embedded in header values (e.g., Referer URL: ?id=q22&Submit=Submit)
+            for (var header : reqResp.request().headers()) {
+                String hName = header.name().toLowerCase();
+                if (hName.equals("referer") || hName.equals("origin")) {
+                    String hVal = header.value();
+                    int qMark = hVal.indexOf('?');
+                    if (qMark >= 0) {
+                        String query = hVal.substring(qMark + 1);
+                        int hashIdx = query.indexOf('#');
+                        if (hashIdx >= 0) query = query.substring(0, hashIdx);
+                        for (String pair : query.split("&")) {
+                            int eq = pair.indexOf('=');
+                            String key = eq > 0 ? pair.substring(0, eq) : pair;
+                            key = key.trim();
+                            if (!key.isEmpty()) allParams.add(key);
+                        }
+                    }
+                }
+            }
+
+            // Collect injectable header names (for header injection testing)
+            Set<String> injectableHeaderNames = Set.of("referer", "user-agent", "x-forwarded-for",
+                    "x-forwarded-host", "origin", "host", "x-real-ip", "x-custom-ip-authorization");
+            LinkedHashSet<String> headerTargets = new LinkedHashSet<>();
+            for (var header : reqResp.request().headers()) {
+                if (injectableHeaderNames.contains(header.name().toLowerCase())) {
+                    headerTargets.add(header.name());
+                }
+            }
+
+            if (!allParams.isEmpty() || !headerTargets.isEmpty()) {
+                JMenu scanParamMenu = new JMenu("Scan Parameter");
+
+                // Regular parameters (URL, body, cookie, + those from Referer/Origin)
+                for (String paramName : allParams) {
+                    scanParamMenu.add(buildParameterTargetMenu(
+                            paramName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
+                }
+
+                // Injectable header names as separate section
+                if (!headerTargets.isEmpty()) {
+                    scanParamMenu.addSeparator();
+                    scanParamMenu.add(createSectionLabel("Headers"));
+                    for (String headerName : headerTargets) {
+                        scanParamMenu.add(buildParameterTargetMenu(
+                                headerName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
+                    }
+                }
+
+                items.add(scanParamMenu);
+            }
+        }
+
         // ============ "Send to OmniStrike >" submenu — per-module with Normal/AI options ============
         JMenu subMenu = new JMenu("Send to OmniStrike");
 
@@ -603,6 +665,97 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         return moduleMenu;
+    }
+
+    // ==================== Parameter Target Submenu ====================
+
+    /**
+     * Builds a submenu for scanning a specific parameter:
+     *
+     *   paramName >
+     *     All Modules
+     *     ─────
+     *     SQLi Detector >
+     *       Normal Scan
+     *       AI Scan > ...
+     *     XSS Scanner >
+     *       Normal Scan
+     *       AI Scan > ...
+     */
+    private JMenu buildParameterTargetMenu(String paramName, HttpRequestResponse reqResp,
+                                            String url, List<ScanModule> activeModules,
+                                            AiVulnAnalyzer aiAnalyzer, boolean aiAvailable) {
+        JMenu paramMenu = new JMenu(paramName);
+
+        // "All Modules" — runs all active scanners on this parameter
+        JMenuItem allItem = new JMenuItem("All Modules");
+        allItem.addActionListener(e -> {
+            List<String> moduleIds = new ArrayList<>();
+            for (ScanModule m : activeModules) moduleIds.add(m.getId());
+            interceptor.scanRequest(reqResp, moduleIds, paramName);
+            showToast("Parameter Scan",
+                    "Scanning '" + paramName + "' with " + moduleIds.size() + " active module(s)\n" + url);
+        });
+        paramMenu.add(allItem);
+        paramMenu.addSeparator();
+
+        // Per-module submenus with Normal + AI scan options
+        for (ScanModule module : activeModules) {
+            JMenu moduleMenu = new JMenu(module.getName());
+            moduleMenu.setToolTipText(module.getDescription());
+
+            JMenuItem normalItem = new JMenuItem("Normal Scan");
+            normalItem.addActionListener(e -> {
+                interceptor.scanRequest(reqResp, List.of(module.getId()), paramName);
+                showToast(module.getName(),
+                        "Scanning parameter '" + paramName + "'\n" + url);
+            });
+            moduleMenu.add(normalItem);
+
+            if (aiAvailable) {
+                JMenu aiMenu = new JMenu("AI Scan");
+
+                JMenuItem fuzzItem = new JMenuItem("Smart Fuzzing");
+                fuzzItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, true, true, false, false, module.getId(), paramName);
+                    showToast(module.getName() + " + AI",
+                            "AI fuzzing parameter '" + paramName + "'\n" + url);
+                });
+                aiMenu.add(fuzzItem);
+
+                JMenuItem wafItem = new JMenuItem("Smart Fuzzing + WAF Bypass");
+                wafItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, true, true, true, false, module.getId(), paramName);
+                    showToast(module.getName() + " + AI + WAF Bypass",
+                            "AI fuzzing parameter '" + paramName + "' with WAF bypass\n" + url);
+                });
+                aiMenu.add(wafItem);
+
+                JMenuItem adaptiveItem = new JMenuItem("Smart Fuzzing + Adaptive");
+                adaptiveItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, true, true, false, true, module.getId(), paramName);
+                    showToast(module.getName() + " + AI + Adaptive",
+                            "AI adaptive fuzzing parameter '" + paramName + "'\n" + url);
+                });
+                aiMenu.add(adaptiveItem);
+
+                aiMenu.addSeparator();
+
+                JMenuItem fullItem = new JMenuItem("Full AI Scan");
+                fullItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, true, true, true, true, module.getId(), paramName);
+                    showToast(module.getName() + " + Full AI",
+                            "Full AI scan on parameter '" + paramName + "'\n" + url);
+                });
+                aiMenu.add(fullItem);
+
+                moduleMenu.add(aiMenu);
+            }
+
+            paramMenu.add(moduleMenu);
+        }
+
+        return paramMenu;
     }
 
     // ==================== Helpers ====================

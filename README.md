@@ -126,7 +126,7 @@ A typical Burp setup for thorough testing requires 15-20 standalone extensions: 
            Adaptive payload: <img src=x onerror=alert`1`>  (backtick call — parens blocked)
 
  HIGH      SSTI: Jinja2 Detected — param 'q'
-           Probe: {{133*991}} → Response contains '131881' (expression evaluated)
+           Probe: {{133*991}} → Response contains '131803' (expression evaluated)
            Engine confirmed via {{ config.items() }} error pattern
 
  MEDIUM    CORS Misconfiguration: Reflected Origin
@@ -367,10 +367,11 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 
 ### Targeted Parameter Scanning
 
-Highlight a parameter name or value in Burp's request editor, then right-click:
+Right-click any request in Burp and use the **Scan Parameter >** submenu to pick exactly which parameter to test:
 
-- **Scan This Parameter (ip) &mdash; All Modules** &mdash; runs all active scanners against only the selected parameter (e.g., `ip`), skipping all others (e.g., `Submit`).
-- **Scan This Parameter (ip) >** &mdash; per-module submenu with Normal Scan and AI Scan options, all restricted to the selected parameter.
+- **Scan Parameter >** &mdash; always-visible submenu listing every parameter in the request (URL, body, cookie) plus parameters extracted from Referer/Origin header URLs and injectable header names (Referer, User-Agent, Host, X-Forwarded-For, etc.). Each parameter has **All Modules** + per-module Normal/AI scan options. No text selection required.
+- **Scan This Parameter (ip) &mdash; All Modules** &mdash; appears when you highlight a parameter in the editor. Runs all active scanners against only the selected parameter.
+- **Scan This Parameter (ip) >** &mdash; per-module submenu with Normal Scan and AI Scan options, all restricted to the highlighted parameter.
 
 This mirrors Burp Pro's "Scan defined insertion points" concept &mdash; focus your scan on the parameter that matters.
 
