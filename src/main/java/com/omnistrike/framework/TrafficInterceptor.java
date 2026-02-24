@@ -9,6 +9,7 @@ import com.omnistrike.model.ScanModule;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
 
@@ -25,6 +26,15 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     private final ScopeManager scopeManager;
     private volatile boolean running = false;
     private volatile BiConsumer<String, String> uiLogger;
+
+    // Static file extensions — active injection scanners are skipped for these.
+    // Passive analyzers still run (Client-Side Analyzer, Hidden Endpoint Finder, etc.)
+    private static final Set<String> STATIC_EXTENSIONS = Set.of(
+            ".css", ".js", ".mjs", ".jsx", ".ts", ".map",
+            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+            ".woff", ".woff2", ".ttf", ".eot", ".otf",
+            ".mp4", ".mp3", ".webm", ".pdf"
+    );
 
     // Executor for passive modules so they don't block the proxy thread
     private final ExecutorService passiveExecutor;
@@ -105,10 +115,15 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
             // Compute module lists once per request
             List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
-            List<ScanModule> activeModules = registry.getEnabledActiveModules();
             String url = interceptedResponse.initiatingRequest().url();
+            boolean isStatic = isStaticResource(url);
+            // Skip active injection scanners for static files (.js, .css, .png, etc.)
+            // Passive analyzers still run — they find results in JS/HTML response bodies.
+            List<ScanModule> activeModules = isStatic
+                    ? List.of() : registry.getEnabledActiveModules();
             uiLog("Interceptor", "In-scope traffic: " + url
-                    + " | Routing to " + passiveModules.size() + " passive + " + activeModules.size() + " active modules");
+                    + " | Routing to " + passiveModules.size() + " passive + " + activeModules.size() + " active modules"
+                    + (isStatic ? " (static — active skipped)" : ""));
 
             HttpRequestResponse reqResp = HttpRequestResponse.httpRequestResponse(
                     interceptedResponse.initiatingRequest(), interceptedResponse);
@@ -298,6 +313,20 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     public int getManualScanCount() {
         manualScanFutures.removeIf(Future::isDone);
         return manualScanFutures.size();
+    }
+
+    /**
+     * Checks if a URL points to a static resource where active injection testing is pointless.
+     */
+    private static boolean isStaticResource(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase();
+        int qIdx = lower.indexOf('?');
+        String path = qIdx > 0 ? lower.substring(0, qIdx) : lower;
+        for (String ext : STATIC_EXTENSIONS) {
+            if (path.endsWith(ext)) return true;
+        }
+        return false;
     }
 
     /**

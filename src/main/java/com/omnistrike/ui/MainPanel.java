@@ -208,6 +208,7 @@ public class MainPanel extends JPanel {
         progressBar = new JProgressBar();
         progressBar.setPreferredSize(new Dimension(150, 16));
         progressBar.setStringPainted(false);
+        progressBar.setForeground(new Color(135, 206, 250)); // sky blue
         progressBar.setVisible(false);
         row2.add(progressBar);
 
