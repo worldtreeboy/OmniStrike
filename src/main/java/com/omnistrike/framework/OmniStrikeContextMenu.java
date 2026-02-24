@@ -354,8 +354,13 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
     /**
      * Detects which HTTP parameter the user has selected in the message editor.
-     * Matches the selection range against parameter name/value byte offsets.
-     * Returns the parameter name, or null if no parameter is selected.
+     * <p>
+     * Strategy 1: Match selection byte offsets against parsed parameter offsets.
+     * This works when the user selects a parameter in the URL query string or body.
+     * <p>
+     * Strategy 2 (fallback): Extract the selected text and match it against known
+     * parameter names/values. This handles selections inside headers (e.g., Referer,
+     * Origin) where the same parameters appear at different byte positions.
      */
     private String detectSelectedParameter(ContextMenuEvent event) {
         var editorOpt = event.messageEditorRequestResponse();
@@ -367,8 +372,10 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
         Range selection = rangeOpt.get();
         HttpRequest request = editor.requestResponse().request();
+        List<ParsedHttpParameter> params = request.parameters();
 
-        for (ParsedHttpParameter param : request.parameters()) {
+        // Strategy 1: Byte-offset overlap against parsed parameter ranges
+        for (ParsedHttpParameter param : params) {
             Range nameRange = param.nameOffsets();
             Range valueRange = param.valueOffsets();
 
@@ -381,6 +388,106 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 return param.name();
             }
         }
+
+        // Strategy 2: Text-based fallback — handles selections inside headers
+        // (e.g., Referer: https://...?id=test&Submit=Submit)
+        String selectedText = extractSelectedText(request, selection);
+        if (selectedText == null || selectedText.isEmpty()) return null;
+
+        // 2a: Selected text exactly matches a parameter name (e.g., user selected "id")
+        for (ParsedHttpParameter param : params) {
+            if (param.name().equalsIgnoreCase(selectedText)) {
+                return param.name();
+            }
+        }
+
+        // 2b: Selected text exactly matches a parameter value → return that param's name
+        for (ParsedHttpParameter param : params) {
+            if (param.value() != null && param.value().equals(selectedText)) {
+                return param.name();
+            }
+        }
+
+        // 2c: Selected text contains key=value pairs (e.g., "id=q22" or "id=q22&Submit=Submit")
+        //     Parse and return the first key that matches a known parameter
+        String[] pairs = selectedText.split("[&?]");
+        for (String pair : pairs) {
+            int eq = pair.indexOf('=');
+            String key = eq > 0 ? pair.substring(0, eq).trim() : pair.trim();
+            if (key.isEmpty()) continue;
+            for (ParsedHttpParameter param : params) {
+                if (param.name().equalsIgnoreCase(key)) {
+                    return param.name();
+                }
+            }
+        }
+
+        // 2d: Expand selection to surrounding key=value context within the line.
+        //     If user selected just a value like "q22", find it within the raw request
+        //     line and walk backwards to find the "key=" prefix.
+        String contextParam = findParamFromContext(request, selection, params);
+        if (contextParam != null) return contextParam;
+
+        return null;
+    }
+
+    /**
+     * Extracts the selected text from the raw request bytes.
+     */
+    private String extractSelectedText(HttpRequest request, Range selection) {
+        try {
+            byte[] raw = request.toByteArray().getBytes();
+            int start = selection.startIndexInclusive();
+            int end = selection.endIndexExclusive();
+            if (start < 0 || end > raw.length || start >= end) return null;
+            return new String(raw, start, end - start, java.nio.charset.StandardCharsets.UTF_8).trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * When the user selects a value (e.g., "q22") inside a header like Referer,
+     * expand to the surrounding context to find the "key=" prefix.
+     * Walks backwards from the selection start to find "key=" and checks if that
+     * key matches a known request parameter.
+     */
+    private String findParamFromContext(HttpRequest request, Range selection,
+                                        List<ParsedHttpParameter> params) {
+        try {
+            byte[] raw = request.toByteArray().getBytes();
+            int start = selection.startIndexInclusive();
+
+            // Walk backwards from selection start, looking for '=' preceded by a param name
+            // Stop at line boundary, '&', '?', or beginning of raw bytes
+            int eqPos = -1;
+            for (int i = start - 1; i >= 0 && i >= start - 200; i--) {
+                char c = (char) (raw[i] & 0xFF);
+                if (c == '=') { eqPos = i; break; }
+                if (c == '&' || c == '?' || c == '\n' || c == '\r' || c == ' ') break;
+            }
+            if (eqPos < 1) return null;
+
+            // Extract the key before '='
+            int keyStart = eqPos - 1;
+            for (; keyStart >= 0; keyStart--) {
+                char c = (char) (raw[keyStart] & 0xFF);
+                if (c == '&' || c == '?' || c == '\n' || c == '\r' || c == ' ' || c == ';') {
+                    keyStart++;
+                    break;
+                }
+            }
+            if (keyStart < 0) keyStart = 0;
+
+            String key = new String(raw, keyStart, eqPos - keyStart, java.nio.charset.StandardCharsets.UTF_8).trim();
+            if (key.isEmpty()) return null;
+
+            for (ParsedHttpParameter param : params) {
+                if (param.name().equalsIgnoreCase(key)) {
+                    return param.name();
+                }
+            }
+        } catch (Exception ignored) {}
         return null;
     }
 
