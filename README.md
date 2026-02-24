@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.19-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.20-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -329,7 +329,7 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 | Capability | Detail |
 |---|---|
 | **Zero-FP philosophy** | Every finding requires detection-specific proof — structural content validation, behavioral confirmation, or canary persistence. Response differences alone never constitute a finding. |
-| **Multi-step timing verification** | 3-step confirmation: stable baseline → true condition delays (18s) → false condition does NOT delay. Baseline stability check rejects unstable endpoints. Time-based tests are serialized across all modules via a global timing lock to prevent concurrent timing measurements from corrupting each other's baselines. |
+| **Multi-step timing verification** | 3-step confirmation: stable baseline → true condition delays (18s) → false condition does NOT delay. Baseline stability check rejects unstable endpoints. Time-based tests are serialized across all modules via a global timing lock to prevent concurrent timing measurements from corrupting each other's baselines. **Disabled by default** — enable via the "Time-Based Testing" checkbox in the UI. |
 | **2-round boolean confirmation** | Boolean-blind findings require reproducible distinction across 2 independent rounds (4 consistency checks). |
 | **Structural content validation** | Path traversal confirms file reads via file-specific signatures, not response differences. PHP wrappers decode and validate content. |
 | **Smart payload encoding** | Custom `PayloadEncoder` handles all parameter types: query/body params encode HTTP-breaking characters (space, `&`, `#`, `+`, `;`, bare `%`) while preserving pre-encoded bypass sequences (`%0a`, `%00`, `%252e`, `%c0%af`). Cookie injection bypasses Burp's parser via raw header replacement — no `;` splitting. JSON/XML bodies use format-native escaping. |
@@ -365,11 +365,26 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No
 2. Select **Send to OmniStrike (All Modules)** for comprehensive scanning, or choose a specific module.
 3. Findings appear in Burp's Dashboard and the OmniStrike tab.
 
+### Targeted Parameter Scanning
+
+Highlight a parameter name or value in Burp's request editor, then right-click:
+
+- **Scan This Parameter (ip) &mdash; All Modules** &mdash; runs all active scanners against only the selected parameter (e.g., `ip`), skipping all others (e.g., `Submit`).
+- **Scan This Parameter (ip) >** &mdash; per-module submenu with Normal Scan and AI Scan options, all restricted to the selected parameter.
+
+This mirrors Burp Pro's "Scan defined insertion points" concept &mdash; focus your scan on the parameter that matters.
+
 ### Automated Scope-Based Scanning (Hands-Free)
 
 1. Open the **OmniStrike** tab. Enter target domains in **Target Scope**.
 2. Toggle modules on/off in the sidebar. Click **Start**.
 3. That's it — just browse normally through Burp Proxy. Every in-scope request is **automatically intercepted and scanned** by all enabled modules in real time. No need to manually select requests or click "scan." You browse, OmniStrike hunts.
+
+### Time-Based Testing (Opt-In)
+
+Time-based blind injection tests (SQLi `SLEEP`, CmdI `sleep`/`ping`) are **disabled by default** — they are slow, generate heavy traffic, and can cause delays on the target server.
+
+To enable: tick the **Time-Based Testing** checkbox next to the **Stop Scans** button in the OmniStrike tab. This globally enables time-based phases in the SQLi Detector and Command Injection Scanner. Untick to disable at any time.
 
 ### AI Scanning Setup
 
@@ -449,6 +464,6 @@ MIT License. See [LICENSE](LICENSE).
 ---
 
 <p align="center">
-  <strong>One JAR. 20 modules. Zero configuration.</strong><br>
+  <strong>One JAR. 21 modules. Zero configuration.</strong><br>
   <sub>Stop managing extensions. Start finding vulnerabilities.</sub>
 </p>

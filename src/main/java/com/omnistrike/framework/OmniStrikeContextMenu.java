@@ -1,7 +1,10 @@
 package com.omnistrike.framework;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.Range;
 import burp.api.montoya.http.message.HttpRequestResponse;
+import burp.api.montoya.http.message.params.ParsedHttpParameter;
+import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.omnistrike.model.ScanModule;
@@ -215,9 +218,8 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             }
         }
 
-        // ============ "Send to OmniStrike >" submenu — per-module with Normal/AI options ============
-        JMenu subMenu = new JMenu("Send to OmniStrike");
-
+        // ============ "Scan This Parameter" — targeted parameter scanning ============
+        // Build module lists early (needed for both parameter menu and per-module submenu)
         List<ScanModule> activeModules = new ArrayList<>();
         List<ScanModule> passiveModules = new ArrayList<>();
         for (ScanModule m : registry.getAllModules()) {
@@ -230,6 +232,87 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 activeModules.add(m);
             }
         }
+
+        String selectedParam = detectSelectedParameter(event);
+        if (selectedParam != null && !staticResource) {
+            // "Scan This Parameter (ip) — All Modules"
+            JMenuItem scanParamAll = new JMenuItem("Scan This Parameter (" + selectedParam + ") \u2014 All Modules");
+            scanParamAll.addActionListener(e -> {
+                List<String> moduleIds = new ArrayList<>();
+                for (ScanModule m : activeModules) {
+                    moduleIds.add(m.getId());
+                }
+                interceptor.scanRequest(reqResp, moduleIds, selectedParam);
+                showToast("Parameter Scan",
+                        "Scanning parameter '" + selectedParam + "' with " + moduleIds.size() + " active module(s)\n"
+                        + url
+                        + "\n\nResults will appear in Dashboard and OmniStrike tab.");
+            });
+            items.add(scanParamAll);
+
+            // "Scan This Parameter (ip) >" — per-module submenu (active modules only)
+            JMenu paramSubMenu = new JMenu("Scan This Parameter (" + selectedParam + ")");
+            for (ScanModule module : activeModules) {
+                JMenu moduleParamMenu = new JMenu(module.getName());
+                moduleParamMenu.setToolTipText(module.getDescription());
+
+                // Normal Scan (parameter-targeted)
+                JMenuItem normalItem = new JMenuItem("Normal Scan");
+                normalItem.addActionListener(e -> {
+                    interceptor.scanRequest(reqResp, List.of(module.getId()), selectedParam);
+                    showToast(module.getName(),
+                            "Scanning parameter '" + selectedParam + "'\n" + url);
+                });
+                moduleParamMenu.add(normalItem);
+
+                // AI Scan options (parameter-targeted)
+                if (aiAvailable) {
+                    JMenu aiMenu = new JMenu("AI Scan");
+
+                    JMenuItem fuzzItem = new JMenuItem("Smart Fuzzing");
+                    fuzzItem.addActionListener(e -> {
+                        aiAnalyzer.manualScan(reqResp, true, true, false, false, module.getId(), selectedParam);
+                        showToast(module.getName() + " + AI",
+                                "AI smart fuzzing parameter '" + selectedParam + "'\n" + url);
+                    });
+                    aiMenu.add(fuzzItem);
+
+                    JMenuItem wafItem = new JMenuItem("Smart Fuzzing + WAF Bypass");
+                    wafItem.addActionListener(e -> {
+                        aiAnalyzer.manualScan(reqResp, true, true, true, false, module.getId(), selectedParam);
+                        showToast(module.getName() + " + AI + WAF Bypass",
+                                "AI fuzzing parameter '" + selectedParam + "' with WAF bypass\n" + url);
+                    });
+                    aiMenu.add(wafItem);
+
+                    JMenuItem adaptiveItem = new JMenuItem("Smart Fuzzing + Adaptive");
+                    adaptiveItem.addActionListener(e -> {
+                        aiAnalyzer.manualScan(reqResp, true, true, false, true, module.getId(), selectedParam);
+                        showToast(module.getName() + " + AI + Adaptive",
+                                "AI adaptive fuzzing parameter '" + selectedParam + "'\n" + url);
+                    });
+                    aiMenu.add(adaptiveItem);
+
+                    aiMenu.addSeparator();
+
+                    JMenuItem fullItem = new JMenuItem("Full AI Scan");
+                    fullItem.addActionListener(e -> {
+                        aiAnalyzer.manualScan(reqResp, true, true, true, true, module.getId(), selectedParam);
+                        showToast(module.getName() + " + Full AI",
+                                "Full AI scan on parameter '" + selectedParam + "'\n" + url);
+                    });
+                    aiMenu.add(fullItem);
+
+                    moduleParamMenu.add(aiMenu);
+                }
+
+                paramSubMenu.add(moduleParamMenu);
+            }
+            items.add(paramSubMenu);
+        }
+
+        // ============ "Send to OmniStrike >" submenu — per-module with Normal/AI options ============
+        JMenu subMenu = new JMenu("Send to OmniStrike");
 
         // Group: Active Scanners
         if (!activeModules.isEmpty()) {
@@ -265,6 +348,40 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         return items;
+    }
+
+    // ==================== Selected Parameter Detection ====================
+
+    /**
+     * Detects which HTTP parameter the user has selected in the message editor.
+     * Matches the selection range against parameter name/value byte offsets.
+     * Returns the parameter name, or null if no parameter is selected.
+     */
+    private String detectSelectedParameter(ContextMenuEvent event) {
+        var editorOpt = event.messageEditorRequestResponse();
+        if (editorOpt.isEmpty()) return null;
+
+        var editor = editorOpt.get();
+        var rangeOpt = editor.selectionOffsets();
+        if (rangeOpt.isEmpty()) return null;
+
+        Range selection = rangeOpt.get();
+        HttpRequest request = editor.requestResponse().request();
+
+        for (ParsedHttpParameter param : request.parameters()) {
+            Range nameRange = param.nameOffsets();
+            Range valueRange = param.valueOffsets();
+
+            boolean overlapsName = selection.startIndexInclusive() < nameRange.endIndexExclusive()
+                    && selection.endIndexExclusive() > nameRange.startIndexInclusive();
+            boolean overlapsValue = selection.startIndexInclusive() < valueRange.endIndexExclusive()
+                    && selection.endIndexExclusive() > valueRange.startIndexInclusive();
+
+            if (overlapsName || overlapsValue) {
+                return param.name();
+            }
+        }
+        return null;
     }
 
     // ==================== Per-Module Submenu Builder ====================

@@ -292,11 +292,25 @@ public class CommandInjectionScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<CmdiTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runCmdiTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<CmdiTarget> targets = extractTargets(request);
+        return runCmdiTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runCmdiTargets(HttpRequestResponse requestResponse,
+                                          List<CmdiTarget> targets, String urlPath) {
         for (CmdiTarget target : targets) {
             if (!dedup.markIfNew("cmdi-scanner", urlPath, target.name)) continue;
 
@@ -348,6 +362,8 @@ public class CommandInjectionScanner implements ScanModule {
         }
 
         // Phase 5: Time-based blind (LAST — serialized via TimingLock)
+        // Gated by global TimingLock.isEnabled() checkbox
+        if (!TimingLock.isEnabled()) return;
         try {
             TimingLock.acquire();
             if (config.getBool("cmdi.unix.enabled", true)) {

@@ -204,11 +204,25 @@ public class SsrfScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<SsrfTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runSsrfTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<SsrfTarget> targets = extractTargets(request);
+        return runSsrfTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runSsrfTargets(HttpRequestResponse requestResponse,
+                                          List<SsrfTarget> targets, String urlPath) {
         for (SsrfTarget target : targets) {
             if (!dedup.markIfNew("ssrf-scanner", urlPath, target.name)) continue;
 

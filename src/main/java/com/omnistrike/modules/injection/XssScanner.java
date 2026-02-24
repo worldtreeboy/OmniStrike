@@ -443,6 +443,20 @@ public class XssScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        List<Finding> findings = new ArrayList<>();
+
+        // Active: Reflected XSS testing — filtered to target parameter only
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<XssTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        runXssTargets(requestResponse, targets, urlPath);
+        return findings;
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         List<Finding> findings = new ArrayList<>();
 
@@ -459,6 +473,12 @@ public class XssScanner implements ScanModule {
         api.logging().logToOutput("[XSS] processHttpFlow called: " + request.url()
                 + " | params found: " + targets.size());
 
+        runXssTargets(requestResponse, targets, urlPath);
+        return findings;
+    }
+
+    private void runXssTargets(HttpRequestResponse requestResponse,
+                                List<XssTarget> targets, String urlPath) {
         for (XssTarget target : targets) {
             if (!dedup.markIfNew("xss-scanner", urlPath, target.name)) {
                 api.logging().logToOutput("[XSS] Skipping '" + target.name + "' — already tested");
@@ -475,8 +495,6 @@ public class XssScanner implements ScanModule {
                 api.logging().logToError("XSS test error on " + target.name + ": " + e.getMessage());
             }
         }
-
-        return findings;
     }
 
     // ==================== PASSIVE: DOM XSS ANALYSIS ====================

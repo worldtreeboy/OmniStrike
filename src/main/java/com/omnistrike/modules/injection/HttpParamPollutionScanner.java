@@ -95,18 +95,30 @@ public class HttpParamPollutionScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<HppTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runHppTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
-
-        // Extract testable parameters (URL query and body params)
         List<HppTarget> targets = extractTargets(request);
+        return runHppTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runHppTargets(HttpRequestResponse requestResponse,
+                                         List<HppTarget> targets, String urlPath) {
         for (HppTarget target : targets) {
             if (!dedup.markIfNew("hpp", urlPath, target.name)) continue;
 
             try {
-                String url = request.url();
+                String url = requestResponse.request().url();
 
                 // Phase 1: Duplicate parameter with canary
                 if (config.getBool("hpp.duplicateCanary.enabled", true)) {

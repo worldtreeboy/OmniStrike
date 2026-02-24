@@ -581,6 +581,32 @@ public class DeserializationScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String url = request.url();
+        String urlPath = extractPath(url);
+
+        // Run passive analysis to identify deserialization points, then filter to target parameter
+        List<DeserPoint> deserPoints = new ArrayList<>();
+        List<Finding> findings = new ArrayList<>();
+        passiveAnalyzeRequest(request, url, deserPoints, findings);
+        deserPoints.removeIf(dp -> !dp.name.equalsIgnoreCase(targetParameterName));
+
+        for (DeserPoint dp : deserPoints) {
+            String dedupParam = dp.name + ":" + dp.language;
+            if (!dedup.markIfNew("deser-scanner", urlPath, dedupParam)) continue;
+            try {
+                activeTest(requestResponse, dp);
+            } catch (Exception e) {
+                api.logging().logToError("Deser active test error: " + e.getMessage());
+            }
+        }
+
+        return Collections.emptyList();
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         List<Finding> findings = new ArrayList<>();
         HttpRequest request = requestResponse.request();

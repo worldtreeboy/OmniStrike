@@ -80,12 +80,25 @@ public class PathTraversalScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<TraversalTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runTraversalTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
-
         List<TraversalTarget> targets = extractTargets(request);
+        return runTraversalTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runTraversalTargets(HttpRequestResponse requestResponse,
+                                               List<TraversalTarget> targets, String urlPath) {
         for (TraversalTarget target : targets) {
             if (!dedup.markIfNew("path-traversal", urlPath, target.name)) continue;
 

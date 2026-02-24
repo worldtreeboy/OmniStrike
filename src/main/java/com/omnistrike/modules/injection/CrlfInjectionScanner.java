@@ -88,18 +88,31 @@ public class CrlfInjectionScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<CrlfTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runCrlfTargets(requestResponse, targets, urlPath, true);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
-
-        // Extract all testable parameters
         List<CrlfTarget> targets = extractTargets(request);
+        return runCrlfTargets(requestResponse, targets, urlPath, false);
+    }
 
+    private List<Finding> runCrlfTargets(HttpRequestResponse requestResponse,
+                                          List<CrlfTarget> targets, String urlPath,
+                                          boolean parameterTargeted) {
         for (CrlfTarget target : targets) {
             if (!dedup.markIfNew("crlf-injection", urlPath, target.name)) continue;
 
             try {
-                String url = request.url();
+                String url = requestResponse.request().url();
 
                 // Phase 1: Header injection via parameters
                 if (config.getBool("crlf.headerInjection.enabled", true)) {
@@ -122,7 +135,8 @@ public class CrlfInjectionScanner implements ScanModule {
         }
 
         // Phase 3: Header injection via HTTP headers (dedup per URL path only)
-        if (config.getBool("crlf.headerReflection.enabled", true)) {
+        // Skip when targeting a specific parameter — header-based tests are not parameter-specific
+        if (!parameterTargeted && config.getBool("crlf.headerReflection.enabled", true)) {
             if (dedup.markIfNew("crlf-injection", urlPath, "__http_headers__")) {
                 try {
                     testHeaderInjectionViaHeaders(requestResponse, requestResponse.request().url());

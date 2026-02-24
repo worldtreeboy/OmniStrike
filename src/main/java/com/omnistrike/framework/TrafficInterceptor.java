@@ -134,6 +134,15 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
      * Tracks futures so scans can be stopped via stopManualScans().
      */
     public void scanRequest(HttpRequestResponse reqResp, List<String> moduleIds) {
+        scanRequest(reqResp, moduleIds, null);
+    }
+
+    /**
+     * Manually scan a specific request/response with selected modules, optionally
+     * targeting a single parameter. When targetParameter is non-null, active modules
+     * use processHttpFlowForParameter() to restrict injection to that parameter only.
+     */
+    public void scanRequest(HttpRequestResponse reqResp, List<String> moduleIds, String targetParameter) {
         if (reqResp == null) return;
 
         // Clean up completed futures before adding new ones
@@ -154,8 +163,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         }
 
         String url = reqResp.request().url();
-        uiLog("ManualScan", "Scanning " + url + " with " + moduleIds.size() + " module(s)");
-        processWithModulesTracked(reqResp, passiveModules, activeModules);
+        String paramNote = targetParameter != null ? " (parameter: " + targetParameter + ")" : "";
+        uiLog("ManualScan", "Scanning " + url + " with " + moduleIds.size() + " module(s)" + paramNote);
+        processWithModulesTracked(reqResp, passiveModules, activeModules, targetParameter);
     }
 
     /**
@@ -213,13 +223,17 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     /**
      * Like processWithModules but tracks futures for cancellation.
      * Used by scanRequest() (context menu scans).
+     * When targetParameter is non-null, active modules use processHttpFlowForParameter()
+     * to restrict injection testing to that single parameter.
      */
     private void processWithModulesTracked(HttpRequestResponse reqResp,
                                             List<ScanModule> passiveModules,
-                                            List<ScanModule> activeModules) {
+                                            List<ScanModule> activeModules,
+                                            String targetParameter) {
         for (ScanModule module : passiveModules) {
             Future<?> f = passiveExecutor.submit(() -> {
                 try {
+                    // Passive modules always run full scan (no parameter targeting)
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(findings);
@@ -238,8 +252,14 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         for (ScanModule module : activeModules) {
             Future<?> f = executor.submitTracked(() -> {
                 try {
-                    uiLog(module.getId(), "Processing: " + reqResp.request().url());
-                    List<Finding> findings = module.processHttpFlow(reqResp, api);
+                    uiLog(module.getId(), "Processing: " + reqResp.request().url()
+                            + (targetParameter != null ? " [param: " + targetParameter + "]" : ""));
+                    List<Finding> findings;
+                    if (targetParameter != null) {
+                        findings = module.processHttpFlowForParameter(reqResp, targetParameter, api);
+                    } else {
+                        findings = module.processHttpFlow(reqResp, api);
+                    }
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(findings);
                         uiLog(module.getId(), "Found " + findings.size() + " issue(s)");

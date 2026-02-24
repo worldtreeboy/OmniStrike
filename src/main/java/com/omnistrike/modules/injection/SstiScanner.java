@@ -293,11 +293,25 @@ public class SstiScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<InjectionTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runSstiTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<InjectionTarget> targets = extractTargets(request);
+        return runSstiTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runSstiTargets(HttpRequestResponse requestResponse,
+                                          List<InjectionTarget> targets, String urlPath) {
         for (InjectionTarget target : targets) {
             if (!dedup.markIfNew("ssti-scanner", urlPath, target.name)) continue;
 

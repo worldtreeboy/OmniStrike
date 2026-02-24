@@ -674,17 +674,30 @@ public class AiVulnAnalyzer implements ScanModule {
 
     private void performSmartFuzzing(CapturedHttpExchange exchange, HttpRequestResponse originalReqResp,
                                       boolean wafBypass, boolean adaptiveScan) {
-        performSmartFuzzing(exchange, originalReqResp, wafBypass, adaptiveScan, null);
+        performSmartFuzzing(exchange, originalReqResp, wafBypass, adaptiveScan, null, null);
     }
 
     private void performSmartFuzzing(CapturedHttpExchange exchange, HttpRequestResponse originalReqResp,
                                       boolean wafBypass, boolean adaptiveScan, String targetModuleId) {
+        performSmartFuzzing(exchange, originalReqResp, wafBypass, adaptiveScan, targetModuleId, null);
+    }
+
+    private void performSmartFuzzing(CapturedHttpExchange exchange, HttpRequestResponse originalReqResp,
+                                      boolean wafBypass, boolean adaptiveScan,
+                                      String targetModuleId, String targetParameter) {
         if (cancelled) return;
         try {
-            logInfo("Smart Fuzzing: Requesting payloads for " + exchange.getUrl());
+            logInfo("Smart Fuzzing: Requesting payloads for " + exchange.getUrl()
+                    + (targetParameter != null ? " [param: " + targetParameter + "]" : ""));
 
             // Step 1: Ask LLM for targeted payloads
-            String prompt = buildFuzzPrompt(targetModuleId) + exchange.toPromptText();
+            String paramConstraint = "";
+            if (targetParameter != null) {
+                paramConstraint = "\nIMPORTANT: Only test the parameter named '" + targetParameter
+                        + "'. Do not generate payloads for other parameters. "
+                        + "Every payload MUST have \"parameter\": \"" + targetParameter + "\".\n\n";
+            }
+            String prompt = buildFuzzPrompt(targetModuleId) + paramConstraint + exchange.toPromptText();
             logInfo(">>> Sending fuzz request to " + llmClient.getProvider().getDisplayName()
                     + " (model: " + llmClient.getModel() + ") | prompt size: " + prompt.length() + " chars"
                     + (targetModuleId != null ? " | module: " + targetModuleId : ""));
@@ -708,6 +721,19 @@ public class AiVulnAnalyzer implements ScanModule {
                 if (dropped > 0) {
                     logInfo("Smart Fuzzing: Filtered out " + dropped + " off-target payload(s) "
                             + "(expected: " + expectedType + ", target: " + targetModuleId + ")");
+                }
+            }
+
+            // When targeting a specific parameter, drop payloads for other parameters
+            if (targetParameter != null) {
+                int beforeParamFilter = payloads.size();
+                payloads.removeIf(p -> p.parameter != null
+                        && !p.parameter.isEmpty()
+                        && !p.parameter.equalsIgnoreCase(targetParameter));
+                int dropped = beforeParamFilter - payloads.size();
+                if (dropped > 0) {
+                    logInfo("Smart Fuzzing: Filtered out " + dropped + " off-parameter payload(s) "
+                            + "(expected: " + targetParameter + ")");
                 }
             }
 
@@ -1511,7 +1537,7 @@ public class AiVulnAnalyzer implements ScanModule {
      */
     public void manualScan(HttpRequestResponse reqResp, boolean passive,
                            boolean fuzz, boolean wafBypass, boolean adaptive) {
-        manualScan(reqResp, passive, fuzz, wafBypass, adaptive, null);
+        manualScan(reqResp, passive, fuzz, wafBypass, adaptive, null, null);
     }
 
     /**
@@ -1522,6 +1548,17 @@ public class AiVulnAnalyzer implements ScanModule {
     public void manualScan(HttpRequestResponse reqResp, boolean passive,
                            boolean fuzz, boolean wafBypass, boolean adaptive,
                            String targetModuleId) {
+        manualScan(reqResp, passive, fuzz, wafBypass, adaptive, targetModuleId, null);
+    }
+
+    /**
+     * Manual scan with module-specific focus and optional parameter targeting.
+     * When targetParameter is non-null, the AI is instructed to only generate
+     * payloads for that specific parameter.
+     */
+    public void manualScan(HttpRequestResponse reqResp, boolean passive,
+                           boolean fuzz, boolean wafBypass, boolean adaptive,
+                           String targetModuleId, String targetParameter) {
         cancelled = false; // Reset cancellation for new scan
 
         // Run everything off the EDT — Burp blocks api.http().sendRequest() on Swing thread.
@@ -1530,7 +1567,7 @@ public class AiVulnAnalyzer implements ScanModule {
             llmExecutor.submit(() -> {
                 activeScansRunning.incrementAndGet();
                 try {
-                    doManualScan(reqResp, passive, fuzz, wafBypass, adaptive, targetModuleId);
+                    doManualScan(reqResp, passive, fuzz, wafBypass, adaptive, targetModuleId, targetParameter);
                 } finally {
                     activeScansRunning.decrementAndGet();
                 }
@@ -1543,6 +1580,12 @@ public class AiVulnAnalyzer implements ScanModule {
     private void doManualScan(HttpRequestResponse reqResp, boolean passive,
                                boolean fuzz, boolean wafBypass, boolean adaptive,
                                String targetModuleId) {
+        doManualScan(reqResp, passive, fuzz, wafBypass, adaptive, targetModuleId, null);
+    }
+
+    private void doManualScan(HttpRequestResponse reqResp, boolean passive,
+                               boolean fuzz, boolean wafBypass, boolean adaptive,
+                               String targetModuleId, String targetParameter) {
         // Passive-only scan (no fuzzing) = analyzing response content (e.g., Client-Side Analyzer).
         // Always send a fresh request to get the latest JS/HTML, bypassing cache.
         // Also re-fetch for any scan where response is missing, empty, or 304.
@@ -1551,6 +1594,7 @@ public class AiVulnAnalyzer implements ScanModule {
 
         logInfo("Manual scan: target=" + (targetModuleId != null ? targetModuleId : "all")
                 + " passive=" + passive + " fuzz=" + fuzz
+                + (targetParameter != null ? " param=" + targetParameter : "")
                 + " needsRefresh=" + needsRefresh + " url=" + reqResp.request().url());
 
         HttpRequestResponse effectiveReqResp = reqResp;
@@ -1593,10 +1637,11 @@ public class AiVulnAnalyzer implements ScanModule {
         }
         if (fuzz) {
             try {
+                final String paramTarget = targetParameter;
                 fuzzExecutor.submit(() -> {
                     activeScansRunning.incrementAndGet();
                     try {
-                        performSmartFuzzing(exchange, finalReqResp, wafBypass, adaptive, targetModuleId);
+                        performSmartFuzzing(exchange, finalReqResp, wafBypass, adaptive, targetModuleId, paramTarget);
                     } finally {
                         activeScansRunning.decrementAndGet();
                     }

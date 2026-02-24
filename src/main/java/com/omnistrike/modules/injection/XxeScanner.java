@@ -523,6 +523,30 @@ public class XxeScanner implements ScanModule {
     // ==================== MAIN ENTRY POINT ====================
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String url = request.url();
+        String urlPath = extractPath(url);
+
+        // For targeted parameter scan, only run XInclude injection on the selected parameter
+        if (config.getBool("xxe.xinclude.enabled", true)) {
+            List<XxeTarget> paramTargets = extractParameterTargets(request);
+            paramTargets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+            for (XxeTarget target : paramTargets) {
+                if (!dedup.markIfNew("xxe-xinclude", urlPath, target.name)) continue;
+                try {
+                    testXInclude(requestResponse, target, url);
+                } catch (Exception e) {
+                    api.logging().logToError("XXE XInclude test error on " + target.name + ": " + e.getMessage());
+                }
+            }
+        }
+
+        return Collections.emptyList();
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         HttpResponse response = requestResponse.response();

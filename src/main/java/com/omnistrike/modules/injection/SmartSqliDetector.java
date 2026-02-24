@@ -686,12 +686,26 @@ public class SmartSqliDetector implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<InjectionPoint> injectionPoints = extractInjectionPoints(request);
+        injectionPoints.removeIf(ip -> !ip.name.equalsIgnoreCase(targetParameterName));
+        return runInjectionPoints(requestResponse, injectionPoints, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         // Extract parameters from the request
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<InjectionPoint> injectionPoints = extractInjectionPoints(request);
+        return runInjectionPoints(requestResponse, injectionPoints, urlPath);
+    }
 
+    private List<Finding> runInjectionPoints(HttpRequestResponse requestResponse,
+                                              List<InjectionPoint> injectionPoints, String urlPath) {
         for (InjectionPoint ip : injectionPoints) {
             String dedupKey = "sqli:" + urlPath + ":" + ip.name;
             if (tested.containsKey(dedupKey)) continue;
@@ -751,7 +765,8 @@ public class SmartSqliDetector implements ScanModule {
             }
 
             // Phase 7: Time-based blind (LAST — serialized via TimingLock)
-            if (config.getBool("sqli.time.enabled", true)) {
+            // Gated by global TimingLock.isEnabled() checkbox AND per-module config
+            if (TimingLock.isEnabled() && config.getBool("sqli.time.enabled", true)) {
                 try {
                     TimingLock.acquire();
                     testTimeBased(original, ip, baselineTime);

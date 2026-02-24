@@ -170,6 +170,22 @@ public class MainPanel extends JPanel {
         });
         row2.add(stopScansBtn);
 
+        // Time-based testing toggle — disabled by default, must be explicitly enabled.
+        // Controls ALL time-based blind injection tests (SQLi sleep, CmdI sleep/ping).
+        JCheckBox timeBasedCheckbox = new JCheckBox("Time-Based Testing");
+        timeBasedCheckbox.setSelected(false); // OFF by default
+        timeBasedCheckbox.setToolTipText(
+                "Enable time-based blind injection tests (SQLi SLEEP, CmdI sleep/ping). "
+                + "These tests are slow and can cause delays on the target server. "
+                + "Disabled by default — tick to enable.");
+        timeBasedCheckbox.addActionListener(e -> {
+            boolean selected = timeBasedCheckbox.isSelected();
+            TimingLock.setEnabled(selected);
+            logPanel.log("INFO", "Framework",
+                    "Time-based blind testing " + (selected ? "ENABLED" : "DISABLED"));
+        });
+        row2.add(timeBasedCheckbox);
+
         statusLabel = new JLabel("Stopped");
         statusLabel.setForeground(Color.RED);
         statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD));
