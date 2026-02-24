@@ -1188,7 +1188,7 @@ public class SmartSqliDetector implements ScanModule {
 
                         findingsStore.addFinding(Finding.builder("sqli-detector",
                                         "SQL Injection (Union-Based) - Reflected column " + reflectedColumn,
-                                        Severity.CRITICAL, Confidence.CERTAIN)
+                                        Severity.CRITICAL, Confidence.TENTATIVE)
                                 .url(original.request().url())
                                 .parameter(ip.name)
                                 .evidence("Column " + reflectedColumn + " of " + columnCount + " is reflected. Marker '" + UNION_MARKER + "' found in response.")
