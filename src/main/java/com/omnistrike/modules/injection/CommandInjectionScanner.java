@@ -15,7 +15,7 @@ import com.omnistrike.model.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -32,6 +32,8 @@ public class CommandInjectionScanner implements ScanModule {
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
+    // Parameters confirmed exploitable via OOB — skip all remaining phases for these
+    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
 
     // Command separators for both Unix and Windows
     private static final String[] UNIX_SEPARATORS = {
@@ -328,7 +330,14 @@ public class CommandInjectionScanner implements ScanModule {
         String url = original.request().url();
         int delaySecs = config.getInt("cmdi.delaySecs", 18);
 
-        // Phase 1: Baseline (multi-measurement for accuracy)
+        // Phase 1: OOB via Collaborator (FIRST — fastest path to confirmed finding)
+        if (config.getBool("cmdi.oob.enabled", true)
+                && collaboratorManager != null && collaboratorManager.isAvailable()) {
+            testOob(original, target, url);
+        }
+
+        // Phase 2: Baseline (multi-measurement for accuracy)
+        if (oobConfirmedParams.contains(target.name)) return;
         TimedResult baselineResult = measureResponseTime(original, target, target.originalValue);
         long baselineTime = baselineResult.elapsedMs;
         HttpRequestResponse baseline = baselineResult.response;
@@ -342,27 +351,24 @@ public class CommandInjectionScanner implements ScanModule {
                 b2.response != null ? b2.elapsedMs : 0,
                 b3.response != null ? b3.elapsedMs : 0));
 
-        // Phase 2: Output-based detection (Unix)
+        // Phase 3: Output-based detection (Unix)
         // Skip output-based for header targets — header injection causes response differences
         // (WAF blocks, routing changes, logging errors) unrelated to command execution.
-        // Headers are only tested via time-based (below) and OOB Collaborator (below).
+        // Headers are only tested via time-based (below).
+        if (oobConfirmedParams.contains(target.name)) return;
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_UNIX, "Unix")) return;
         }
 
-        // Phase 3: Output-based detection (Windows)
+        // Phase 4: Output-based detection (Windows)
+        if (oobConfirmedParams.contains(target.name)) return;
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_WINDOWS, "Windows")) return;
         }
 
-        // Phase 4: OOB via Collaborator
-        if (config.getBool("cmdi.oob.enabled", true)
-                && collaboratorManager != null && collaboratorManager.isAvailable()) {
-            testOob(original, target, url);
-        }
-
         // Phase 5: Time-based blind (LAST — serialized via TimingLock)
         // Gated by global TimingLock.isEnabled() checkbox
+        if (oobConfirmedParams.contains(target.name)) return;
         if (!TimingLock.isEnabled()) return;
         try {
             TimingLock.acquire();
@@ -557,6 +563,8 @@ public class CommandInjectionScanner implements ScanModule {
                 "cmdi-scanner", url, target.name,
                 "CmdI OOB " + technique,
                 interaction -> {
+                    // Mark parameter as confirmed — skip all remaining phases
+                    oobConfirmedParams.add(target.name);
                     findingsStore.addFinding(Finding.builder("cmdi-scanner",
                                     "OS Command Injection (Out-of-Band) - " + osType,
                                     Severity.CRITICAL, Confidence.CERTAIN)

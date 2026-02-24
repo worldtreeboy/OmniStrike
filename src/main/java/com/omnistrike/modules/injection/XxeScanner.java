@@ -16,6 +16,7 @@ import com.omnistrike.model.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
@@ -45,6 +46,8 @@ public class XxeScanner implements ScanModule {
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
+    // Parameters confirmed exploitable via OOB — skip all remaining phases for these
+    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
 
     // ==================== CONSTANTS: XML CONTENT TYPES ====================
 
@@ -580,6 +583,7 @@ public class XxeScanner implements ScanModule {
         }
 
         // Phase 2: XInclude injection in individual parameters
+        if (oobConfirmedParams.contains("xml_body")) return Collections.emptyList();
         if (config.getBool("xxe.xinclude.enabled", true)) {
             List<XxeTarget> paramTargets = extractParameterTargets(request);
             for (XxeTarget target : paramTargets) {
@@ -593,6 +597,7 @@ public class XxeScanner implements ScanModule {
         }
 
         // Phase 3: Content-Type conversion (JSON -> XML)
+        if (oobConfirmedParams.contains("xml_body")) return Collections.emptyList();
         if (config.getBool("xxe.contentTypeConversion.enabled", true) && isJsonRequest) {
             if (dedup.markIfNew("xxe-convert", urlPath, "__json_to_xml__")) {
                 try {
@@ -1303,6 +1308,8 @@ public class XxeScanner implements ScanModule {
      */
     private void reportOobFinding(Interaction interaction, String url, String technique,
                                    HttpRequestResponse requestResponse) {
+        // Mark xml_body as confirmed — skip remaining XXE phases
+        oobConfirmedParams.add("xml_body");
         Finding.Builder builder = Finding.builder("xxe-scanner",
                         "XXE Confirmed (Out-of-Band): " + technique,
                         Severity.CRITICAL, Confidence.CERTAIN)
@@ -1744,6 +1751,7 @@ public class XxeScanner implements ScanModule {
             String collabPayload = collaboratorManager.generatePayload(
                     "xxe-scanner", url, target.name, "XInclude OOB callback",
                     interaction -> {
+                        oobConfirmedParams.add(target.name);
                         findingsStore.addFinding(Finding.builder("xxe-scanner",
                                         "XXE via XInclude Confirmed (Out-of-Band)",
                                         Severity.CRITICAL, Confidence.CERTAIN)
@@ -1972,6 +1980,7 @@ public class XxeScanner implements ScanModule {
                     "xxe-scanner", url, "Content-Type conversion",
                     "XXE OOB via Content-Type conversion",
                     interaction -> {
+                        oobConfirmedParams.add("Content-Type conversion");
                         findingsStore.addFinding(Finding.builder("xxe-scanner",
                                         "XXE via Content-Type Conversion Confirmed (Out-of-Band)",
                                         Severity.CRITICAL, Confidence.CERTAIN)

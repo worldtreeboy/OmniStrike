@@ -14,7 +14,7 @@ import com.omnistrike.model.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -30,6 +30,8 @@ public class SsrfScanner implements ScanModule {
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
+    // Parameters confirmed exploitable via OOB — skip all remaining phases for these
+    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
 
     // Cloud metadata endpoints
     // Cloud metadata endpoints — markers use REQUIRE_ALL: prefix to require ALL markers (not just one).
@@ -246,21 +248,25 @@ public class SsrfScanner implements ScanModule {
         }
 
         // Phase 2: Cloud metadata endpoint probing
+        if (oobConfirmedParams.contains(target.name)) return;
         if (config.getBool("ssrf.metadata.enabled", true)) {
             testCloudMetadata(original, target, url);
         }
 
         // Phase 3: Localhost bypass techniques
+        if (oobConfirmedParams.contains(target.name)) return;
         if (config.getBool("ssrf.localhost.enabled", true)) {
             testLocalhostBypasses(original, target, url);
         }
 
         // Phase 3.5: DNS rebinding via rbndr.us
+        if (oobConfirmedParams.contains(target.name)) return;
         if (config.getBool("ssrf.rebinding.enabled", true)) {
             testDnsRebinding(original, target, url);
         }
 
         // Phase 4: Protocol smuggling (aggressive only)
+        if (oobConfirmedParams.contains(target.name)) return;
         if (aggressiveMode && config.getBool("ssrf.protocol.enabled", true)) {
             testProtocolSmuggling(original, target, url);
         }
@@ -316,6 +322,7 @@ public class SsrfScanner implements ScanModule {
         String headerCollab = collaboratorManager.generatePayload(
                 "ssrf-scanner", url, target.name, "SSRF OOB Host header",
                 interaction -> {
+                    oobConfirmedParams.add(target.name);
                     findingsStore.addFinding(Finding.builder("ssrf-scanner",
                                     "SSRF via Host Header Injection",
                                     Severity.HIGH, Confidence.CERTAIN)
@@ -342,6 +349,8 @@ public class SsrfScanner implements ScanModule {
 
     private void reportOobFinding(Interaction interaction, String url, SsrfTarget target, String method,
                                     HttpRequestResponse requestResponse) {
+        // Mark parameter as confirmed — skip all remaining phases
+        oobConfirmedParams.add(target.name);
         findingsStore.addFinding(Finding.builder("ssrf-scanner",
                         "SSRF Confirmed (Out-of-Band " + method + ")",
                         Severity.CRITICAL, Confidence.CERTAIN)

@@ -29,6 +29,8 @@ public class SstiScanner implements ScanModule {
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
+    // Parameters confirmed exploitable via OOB — skip all remaining phases for these
+    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
 
     private final ConcurrentHashMap<String, Boolean> tested = new ConcurrentHashMap<>();
 
@@ -329,14 +331,20 @@ public class SstiScanner implements ScanModule {
         String url = original.request().url();
         boolean aggressiveMode = config.getBool("ssti.aggressive", false);
 
-        // Get baseline response
+        // Step 1: OOB via Collaborator (FIRST — fastest path to confirmed finding)
+        // Send all engine OOB payloads unconditionally (engine=null → sends all)
+        if (collaboratorManager != null && collaboratorManager.isAvailable()) {
+            testOobSsti(original, target, null);
+        }
 
+        // Get baseline response
+        if (oobConfirmedParams.contains(target.name)) return;
         HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
         if (baseline == null || baseline.response() == null) return;
         String baselineBody = baseline.response().bodyToString();
         if (baselineBody == null) baselineBody = "";
 
-        // Step 1: Error-triggering polyglot
+        // Step 2: Error-triggering polyglot
         boolean polyglotCaused500 = false;
 
         HttpRequestResponse errorResult = sendPayload(original, target, POLYGLOT_ERROR);
@@ -368,7 +376,8 @@ public class SstiScanner implements ScanModule {
             }
         }
 
-        // Step 2: Math evaluation probes
+        // Step 3: Math evaluation probes
+        if (oobConfirmedParams.contains(target.name)) return;
         boolean templateConfirmed = false;
         String confirmedEngine = null;
 
@@ -463,15 +472,16 @@ public class SstiScanner implements ScanModule {
             perHostDelay();
         }
 
-        // Step 3: Engine identification (if template evaluation confirmed)
+        // Step 4: Engine identification (if template evaluation confirmed)
+        if (oobConfirmedParams.contains(target.name)) return;
         String identifiedEngine = null;
         if (templateConfirmed) {
             identifiedEngine = identifyEngine(original, target, baselineBody, aggressiveMode);
         }
 
-        // Step 4: OOB SSTI via Collaborator (only if template evaluation confirmed or polyglot caused 500)
-        if ((templateConfirmed || polyglotCaused500)
-                && collaboratorManager != null && collaboratorManager.isAvailable()) {
+        // Step 5: Targeted OOB for identified engine (refines the initial blanket OOB from Step 1)
+        if (oobConfirmedParams.contains(target.name)) return;
+        if (identifiedEngine != null && collaboratorManager != null && collaboratorManager.isAvailable()) {
             testOobSsti(original, target, identifiedEngine);
         }
     }
@@ -567,6 +577,8 @@ public class SstiScanner implements ScanModule {
                     "ssti-scanner", url, target.name,
                     "SSTI OOB " + technique,
                     interaction -> {
+                        // Mark parameter as confirmed — skip all remaining phases
+                        oobConfirmedParams.add(target.name);
                         findingsStore.addFinding(Finding.builder("ssti-scanner",
                                         "SSTI Confirmed (Out-of-Band) - " + technique,
                                         Severity.CRITICAL, Confidence.CERTAIN)

