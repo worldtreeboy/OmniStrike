@@ -595,6 +595,20 @@ public class DeserializationScanner implements ScanModule {
         passiveAnalyzeRequest(request, url, deserPoints, findings);
         deserPoints.removeIf(dp -> !dp.name.equalsIgnoreCase(targetParameterName));
 
+        // Flush passive findings to FindingsStore IMMEDIATELY so the UI shows
+        // detection results BEFORE any active payloads are sent.
+        for (Finding f : findings) {
+            Finding flushed = f.getRequestResponse() != null ? f :
+                    Finding.builder(f.getModuleId(), f.getTitle(), f.getSeverity(), f.getConfidence())
+                            .url(f.getUrl()).parameter(f.getParameter())
+                            .evidence(f.getEvidence()).description(f.getDescription())
+                            .remediation(f.getRemediation())
+                            .payload(f.getPayload()).responseEvidence(f.getResponseEvidence())
+                            .requestResponse(requestResponse)
+                            .build();
+            findingsStore.addFinding(flushed);
+        }
+
         for (DeserPoint dp : deserPoints) {
             String dedupParam = dp.name + ":" + dp.language;
             if (!dedup.markIfNew("deser-scanner", urlPath, dedupParam)) continue;
@@ -641,6 +655,22 @@ public class DeserializationScanner implements ScanModule {
         // Analyze response for serialization indicators
         if (response != null) {
             passiveAnalyzeResponse(response, url, findings);
+        }
+
+        // Flush passive findings to FindingsStore IMMEDIATELY so the UI shows
+        // detection results (e.g., ".NET BinaryFormatter detected") BEFORE any
+        // active payloads are sent. FindingsStore has dedup, so returning them
+        // again at the end won't cause duplicates.
+        for (Finding f : findings) {
+            Finding flushed = f.getRequestResponse() != null ? f :
+                    Finding.builder(f.getModuleId(), f.getTitle(), f.getSeverity(), f.getConfidence())
+                            .url(f.getUrl()).parameter(f.getParameter())
+                            .evidence(f.getEvidence()).description(f.getDescription())
+                            .remediation(f.getRemediation())
+                            .payload(f.getPayload()).responseEvidence(f.getResponseEvidence())
+                            .requestResponse(requestResponse)
+                            .build();
+            findingsStore.addFinding(flushed);
         }
 
         // ==================== ACTIVE TESTING ====================
