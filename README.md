@@ -469,6 +469,16 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ## What's New in v1.28
 
+**Bug Fixes & UI Improvements**
+
+- **Fixed SSTI arithmetic mismatch** &mdash; `${131000+803}` now correctly expects `131803` (was `131000+881`).
+- **Fixed nested JSON double-escape** &mdash; SmartSqliDetector, SstiScanner, and CommandInjectionScanner now pass raw payloads to `replaceNestedJsonValue()` instead of pre-escaped strings, preventing Gson from double-escaping.
+- **Fixed context menu static filter** &mdash; Aligned `STATIC_EXTENSIONS` with TrafficInterceptor so `.html`, `.json`, `.xml` are no longer blocked from scanning.
+- **Fixed dead PowerShell payload** &mdash; Replaced unreachable `BASE64SLEEP` placeholder with working `Start-Sleep -Seconds SLEEP_SECS` variant.
+- **RequestResponsePanel context menu** &mdash; Added right-click menu with "Send to Repeater", "Copy URL", and "Copy Finding as Text" to the Request/Response tab, matching the other finding panels.
+
+### Previous (v1.28-initial)
+
 **Blind OOB Deserialization Spray** &mdash; Deserialization scanner no longer requires passive detection before active testing. When no serialized data is found in traffic, the scanner now blind-sprays OOB payloads (Collaborator) into all cookies and body parameters across all 6 languages (Java, PHP, .NET, Python, Ruby, Node.js). OOB-first, as always.
 
 - **Blind spray on zero passive hits** &mdash; Previously, if `passiveAnalyzeRequest()` found no `DeserPoint`s, the scanner returned immediately with no active testing. Now it falls back to blind OOB testing on every cookie and body parameter.
