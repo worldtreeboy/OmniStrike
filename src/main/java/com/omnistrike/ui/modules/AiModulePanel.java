@@ -170,8 +170,6 @@ public class AiModulePanel extends JPanel {
 
         topSection.add(statsBar);
 
-        add(topSection, BorderLayout.NORTH);
-
         // ============ CENTER: Findings Table + Detail ============
         tableModel = new DefaultTableModel(COLUMNS, 0) {
             @Override
@@ -211,12 +209,26 @@ public class AiModulePanel extends JPanel {
         JScrollPane detailScroll = new JScrollPane(detailArea);
         detailScroll.setBorder(BorderFactory.createTitledBorder("Finding Details"));
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+        JSplitPane findingsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 tableScroll, detailScroll);
-        splitPane.setDividerLocation(280);
-        splitPane.setResizeWeight(0.6);
+        findingsSplit.setDividerLocation(280);
+        findingsSplit.setResizeWeight(0.6);
 
-        add(splitPane, BorderLayout.CENTER);
+        // Wrap top config section in a scroll pane so it doesn't crush findings
+        JScrollPane topScroll = new JScrollPane(topSection);
+        topScroll.setBorder(null);
+        topScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        topScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        topScroll.setMinimumSize(new Dimension(200, 100));
+
+        // Main split: config on top, findings on bottom — user can drag the divider
+        JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+                topScroll, findingsSplit);
+        mainSplit.setDividerLocation(320);
+        mainSplit.setResizeWeight(0.0); // give all extra space to findings
+        mainSplit.setOneTouchExpandable(true); // the "arrow" buttons on the divider
+
+        add(mainSplit, BorderLayout.CENTER);
 
         // ============ BOTTOM: Controls ============
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
