@@ -207,6 +207,8 @@ public class CrlfInjectionScanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body != null && body.contains(splitCanary)) {
                 // Confirm: canary must appear at the very start of the body (true response splitting)
+                // Montoya's bodyToString() returns content after the \r\n\r\n header terminator,
+                // so position 0-10 means the injected content became the new response body.
                 int canaryPos = body.indexOf(splitCanary);
                 boolean atStart = canaryPos < 10;
 
@@ -217,7 +219,7 @@ public class CrlfInjectionScanner implements ScanModule {
                             .url(url).parameter(target.name)
                             .evidence("Payload injected double CRLF + canary '" + splitCanary + "' | "
                                     + "Canary appeared at position " + canaryPos + " in response body "
-                                    + "(before expected HTML content)")
+                                    + "(before expected HTML content — confirms header/body boundary was split)")
                             .description("The parameter '" + target.name + "' is vulnerable to full HTTP "
                                     + "response splitting. By injecting a double CRLF sequence, an attacker "
                                     + "can terminate the HTTP response headers and inject arbitrary body content. "
@@ -226,6 +228,25 @@ public class CrlfInjectionScanner implements ScanModule {
                             .remediation("Sanitize all user input before including it in HTTP responses. "
                                     + "Strip CR and LF characters from any value used in headers or redirects. "
                                     + "Use framework-provided redirect functions that properly encode values.")
+                            .requestResponse(result)
+                            .payload(payload)
+                            .responseEvidence(splitCanary)
+                            .build());
+                    return;
+                } else {
+                    // Canary appeared in body but not at the start — CRLF characters reflected
+                    // in body text but did not actually split the HTTP response headers.
+                    findingsStore.addFinding(Finding.builder("crlf-injection",
+                                    "CRLF Characters Reflected in Response Body (Not Response Splitting)",
+                                    Severity.INFO, Confidence.TENTATIVE)
+                            .url(url).parameter(target.name)
+                            .evidence("Payload: double CRLF + canary '" + splitCanary + "' | "
+                                    + "Canary appeared at position " + canaryPos + " in response body "
+                                    + "| CRLF characters reflected in body but did not split HTTP response headers")
+                            .description("The parameter '" + target.name + "' reflects CRLF characters in the "
+                                    + "response body, but the HTTP response was not actually split — the injected "
+                                    + "content appeared within the normal HTML body, not as a separate HTTP response. "
+                                    + "This does not constitute response splitting.")
                             .requestResponse(result)
                             .payload(payload)
                             .responseEvidence(splitCanary)

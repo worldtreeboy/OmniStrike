@@ -267,6 +267,21 @@ public class CachePoisonScanner implements ScanModule {
                     .payload(canary)
                     .responseEvidence(canary)
                     .build());
+        } else {
+            findingsStore.addFinding(Finding.builder("cache-poison",
+                            "Unkeyed Parameter Reflected (Not Cacheable): " + paramName,
+                            Severity.INFO, Confidence.TENTATIVE)
+                    .url(url).parameter(paramName)
+                    .evidence("Canary: " + canary + " | Param: " + paramName
+                            + " | Reflected: yes | Cache indicators: " + cacheInfo.headerSummary
+                            + " | Parameter reflection confirmed but response does not appear to be cached")
+                    .description("The query parameter '" + paramName + "' is reflected in the response "
+                            + "but the response does not appear cacheable. This may still be exploitable "
+                            + "depending on intermediary cache configurations.")
+                    .requestResponse(result)
+                    .payload(canary)
+                    .responseEvidence(canary)
+                    .build());
         }
         perHostDelay();
     }
@@ -324,8 +339,17 @@ public class CachePoisonScanner implements ScanModule {
                     }
                     break;
                 case "age":
-                    cacheable = true;
-                    indicators.add("Age: " + h.value() + " (served from cache)");
+                    try {
+                        int age = Integer.parseInt(value.trim());
+                        if (age > 0) {
+                            cacheable = true;
+                            indicators.add("Age: " + h.value() + " (served from cache)");
+                        } else {
+                            indicators.add("Age: 0 (freshly fetched from origin)");
+                        }
+                    } catch (NumberFormatException nfe) {
+                        indicators.add("Age: " + h.value() + " (non-numeric)");
+                    }
                     break;
                 case "x-cache":
                     if (value.contains("hit")) {
@@ -344,8 +368,12 @@ public class CachePoisonScanner implements ScanModule {
                     }
                     break;
                 case "x-cache-status":
-                    cacheable = true;
-                    indicators.add("X-Cache-Status: " + h.value());
+                    if (value.contains("hit")) {
+                        cacheable = true;
+                        indicators.add("X-Cache-Status: " + h.value() + " (cached)");
+                    } else {
+                        indicators.add("X-Cache-Status: " + h.value());
+                    }
                     break;
                 case "vary":
                     indicators.add("Vary: " + h.value());

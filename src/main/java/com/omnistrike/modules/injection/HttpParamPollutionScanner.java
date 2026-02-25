@@ -227,15 +227,21 @@ public class HttpParamPollutionScanner implements ScanModule {
         int modLen = getBodyLength(result);
         String modBody = result.response().bodyToString();
 
-        // Check if response changed meaningfully — require status code change to confirm
+        // Check for structural proof of privilege escalation, not just response diff
         boolean statusChanged = modStatus != baselineStatus;
         boolean bodyLenChanged = baselineLen > 0 && Math.abs(modLen - baselineLen) > (baselineLen * 0.20);
-
-        // Require status code upgrade (e.g., 403→200) to confirm actual escalation
-        // Status downgrade (200→403) is WAF/rejection, not escalation
         boolean statusUpgrade = statusChanged && modStatus == 200 && baselineStatus >= 400;
 
-        if (statusUpgrade || (statusChanged && bodyLenChanged)) {
+        // Structural privilege indicators
+        String baselineBody = baselineResult.response().bodyToString();
+        if (baselineBody == null) baselineBody = "";
+        String privIndicator = findPrivilegeIndicator(modBody, baselineBody, result);
+        boolean hasStructuralProof = privIndicator != null;
+
+        // Status upgrade (403→200) WITH functional content = strong indicator
+        boolean confirmedEscalation = statusUpgrade && hasStructuralProof;
+
+        if (confirmedEscalation) {
             findingsStore.addFinding(Finding.builder("hpp",
                             "HTTP Parameter Pollution: Potential Privilege Escalation",
                             Severity.HIGH, Confidence.FIRM)
@@ -243,16 +249,34 @@ public class HttpParamPollutionScanner implements ScanModule {
                     .evidence("Original: " + target.name + "=" + target.originalValue + " (status "
                             + baselineStatus + ", " + baselineLen + " bytes) | "
                             + "With duplicate " + target.name + "=" + escalationValue + ": status "
-                            + modStatus + ", " + modLen + " bytes")
+                            + modStatus + ", " + modLen + " bytes | " + privIndicator)
                     .description("Sending a duplicate parameter '" + target.name + "' with a conflicting "
                             + "privilege value ('" + escalationValue + "') causes the server to respond "
-                            + "differently. If the application's front-end validates the first value ('"
-                            + target.originalValue + "') but the back-end processes the last value ('"
-                            + escalationValue + "'), this HPP vector can escalate privileges, bypass access "
-                            + "controls, or modify authorization decisions.")
+                            + "with privilege-elevated content. Structural indicators confirm the response "
+                            + "contains admin-level functionality.")
                     .remediation("Reject requests with duplicate parameters for security-sensitive fields. "
                             + "Validate authorization server-side using session state, not client-supplied "
                             + "parameters. Never use request parameters for role or permission decisions.")
+                    .payload(target.name + "=" + target.originalValue + "&" + target.name + "=" + escalationValue)
+                    .requestResponse(result)
+                    .build());
+        } else if (statusUpgrade || (statusChanged && bodyLenChanged)) {
+            // Response changed but no structural proof — downgrade to INFO
+            findingsStore.addFinding(Finding.builder("hpp",
+                            "HTTP Parameter Pollution: Parameter Precedence Detected (Manual Verification Required)",
+                            Severity.INFO, Confidence.TENTATIVE)
+                    .url(url).parameter(target.name)
+                    .evidence("Original: " + target.name + "=" + target.originalValue + " (status "
+                            + baselineStatus + ", " + baselineLen + " bytes) | "
+                            + "With duplicate " + target.name + "=" + escalationValue + ": status "
+                            + modStatus + ", " + modLen + " bytes"
+                            + " | Parameter precedence detected (server uses LAST value) — manual verification required to confirm privilege escalation")
+                    .description("Sending a duplicate parameter '" + target.name + "' with a conflicting "
+                            + "privilege value ('" + escalationValue + "') caused a different response, "
+                            + "but no structural indicators of privilege escalation were detected. "
+                            + "The response change may be a different error page, redirect, or unrelated behavior.")
+                    .remediation("Reject requests with duplicate parameters for security-sensitive fields. "
+                            + "Validate authorization server-side using session state, not client-supplied parameters.")
                     .payload(target.name + "=" + target.originalValue + "&" + target.name + "=" + escalationValue)
                     .requestResponse(result)
                     .build());
@@ -468,6 +492,45 @@ public class HttpParamPollutionScanner implements ScanModule {
         } catch (Exception e) {
             return 0;
         }
+    }
+
+    // ==================== PRIVILEGE ESCALATION DETECTION ====================
+
+    /**
+     * Checks for structural indicators of privilege escalation in the modified response.
+     * Returns a description of the indicator found, or null if none detected.
+     */
+    private String findPrivilegeIndicator(String modBody, String baselineBody, HttpRequestResponse result) {
+        if (modBody == null || modBody.isEmpty()) return null;
+        String modLower = modBody.toLowerCase();
+        String baseLower = baselineBody != null ? baselineBody.toLowerCase() : "";
+
+        // Admin-specific HTML elements not in baseline
+        String[] adminIndicators = {
+                "/admin", "/dashboard", "/manage", "/settings/admin",
+                "administrator", "superuser", "super_admin",
+                "user management", "manage users", "admin panel",
+                "role: admin", "role\":\"admin", "\"role\":\"admin\"",
+                "access level: admin", "privilege: admin",
+        };
+        for (String indicator : adminIndicators) {
+            if (modLower.contains(indicator) && !baseLower.contains(indicator)) {
+                return "Admin-specific content detected in response: '" + indicator + "'";
+            }
+        }
+
+        // Different or upgraded session cookie
+        for (var h : result.response().headers()) {
+            if (h.name().equalsIgnoreCase("Set-Cookie")) {
+                String cookieVal = h.value().toLowerCase();
+                if (cookieVal.contains("admin") || cookieVal.contains("role")
+                        || cookieVal.contains("privilege") || cookieVal.contains("session")) {
+                    return "Modified session cookie set: " + h.value().substring(0, Math.min(h.value().length(), 100));
+                }
+            }
+        }
+
+        return null;
     }
 
     // ==================== GENERAL HELPERS ====================

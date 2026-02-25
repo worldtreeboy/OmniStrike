@@ -175,14 +175,16 @@ public class CorsMisconfScanner implements ScanModule {
             findingsStore.addFinding(Finding.builder("cors-scanner",
                             acac ? "CORS: Reflected Origin with Credentials"
                                  : "CORS: Reflected Origin (no credentials)",
-                            acac ? Severity.HIGH : Severity.MEDIUM,
+                            acac ? Severity.HIGH : Severity.INFO,
                             acac ? Confidence.CERTAIN : Confidence.FIRM)
                     .url(url).parameter("Origin")
-                    .evidence("Origin: " + attackerOrigin + " | ACAO: " + acao + " | ACAC: " + acac)
+                    .evidence("Origin: " + attackerOrigin + " | ACAO: " + acao + " | ACAC: " + acac
+                            + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                     .description(acac
                             ? "The server reflects arbitrary Origin headers with Access-Control-Allow-Credentials: true. "
                               + "An attacker page at any domain can steal authenticated cross-origin data."
-                            : "The server reflects arbitrary Origin headers. Unauthenticated cross-origin reads are possible.")
+                            : "The server reflects arbitrary Origin headers but without Access-Control-Allow-Credentials: true. "
+                              + "Cross-origin reads are limited to public data — browser will not attach cookies.")
                     .remediation("Whitelist specific trusted origins. Never reflect the Origin header directly.")
                     .requestResponse(result)
                     .payload(attackerOrigin)
@@ -206,14 +208,15 @@ public class CorsMisconfScanner implements ScanModule {
             findingsStore.addFinding(Finding.builder("cors-scanner",
                             acac ? "CORS: Null Origin Trusted with Credentials"
                                  : "CORS: Null Origin Trusted",
-                            acac ? Severity.HIGH : Severity.LOW,
+                            acac ? Severity.HIGH : Severity.INFO,
                             acac ? Confidence.CERTAIN : Confidence.FIRM)
                     .url(url).parameter("Origin")
-                    .evidence("Origin: null | ACAO: null | ACAC: " + acac)
+                    .evidence("Origin: null | ACAO: null | ACAC: " + acac
+                            + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                     .description("The server trusts the 'null' origin" + (acac ? " with credentials" : "")
                             + ". Sandboxed iframes (data: URIs, file:// pages) and cross-scheme redirects "
                             + "send Origin: null. An attacker can exploit this via a sandboxed iframe"
-                            + (acac ? " to steal authenticated data." : " for cross-origin reads."))
+                            + (acac ? " to steal authenticated data." : " for cross-origin reads of public data."))
                     .remediation("Never whitelist the null origin. Reject requests with Origin: null.")
                     .requestResponse(result)
                     .payload("null")
@@ -241,12 +244,13 @@ public class CorsMisconfScanner implements ScanModule {
                 boolean acac = hasAcac(result);
                 findingsStore.addFinding(Finding.builder("cors-scanner",
                                 "CORS: Subdomain/Prefix Trust Bypass",
-                                acac ? Severity.HIGH : Severity.MEDIUM, Confidence.FIRM)
+                                acac ? Severity.HIGH : Severity.INFO, Confidence.FIRM)
                         .url(url).parameter("Origin")
-                        .evidence("Origin: " + evilOrigin + " | ACAO: " + acao + " | ACAC: " + acac)
+                        .evidence("Origin: " + evilOrigin + " | ACAO: " + acao + " | ACAC: " + acac
+                                + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                         .description("Origin '" + evilOrigin + "' was accepted. An attacker who registers "
                                 + "this domain can perform cross-origin data theft"
-                                + (acac ? " including authenticated data." : "."))
+                                + (acac ? " including authenticated data." : " of public data only (no credentials)."))
                         .remediation("Use strict exact-match origin validation. Do not use substring/prefix/suffix matching.")
                         .requestResponse(result)
                         .payload(evilOrigin)
@@ -270,11 +274,13 @@ public class CorsMisconfScanner implements ScanModule {
             boolean acac = hasAcac(result);
             findingsStore.addFinding(Finding.builder("cors-scanner",
                             "CORS: HTTP Origin Trusted on HTTPS Endpoint",
-                            acac ? Severity.HIGH : Severity.MEDIUM, Confidence.FIRM)
+                            acac ? Severity.HIGH : Severity.INFO, Confidence.FIRM)
                     .url(url).parameter("Origin")
-                    .evidence("Origin: " + httpOrigin + " | ACAO: " + acao + " | ACAC: " + acac)
+                    .evidence("Origin: " + httpOrigin + " | ACAO: " + acao + " | ACAC: " + acac
+                            + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                     .description("The HTTPS endpoint trusts HTTP origins. A man-in-the-middle attacker can "
-                            + "hijack the HTTP origin to steal data from the HTTPS endpoint via CORS.")
+                            + "hijack the HTTP origin to " + (acac ? "steal authenticated data" : "read public data")
+                            + " from the HTTPS endpoint via CORS.")
                     .remediation("Only allow HTTPS origins on HTTPS endpoints.")
                     .requestResponse(result)
                     .payload(httpOrigin)
@@ -323,13 +329,16 @@ public class CorsMisconfScanner implements ScanModule {
 
             String acao = extractAcao(result);
             if (attackerOrigin.equals(acao)) {
+                boolean acac = hasAcac(result);
                 findingsStore.addFinding(Finding.builder("cors-scanner",
                                 "CORS: Simple Request Reflects Origin (No Preflight Needed)",
-                                Severity.MEDIUM, Confidence.FIRM)
+                                acac ? Severity.MEDIUM : Severity.INFO, Confidence.FIRM)
                         .url(url).parameter("Origin")
-                        .evidence("Simple GET Origin: " + attackerOrigin + " | ACAO: " + acao)
+                        .evidence("Simple GET Origin: " + attackerOrigin + " | ACAO: " + acao + " | ACAC: " + acac
+                                + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                         .description("A simple GET (no custom headers, no preflight) reflects the attacker's origin. "
-                                + "CORS exploitation requires only a basic fetch()/XHR, no OPTIONS preflight.")
+                                + "CORS exploitation requires only a basic fetch()/XHR, no OPTIONS preflight."
+                                + (acac ? "" : " Without credentials, only public data is accessible cross-origin."))
                         .remediation("Validate Origin on all request types, not just preflighted requests.")
                         .requestResponse(result)
                         .payload(attackerOrigin)
@@ -416,11 +425,11 @@ public class CorsMisconfScanner implements ScanModule {
                 boolean acac = hasAcac(result);
                 findingsStore.addFinding(Finding.builder("cors-scanner",
                                 "CORS Bypass: " + label,
-                                direct ? (acac ? Severity.HIGH : Severity.MEDIUM)
-                                       : (acac ? Severity.MEDIUM : Severity.LOW),
+                                acac ? (direct ? Severity.HIGH : Severity.MEDIUM) : Severity.INFO,
                                 direct ? Confidence.CERTAIN : Confidence.FIRM)
                         .url(url).parameter("Origin")
-                        .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac)
+                        .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac
+                                + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                         .description(mechanism)
                         .remediation("Use strict exact-match origin validation with a hardcoded allowlist. "
                                 + "Escape all special characters if using regex. "
@@ -451,9 +460,10 @@ public class CorsMisconfScanner implements ScanModule {
             boolean acac = hasAcac(result);
             findingsStore.addFinding(Finding.builder("cors-scanner",
                             "CORS: Arbitrary Port Accepted on Target Domain",
-                            acac ? Severity.MEDIUM : Severity.LOW, Confidence.FIRM)
+                            acac ? Severity.MEDIUM : Severity.INFO, Confidence.FIRM)
                     .url(url).parameter("Origin")
-                    .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac)
+                    .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac
+                            + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                     .description("The server trusts " + targetDomain + " on arbitrary ports. "
                             + "Per Same-Origin Policy, different ports are different origins. "
                             + "A compromised or attacker-controlled service on a non-standard port "
@@ -491,10 +501,11 @@ public class CorsMisconfScanner implements ScanModule {
                 boolean acac = hasAcac(result);
                 findingsStore.addFinding(Finding.builder("cors-scanner",
                                 "CORS Bypass: Duplicate Origin Header Confusion",
-                                acac ? Severity.HIGH : Severity.MEDIUM, Confidence.FIRM)
+                                acac ? Severity.HIGH : Severity.INFO, Confidence.FIRM)
                         .url(url).parameter("Origin")
                         .evidence("Origin headers: [" + trustedOrigin + ", " + attackerOrigin + "] | ACAO: " + acao
-                                + " | ACAC: " + acac)
+                                + " | ACAC: " + acac
+                                + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                         .description("With duplicate Origin headers, the server reflected the attacker value. "
                                 + "The server reads the last Origin header while proxies/browsers send one. "
                                 + "Exploitable via HTTP request smuggling or reverse proxy header injection.")
@@ -542,13 +553,14 @@ public class CorsMisconfScanner implements ScanModule {
                 boolean acac = hasAcac(result);
                 findingsStore.addFinding(Finding.builder("cors-scanner",
                                 "CORS: Trusted Cloud Platform — " + platform,
-                                acac ? Severity.HIGH : Severity.MEDIUM, Confidence.CERTAIN)
+                                acac ? Severity.HIGH : Severity.INFO, Confidence.CERTAIN)
                         .url(url).parameter("Origin")
-                        .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac)
+                        .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac
+                                + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                         .description("The server trusts origins from " + platform + ". "
                                 + "Anyone can register a free subdomain on this platform and host "
                                 + "an attacker-controlled page to perform cross-origin data theft"
-                                + (acac ? " including authenticated data." : "."))
+                                + (acac ? " including authenticated data." : " of public data only (no credentials)."))
                         .remediation("Do not whitelist entire cloud platform domains. "
                                 + "Only trust specific, known production origins.")
                         .requestResponse(result)
@@ -590,12 +602,18 @@ public class CorsMisconfScanner implements ScanModule {
             if (origin.equals(acao)) {
                 boolean acac = hasAcac(result);
                 boolean isMetadata = origin.contains("169.254") || origin.contains("metadata.google");
+                Severity internalSev;
+                if (acac) {
+                    internalSev = isMetadata ? Severity.HIGH : Severity.MEDIUM;
+                } else {
+                    internalSev = Severity.INFO;
+                }
                 findingsStore.addFinding(Finding.builder("cors-scanner",
                                 "CORS: Internal Network Origin Trusted — " + label,
-                                isMetadata ? Severity.HIGH : (acac ? Severity.MEDIUM : Severity.LOW),
-                                Confidence.FIRM)
+                                internalSev, Confidence.FIRM)
                         .url(url).parameter("Origin")
-                        .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac)
+                        .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac
+                                + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                         .description("The server trusts the internal origin '" + origin + "' (" + label + "). "
                                 + "If an attacker can run JavaScript on the internal network "
                                 + "(compromised Electron app, XSS in a dev tool, rogue local service), "
@@ -629,13 +647,14 @@ public class CorsMisconfScanner implements ScanModule {
             boolean acac = hasAcac(result);
             findingsStore.addFinding(Finding.builder("cors-scanner",
                             "CORS: Wildcard Subdomain Trust (*." + targetDomain + ")",
-                            acac ? Severity.MEDIUM : Severity.LOW, Confidence.FIRM)
+                            acac ? Severity.MEDIUM : Severity.INFO, Confidence.FIRM)
                     .url(url).parameter("Origin")
-                    .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac)
+                    .evidence("Origin: " + origin + " | ACAO: " + acao + " | ACAC: " + acac
+                            + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                     .description("The server trusts any subdomain of " + targetDomain + ". "
                             + "If any subdomain has an XSS vulnerability, a dangling DNS record, "
                             + "or is available for subdomain takeover, it chains into a full CORS bypass"
-                            + (acac ? " with credential access." : "."))
+                            + (acac ? " with credential access." : " for public data only (no credentials)."))
                     .remediation("Whitelist specific subdomains only. Do not use *." + targetDomain + ".")
                     .requestResponse(result)
                     .payload(origin)
@@ -797,11 +816,12 @@ public class CorsMisconfScanner implements ScanModule {
 
                     findingsStore.addFinding(Finding.builder("cors-scanner",
                                     "CORS: " + method + " Reflects Origin (Per-Method Divergence)",
-                                    acac ? Severity.HIGH : Severity.MEDIUM, Confidence.FIRM)
+                                    acac ? Severity.HIGH : Severity.INFO, Confidence.FIRM)
                             .url(url).parameter("Origin")
                             .evidence(method + " Origin: " + attackerOrigin + " | ACAO: " + acao
                                     + " | ACAC: " + acac
-                                    + (allowedMethods != null ? " | Allow-Methods: " + allowedMethods : ""))
+                                    + (allowedMethods != null ? " | Allow-Methods: " + allowedMethods : "")
+                                    + (acac ? "" : " | Origin reflected but credentials not allowed — cross-origin reads limited to public data"))
                             .description("While " + originalMethod + " requests reject the attacker origin, "
                                     + method + " requests reflect it. "
                                     + ("OPTIONS".equals(method)

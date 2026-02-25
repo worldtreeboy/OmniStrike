@@ -1945,11 +1945,30 @@ public class XssScanner implements ScanModule {
             // Check if the payload or its key marker survived in the response
             // But skip if the marker was already present in the baseline (canary) response
             if (!checkFor.isEmpty() && body.contains(checkFor) && !canaryBody.contains(checkFor)) {
+                ReflectionVerdict verdict = validateExecutableContext(result, xssPayload, checkFor);
+                if (verdict == ReflectionVerdict.ENCODED) {
+                    api.logging().logToOutput("[XSS] Skipping — payload HTML-encoded for param '" + target.name + "'");
+                    continue;
+                }
+
+                Severity sev = Severity.HIGH;
+                String verdictNote = "";
+                if (verdict == ReflectionVerdict.NON_HTML_CONTENT_TYPE) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected in non-HTML response (Content-Type not text/html)";
+                } else if (verdict == ReflectionVerdict.DEAD_CONTAINER) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected inside non-executable container";
+                } else if (verdict == ReflectionVerdict.CSP_RESTRICTED) {
+                    sev = downgradeSeverity(Severity.HIGH);
+                    verdictNote = " | CSP script-src restricts inline execution — exploitation requires CSP bypass";
+                }
+
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS Confirmed: " + desc + " in " + context,
-                                Severity.HIGH, Confidence.FIRM)
+                                sev, Confidence.FIRM)
                         .url(url).parameter(target.name)
-                        .evidence("Payload: " + xssPayload + " | Marker '" + checkFor + "' found in response")
+                        .evidence("Payload: " + xssPayload + " | Marker '" + checkFor + "' found in response" + verdictNote)
                         .description("Reflected XSS via " + desc + ". Context: " + context + ".")
                         .requestResponse(result)
                         .payload(xssPayload)
@@ -2012,11 +2031,30 @@ public class XssScanner implements ScanModule {
 
             // Skip if marker already existed in baseline response
             if (!checkFor.isEmpty() && body.contains(checkFor) && !canaryBody.contains(checkFor)) {
+                ReflectionVerdict verdict = validateExecutableContext(result, payload, checkFor);
+                if (verdict == ReflectionVerdict.ENCODED) {
+                    api.logging().logToOutput("[XSS] Skipping evasion — payload HTML-encoded for param '" + target.name + "'");
+                    continue;
+                }
+
+                Severity sev = Severity.HIGH;
+                String verdictNote = "";
+                if (verdict == ReflectionVerdict.NON_HTML_CONTENT_TYPE) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected in non-HTML response";
+                } else if (verdict == ReflectionVerdict.DEAD_CONTAINER) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected inside non-executable container";
+                } else if (verdict == ReflectionVerdict.CSP_RESTRICTED) {
+                    sev = downgradeSeverity(Severity.HIGH);
+                    verdictNote = " | CSP restricts inline execution";
+                }
+
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS via Filter Evasion: " + technique,
-                                Severity.HIGH, Confidence.FIRM)
+                                sev, Confidence.FIRM)
                         .url(url).parameter(target.name)
-                        .evidence("Evasion technique: " + technique + " | Payload: " + payload)
+                        .evidence("Evasion technique: " + technique + " | Payload: " + payload + verdictNote)
                         .description("XSS filter bypassed using " + technique + ". Context: " + context + ".")
                         .requestResponse(result)
                         .payload(payload)
@@ -2044,12 +2082,31 @@ public class XssScanner implements ScanModule {
 
             // Skip if marker already existed in baseline response
             if (!checkFor.isEmpty() && body.contains(checkFor) && !canaryBody.contains(checkFor)) {
+                ReflectionVerdict verdict = validateExecutableContext(result, payload, checkFor);
+                if (verdict == ReflectionVerdict.ENCODED) {
+                    api.logging().logToOutput("[XSS] Skipping adaptive evasion — payload HTML-encoded for param '" + target.name + "'");
+                    continue;
+                }
+
+                Severity sev = Severity.HIGH;
+                String verdictNote = "";
+                if (verdict == ReflectionVerdict.NON_HTML_CONTENT_TYPE) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected in non-HTML response";
+                } else if (verdict == ReflectionVerdict.DEAD_CONTAINER) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected inside non-executable container";
+                } else if (verdict == ReflectionVerdict.CSP_RESTRICTED) {
+                    sev = downgradeSeverity(Severity.HIGH);
+                    verdictNote = " | CSP restricts inline execution";
+                }
+
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS via Adaptive Evasion: " + technique,
-                                Severity.HIGH, Confidence.FIRM)
+                                sev, Confidence.FIRM)
                         .url(url).parameter(target.name)
                         .evidence("Adaptive evasion: " + technique + " | Payload: " + payload
-                                + " | Based on char filter analysis")
+                                + " | Based on char filter analysis" + verdictNote)
                         .description("XSS filter bypassed using adaptive payload '" + technique
                                 + "' generated from character filter analysis. Context: " + context + ".")
                         .requestResponse(result)
@@ -2304,12 +2361,31 @@ public class XssScanner implements ScanModule {
                     // but NOT already in the baseline response
                     boolean markerInBaseline = canaryBody != null && canaryBody.contains(checkFor);
                     if (!checkFor.isEmpty() && body.contains(checkFor) && !markerInBaseline) {
+                        ReflectionVerdict verdict = validateExecutableContext(result, xssPayload, checkFor);
+                        if (verdict == ReflectionVerdict.ENCODED) {
+                            api.logging().logToOutput("[XSS] Skipping framework payload — HTML-encoded for param '" + target.name + "'");
+                            continue;
+                        }
+
+                        Severity sev = Severity.HIGH;
+                        String verdictNote = "";
+                        if (verdict == ReflectionVerdict.NON_HTML_CONTENT_TYPE) {
+                            sev = Severity.INFO;
+                            verdictNote = " | Reflected in non-HTML response";
+                        } else if (verdict == ReflectionVerdict.DEAD_CONTAINER) {
+                            sev = Severity.INFO;
+                            verdictNote = " | Reflected inside non-executable container";
+                        } else if (verdict == ReflectionVerdict.CSP_RESTRICTED) {
+                            sev = downgradeSeverity(Severity.HIGH);
+                            verdictNote = " | CSP restricts inline execution";
+                        }
+
                         findingsStore.addFinding(Finding.builder("xss-scanner",
                                         "Framework XSS: " + fwName + " — " + desc,
-                                        Severity.HIGH, Confidence.FIRM)
+                                        sev, Confidence.FIRM)
                                 .url(url).parameter(target.name)
                                 .evidence("Payload: " + xssPayload + " | Marker '" + checkFor
-                                        + "' found in response | Framework: " + fwName)
+                                        + "' found in response | Framework: " + fwName + verdictNote)
                                 .description("Framework-specific XSS detected via " + desc + ". "
                                         + "The payload exploits " + fwName + "-specific behavior. "
                                         + "The marker '" + checkFor + "' was found in the response body.")
@@ -2418,13 +2494,32 @@ public class XssScanner implements ScanModule {
             String encodingBaselineBody = baseline.response().bodyToString();
             if (!checkFor.isEmpty() && body.contains(checkFor)
                     && (encodingBaselineBody == null || !encodingBaselineBody.contains(checkFor))) {
+                ReflectionVerdict verdict = validateExecutableContext(result, payload, checkFor);
+                if (verdict == ReflectionVerdict.ENCODED) {
+                    api.logging().logToOutput("[XSS] Skipping encoding XSS — payload HTML-encoded for param '" + target.name + "'");
+                    continue;
+                }
+
+                Severity sev = Severity.MEDIUM;
+                String verdictNote = "";
+                if (verdict == ReflectionVerdict.NON_HTML_CONTENT_TYPE) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected in non-HTML response";
+                } else if (verdict == ReflectionVerdict.DEAD_CONTAINER) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected inside non-executable container";
+                } else if (verdict == ReflectionVerdict.CSP_RESTRICTED) {
+                    sev = downgradeSeverity(Severity.MEDIUM);
+                    verdictNote = " | CSP restricts inline execution";
+                }
+
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS via Encoding Negotiation: " + technique,
-                                Severity.MEDIUM, Confidence.FIRM)
+                                sev, Confidence.FIRM)
                         .url(url).parameter(target.name)
                         .evidence("Technique: " + technique + " | Payload: "
                                 + truncate(payload, 100) + " | Marker found in response"
-                                + " | Content-Type: " + contentType)
+                                + " | Content-Type: " + contentType + verdictNote)
                         .description("XSS possible via " + technique + ". The response "
                                 + (missingCharset ? "does not specify a charset"
                                 : "uses non-UTF-8 charset '" + contentType + "'")
@@ -2506,12 +2601,31 @@ public class XssScanner implements ScanModule {
             String body = result.response().bodyToString();
 
             if (body.contains(checkFor)) {
+                ReflectionVerdict verdict = validateExecutableContext(result, payload, checkFor);
+                if (verdict == ReflectionVerdict.ENCODED) {
+                    api.logging().logToOutput("[XSS] Skipping CRLF XSS — payload HTML-encoded for param '" + target.name + "'");
+                    continue;
+                }
+
+                Severity sev = Severity.HIGH;
+                String verdictNote = "";
+                if (verdict == ReflectionVerdict.NON_HTML_CONTENT_TYPE) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected in non-HTML response";
+                } else if (verdict == ReflectionVerdict.DEAD_CONTAINER) {
+                    sev = Severity.INFO;
+                    verdictNote = " | Reflected inside non-executable container";
+                } else if (verdict == ReflectionVerdict.CSP_RESTRICTED) {
+                    sev = downgradeSeverity(Severity.HIGH);
+                    verdictNote = " | CSP restricts inline execution";
+                }
+
                 findingsStore.addFinding(Finding.builder("xss-scanner",
                                 "XSS via Header Injection (CRLF): " + technique,
-                                Severity.HIGH, Confidence.FIRM)
+                                sev, Confidence.FIRM)
                         .url(url).parameter(target.name)
                         .evidence("Technique: " + technique + " | Reflected header: "
-                                + reflectedHeaderName + " | Injected HTML found in response body")
+                                + reflectedHeaderName + " | Injected HTML found in response body" + verdictNote)
                         .description("CRLF injection in the '" + reflectedHeaderName + "' response header "
                                 + "allows injecting arbitrary response body content via " + technique + ". "
                                 + "The injected HTML marker '" + checkFor + "' appeared in the response body, "
@@ -2913,6 +3027,154 @@ public class XssScanner implements ScanModule {
     private static String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() > max ? s.substring(0, max) + "..." : s;
+    }
+
+    // ==================== REFLECTION VERDICT: FALSE POSITIVE REDUCTION ====================
+
+    private enum ReflectionVerdict {
+        EXECUTABLE,            // Payload is in executable HTML context — report as-is
+        ENCODED,               // Payload is HTML-encoded (neutralized) — discard finding
+        DEAD_CONTAINER,        // Inside <textarea>, <title>, etc. — downgrade to INFO
+        NON_HTML_CONTENT_TYPE, // Response is JSON/text/XML — downgrade to INFO or discard if nosniff
+        CSP_RESTRICTED         // CSP blocks inline scripts — downgrade severity by one level
+    }
+
+    /**
+     * Validates whether a reflected payload lands in an executable context.
+     * Called after body.contains(checkFor) confirms reflection, before creating a finding.
+     * Returns a verdict that determines whether to report, downgrade, or discard the finding.
+     */
+    private ReflectionVerdict validateExecutableContext(HttpRequestResponse result, String payload, String checkFor) {
+        String body = result.response().bodyToString();
+
+        // 1. Encoding check — highest-impact false positive reduction
+        String encodedMarker = htmlEncode(checkFor);
+        if (!encodedMarker.equals(checkFor)) {
+            // The marker contains HTML-special chars, so encoding check is meaningful
+            if (body.contains(encodedMarker)) {
+                // Encoded form exists — check if raw form appears independently
+                String strippedBody = body.replace(encodedMarker, "");
+                if (!strippedBody.contains(checkFor)) {
+                    // Every raw occurrence is inside an encoded occurrence — fully neutralized
+                    return ReflectionVerdict.ENCODED;
+                }
+            }
+        }
+
+        // 2. Content-Type check — non-HTML responses don't execute inline scripts
+        String contentType = "";
+        boolean hasNosniff = false;
+        for (var h : result.response().headers()) {
+            if (h.name().equalsIgnoreCase("Content-Type")) {
+                contentType = h.value().toLowerCase();
+            }
+            if (h.name().equalsIgnoreCase("X-Content-Type-Options")
+                    && h.value().toLowerCase().contains("nosniff")) {
+                hasNosniff = true;
+            }
+        }
+
+        String ctLower = contentType.split(";")[0].trim(); // Strip charset param
+        boolean isNonHtml = ctLower.startsWith("application/json")
+                || ctLower.startsWith("text/plain")
+                || ctLower.startsWith("application/xml")
+                || ctLower.startsWith("text/xml")
+                || ctLower.startsWith("text/css")
+                || ctLower.startsWith("application/javascript")
+                || ctLower.startsWith("text/javascript")
+                || ctLower.startsWith("image/")
+                || ctLower.startsWith("application/octet-stream");
+
+        if (isNonHtml) {
+            if (hasNosniff) {
+                return ReflectionVerdict.ENCODED; // Discard — browser won't MIME-sniff
+            }
+            return ReflectionVerdict.NON_HTML_CONTENT_TYPE;
+        }
+
+        // 3. Dead container check — RCDATA/RAWTEXT elements that don't execute scripts
+        int idx = body.indexOf(checkFor);
+        if (idx > 0) {
+            String before = body.substring(Math.max(0, idx - 500), idx).toLowerCase();
+
+            String[][] deadContainers = {
+                    {"<textarea", "</textarea"},
+                    {"<title", "</title"},
+                    {"<noscript", "</noscript"},
+                    {"<xmp", "</xmp"},
+                    {"<style", "</style"},
+            };
+
+            for (String[] container : deadContainers) {
+                int openIdx = before.lastIndexOf(container[0]);
+                if (openIdx >= 0) {
+                    int closeIdx = before.lastIndexOf(container[1]);
+                    if (closeIdx < openIdx) {
+                        // Opening tag found after last closing tag — we're inside this container
+                        return ReflectionVerdict.DEAD_CONTAINER;
+                    }
+                }
+            }
+
+            // Check <plaintext> — no close tag needed, everything after is plain text
+            if (before.contains("<plaintext")) {
+                return ReflectionVerdict.DEAD_CONTAINER;
+            }
+
+            // Check HTML comment — safety net for context detection
+            int commentOpen = before.lastIndexOf("<!--");
+            int commentClose = before.lastIndexOf("-->");
+            if (commentOpen >= 0 && commentOpen > commentClose) {
+                return ReflectionVerdict.DEAD_CONTAINER;
+            }
+        }
+
+        // 4. CSP check — Content-Security-Policy restricting inline scripts
+        for (var h : result.response().headers()) {
+            if (h.name().equalsIgnoreCase("Content-Security-Policy")) {
+                String csp = h.value().toLowerCase();
+                // Parse script-src directive
+                int scriptSrcIdx = csp.indexOf("script-src");
+                if (scriptSrcIdx >= 0) {
+                    // Extract the directive value (until next ; or end)
+                    int endIdx = csp.indexOf(';', scriptSrcIdx);
+                    String scriptSrc = endIdx >= 0
+                            ? csp.substring(scriptSrcIdx, endIdx)
+                            : csp.substring(scriptSrcIdx);
+                    if (!scriptSrc.contains("'unsafe-inline'")) {
+                        return ReflectionVerdict.CSP_RESTRICTED;
+                    }
+                }
+                break;
+            }
+        }
+
+        // 5. Default — payload is in executable context
+        return ReflectionVerdict.EXECUTABLE;
+    }
+
+    /**
+     * HTML-encodes characters that would be neutralized by server-side encoding.
+     */
+    private static String htmlEncode(String s) {
+        return s.replace("&", "&amp;")   // & first to avoid double-encoding
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#x27;")
+                .replace("/", "&#x2F;");
+    }
+
+    /**
+     * Downgrades severity by one level for CSP-restricted findings.
+     */
+    private static Severity downgradeSeverity(Severity s) {
+        return switch (s) {
+            case CRITICAL -> Severity.HIGH;
+            case HIGH -> Severity.MEDIUM;
+            case MEDIUM -> Severity.LOW;
+            case LOW, INFO -> Severity.INFO;
+        };
     }
 
 }

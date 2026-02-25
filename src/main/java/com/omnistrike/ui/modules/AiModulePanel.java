@@ -963,6 +963,33 @@ public class AiModulePanel extends JPanel {
         });
         popup.add(copyUrl);
 
+        // Improvement 11: Exploit This Finding — multi-step AI exploitation
+        popup.addSeparator();
+        JMenuItem exploitItem = new JMenuItem("Exploit This Finding (AI)");
+        exploitItem.setToolTipText("Use AI to perform multi-step exploitation of this confirmed vulnerability");
+        exploitItem.addActionListener(e -> {
+            Finding f = getSelectedFinding();
+            if (f == null) return;
+            if (f.getRequestResponse() == null || f.getRequestResponse().request() == null) {
+                JOptionPane.showMessageDialog(this, "No request data available for exploitation.",
+                        "Cannot Exploit", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            if (!analyzer.isAiConfigured()) {
+                JOptionPane.showMessageDialog(this, "AI is not configured. Select CLI or API Key mode first.",
+                        "AI Not Configured", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            int confirm = JOptionPane.showConfirmDialog(this,
+                    "Start multi-step AI exploitation of:\n" + f.getTitle() + "\nat " + f.getUrl() + "?\n\n"
+                    + "This will send multiple exploitation payloads to the target.",
+                    "Confirm Exploitation", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (confirm == JOptionPane.OK_OPTION) {
+                analyzer.exploitFinding(f, f.getRequestResponse());
+            }
+        });
+        popup.add(exploitItem);
+
         findingsTable.setComponentPopupMenu(popup);
 
         findingsTable.addMouseListener(new MouseAdapter() {
@@ -1125,7 +1152,8 @@ public class AiModulePanel extends JPanel {
                     + "  |  Analyzed: " + analyzer.getAnalyzedCount()
                     + "  |  Findings: " + analyzer.getFindingsCount()
                     + "  |  Fuzz Requests: " + analyzer.getFuzzRequestsSent()
-                    + "  |  Errors: " + errors);
+                    + "  |  Errors: " + errors
+                    + "  |  " + analyzer.getCostSummary());
 
             // Highlight stats when scans are active
             statsLabel.setForeground(running > 0 ? ACCENT : MUTED);

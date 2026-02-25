@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.22-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.23-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -81,7 +81,7 @@
 
 ${\color{#FF0000}\textbf{S}}{\color{#FF4500}\textbf{c}}{\color{#FF8C00}\textbf{a}}{\color{#FFA500}\textbf{n}}$ ${\color{#FFD700}\textbf{W}}{\color{#ADFF2F}\textbf{h}}{\color{#32CD32}\textbf{i}}{\color{#00CC00}\textbf{l}}{\color{#00CED1}\textbf{e}}$ ${\color{#1E90FF}\textbf{Y}}{\color{#4169E1}\textbf{o}}{\color{#6A5ACD}\textbf{u}}$ ${\color{#8A2BE2}\textbf{B}}{\color{#9400D3}\textbf{r}}{\color{#BA55D3}\textbf{o}}{\color{#FF00FF}\textbf{w}}{\color{#FF1493}\textbf{s}}{\color{#FF69B4}\textbf{e}}$ &mdash; Set your target scope, click Start, and just browse. OmniStrike automatically scans every in-scope request in real time — no manual triggering needed. Want more control? Right-click any request to scan it ad-hoc.
 
-**AI-Augmented** &mdash; Optionally delegate analysis to Claude, GPT, or Gemini via API key, or use Claude/Gemini/Codex/OpenCode CLI tools. The AI generates targeted payloads, bypasses WAFs, and performs multi-round adaptive scanning.
+**AI-Augmented** &mdash; Optionally delegate analysis to Claude, GPT, or Gemini via API key, or use Claude/Gemini/Codex/OpenCode CLI tools. The AI generates targeted payloads, bypasses WAFs, performs multi-round adaptive scanning with full response feedback, fingerprints WAFs before fuzzing, learns from confirmed findings across parameters, chains Collaborator data exfiltration, and supports multi-step exploitation of confirmed vulnerabilities.
 
 **Built for Speed** &mdash; **OOB-first detection** sends Collaborator payloads before any other technique — if OOB confirms, all remaining phases are skipped for that parameter. **Smart character filter probing** reduces active payloads from 35+ to 5-10 per parameter. Concurrent execution on a bounded thread pool. Non-blocking passive analysis.
 
@@ -314,11 +314,21 @@ Server-side `__proto__` and `constructor.prototype` injection with **canary pers
 |---|---|
 | **Smart Fuzzing** | LLM analyzes the HTTP exchange and generates targeted payloads based on parameter names, content types, and technology indicators. Priority-ordered prompts per vulnerability class (e.g., error-based SQLi before blind). |
 | **WAF Bypass** | When payloads are blocked, the LLM generates evasion variants specific to the observed blocking behavior. |
-| **Adaptive Scanning** | Multi-round testing where each round's results inform the next payload set. Timing-aware — detects time-based blind injection via response latency analysis. |
+| **Adaptive Scanning** | Multi-round testing (max 5 rounds) where each round's **full HTTP response** (status, headers, body) informs the next payload set. Auto-stops after 3 rounds with no progress. |
 | **Cross-File Batch Scan** | Queue multiple JS/HTML responses and analyze them together for cross-file DOM XSS, shared prototype pollution chains, and cross-file data flows. |
+| **WAF Fingerprinting** | Before fuzzing, probes the target with 5 known-bad payloads to build a per-host WAF fingerprint. AI knows upfront which payload categories are blocked vs. pass, so it starts with viable payloads. Cached per host. |
+| **Technology Stack Context** | Collects Server header, X-Powered-By, framework detection, database type, CDN/WAF indicators from response headers and other scanner findings. Included in AI prompts for technology-specific payloads. |
+| **Payload Learning** | Per-scan session context accumulates confirmed findings. When scanning parameter B after confirming SSTI on parameter A, AI knows: "Jinja2 confirmed — prioritize Jinja2 payloads." Last 10 confirmed findings enriches every prompt. |
+| **Collaborator Data Exfil** | AI embeds data exfiltration in Collaborator URLs: `$(whoami).COLLAB`, `LOAD_FILE(CONCAT(version(),'.COLLAB'))`. Turns binary OOB confirmation into data extraction. |
+| **Rate Limit Awareness** | Tracks 429s per host, auto-pauses with Retry-After backoff, detects IP-level blocking (5+ identical block responses), halts and reports when blocked. |
+| **Multi-Step Exploitation** | Right-click any confirmed finding > **Exploit This Finding (AI)** — AI generates exploitation payloads (SQLi: dump tables, CMDi: enumerate users, SSTI: escalate to RCE, Path Traversal: read high-value files). Multi-round chaining with results feedback. |
+| **Cost Tracking** | Tracks input/output tokens per API call, displays running total in the AI panel: calls, token counts, estimated cost. |
+| **Structured Output** | Enforces strict JSON output. Retries once with stricter prompt on malformed JSON before falling back. |
+| **Static Scanner Dedup** | Tells AI which payload categories the static scanner already tested so it focuses on novel evasion techniques. |
+| **Prompt Size Management** | 8K token budget. Response bodies truncated to 500 bytes, CSS/JS boilerplate stripped, older rounds summarized when budget exceeded. |
 | **Hardened Detection** | **OOB-first strategy**: all injection scanners (SQLi, CmdI, SSRF, SSTI, XXE) fire Collaborator payloads as Phase 1 — if OOB confirms, remaining phases are skipped. SSTI uses large unique math canaries (131803, 3072383) instead of generic `7*7=49`. XSS only confirms verbatim payload reflection. CMDi uses OS-specific output patterns. Time-based blind detection for SQLi and CMDi (18s delay, serialized via global timing lock, opt-in). No generic 500-error findings. |
 
-Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, and **OpenCode CLI**. No API keys configured in the extension — uses locally authenticated CLI tools.
+Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, **OpenCode CLI**, and direct **API Key** access (Anthropic, OpenAI, Google Gemini).
 
 </details>
 
