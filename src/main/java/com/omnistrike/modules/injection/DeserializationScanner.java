@@ -605,7 +605,23 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
-        return Collections.emptyList();
+        // Return passive findings (e.g., ".NET BinaryFormatter detected") so the caller
+        // adds them to FindingsStore. Previously returned emptyList(), discarding all passive findings.
+        List<Finding> enriched = new ArrayList<>(findings.size());
+        for (Finding f : findings) {
+            if (f.getRequestResponse() == null) {
+                enriched.add(Finding.builder(f.getModuleId(), f.getTitle(), f.getSeverity(), f.getConfidence())
+                        .url(f.getUrl()).parameter(f.getParameter())
+                        .evidence(f.getEvidence()).description(f.getDescription())
+                        .remediation(f.getRemediation())
+                        .payload(f.getPayload()).responseEvidence(f.getResponseEvidence())
+                        .requestResponse(requestResponse)
+                        .build());
+            } else {
+                enriched.add(f);
+            }
+        }
+        return enriched;
     }
 
     @Override

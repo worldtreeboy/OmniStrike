@@ -224,6 +224,21 @@ public class FindingsOverviewPanel extends JPanel {
                 }
             });
         });
+
+        // Load any findings that were added before this listener was registered.
+        // This handles the race condition where TrafficInterceptor processes requests
+        // (and modules add findings to FindingsStore) before the UI panel is created.
+        SwingUtilities.invokeLater(() -> {
+            for (Finding f : findingsStore.getAllFindings()) {
+                if (filter.test(f) && !findingsList.contains(f)) {
+                    addFindingRow(f);
+                }
+            }
+            if (!findingsList.isEmpty()) {
+                countLabel.setText("Findings: " + findingsList.size());
+                updateModuleFilterOptions();
+            }
+        });
     }
 
     /**
