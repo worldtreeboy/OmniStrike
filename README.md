@@ -79,9 +79,9 @@
 
 **21 Modules, One JAR** &mdash; SQLi, XSS, SSRF, SSTI, RCE, XXE, deserialization, GraphQL, CORS, cache poisoning, path traversal, CRLF, auth bypass, host header injection, HPP, prototype pollution, and more. All deduplicated, all in one place.
 
-${\color{#FF0000}\textbf{S}}{\color{#FF4500}\textbf{c}}{\color{#FF8C00}\textbf{a}}{\color{#FFA500}\textbf{n}}$ ${\color{#FFD700}\textbf{W}}{\color{#ADFF2F}\textbf{h}}{\color{#32CD32}\textbf{i}}{\color{#00CC00}\textbf{l}}{\color{#00CED1}\textbf{e}}$ ${\color{#1E90FF}\textbf{Y}}{\color{#4169E1}\textbf{o}}{\color{#6A5ACD}\textbf{u}}$ ${\color{#8A2BE2}\textbf{B}}{\color{#9400D3}\textbf{r}}{\color{#BA55D3}\textbf{o}}{\color{#FF00FF}\textbf{w}}{\color{#FF1493}\textbf{s}}{\color{#FF69B4}\textbf{e}}$ &mdash; Set your target scope, click Start, and just browse. OmniStrike automatically scans every in-scope request in real time — no manual triggering needed. Want more control? Right-click any request to scan it ad-hoc.
+${\color{#FF0000}\textbf{S}}{\color{#FF4500}\textbf{c}}{\color{#FF8C00}\textbf{a}}{\color{#FFA500}\textbf{n}}$ ${\color{#FFD700}\textbf{W}}{\color{#ADFF2F}\textbf{h}}{\color{#32CD32}\textbf{i}}{\color{#00CC00}\textbf{l}}{\color{#00CED1}\textbf{e}}$ ${\color{#1E90FF}\textbf{Y}}{\color{#4169E1}\textbf{o}}{\color{#6A5ACD}\textbf{u}}$ ${\color{#8A2BE2}\textbf{B}}{\color{#9400D3}\textbf{r}}{\color{#BA55D3}\textbf{o}}{\color{#FF00FF}\textbf{w}}{\color{#FF1493}\textbf{s}}{\color{#FF69B4}\textbf{e}}$ &mdash; Set your target scope, click Start, and just browse. OmniStrike's static scanners automatically test every in-scope request in real time. AI scanning is manual-only (right-click) to prevent token waste. Want more control? Right-click any request to scan it ad-hoc with any module.
 
-**AI-Augmented** &mdash; Optionally delegate analysis to Claude, GPT, or Gemini via API key, or use Claude/Gemini/Codex/OpenCode CLI tools. The AI generates targeted payloads, bypasses WAFs, performs multi-round adaptive scanning with full response feedback, fingerprints WAFs before fuzzing, learns from confirmed findings across parameters, chains Collaborator data exfiltration, and supports multi-step exploitation of confirmed vulnerabilities.
+**AI-Augmented (Manual Only)** &mdash; Right-click any request to trigger AI analysis — never auto-fires on every proxied request, so zero wasted tokens. Optionally delegate analysis to Claude, GPT, or Gemini via API key, or use Claude/Gemini/Codex/OpenCode CLI tools. The AI generates targeted payloads, bypasses WAFs, performs multi-round adaptive scanning with full response feedback, fingerprints WAFs before fuzzing, learns from confirmed findings across parameters, chains Collaborator data exfiltration, remembers every payload already tested per URL/param/vuln type (fuzz history), and supports multi-step exploitation of confirmed vulnerabilities.
 
 **Built for Speed** &mdash; **OOB-first detection** sends Collaborator payloads before any other technique — if OOB confirms, all remaining phases are skipped for that parameter. **Smart character filter probing** reduces active payloads from 35+ to 5-10 per parameter. Concurrent execution on a bounded thread pool. Non-blocking passive analysis.
 
@@ -325,6 +325,7 @@ Server-side `__proto__` and `constructor.prototype` injection with **canary pers
 | **Cost Tracking** | Tracks input/output tokens per API call, displays running total in the AI panel: calls, token counts, estimated cost. |
 | **Structured Output** | Enforces strict JSON output. Retries once with stricter prompt on malformed JSON before falling back. |
 | **Static Scanner Dedup** | Tells AI which payload categories the static scanner already tested so it focuses on novel evasion techniques. |
+| **Fuzz History** | Per-URL, per-parameter, per-vulnerability-type memory of every payload already sent — including status code, response time, WAF block status, and whether a vuln was triggered. On re-scan, the AI sees everything that was already tried and generates only novel payloads. Duplicate payloads are filtered even if the AI ignores the instruction. Each vuln type (SQLi, XSS, SSTI, etc.) maintains its own separate record. |
 | **Prompt Size Management** | 8K token budget. Response bodies truncated to 500 bytes, CSS/JS boilerplate stripped, older rounds summarized when budget exceeded. |
 | **Hardened Detection** | **OOB-first strategy**: all injection scanners (SQLi, CmdI, SSRF, SSTI, XXE) fire Collaborator payloads as Phase 1 — if OOB confirms, remaining phases are skipped. SSTI uses large unique math canaries (131803, 3072383) instead of generic `7*7=49`. XSS only confirms verbatim payload reflection. CMDi uses OS-specific output patterns. Time-based blind detection for SQLi and CMDi (18s delay, serialized via global timing lock, opt-in). No generic 500-error findings. |
 
@@ -469,6 +470,15 @@ Output: `build/libs/omnistrike.jar` &mdash; a single fat JAR with all dependenci
 4. Open a pull request with a description of changes and testing methodology.
 
 For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/OmniStrike/issues).
+
+---
+
+## What's New in v1.23
+
+- **Fuzz History** &mdash; AI scanner now remembers every payload already sent for each URL + parameter + vulnerability type. On re-scan, the AI receives the full history and generates only novel payloads. Duplicate payloads are filtered even if the LLM ignores the instruction. Each vuln type (SQLi, XSS, SSTI, SSRF, CMDi, XXE, etc.) maintains its own separate per-parameter record.
+- **Manual-Only AI Scanning** &mdash; AI analysis and fuzzing now fire exclusively via right-click context menu. Removed auto-fire from proxy traffic to prevent massive token waste when target scope contains hundreds of requests.
+- WAF bypass and adaptive round payloads are now also tracked in fuzz history.
+- `checkForVulnIndicators` now returns whether a vuln was found, enabling accurate history recording.
 
 ---
 

@@ -111,6 +111,13 @@ public class AiVulnAnalyzer implements ScanModule {
     // ==================== Improvement 9: Structured Output Enforcement ====================
     private static final int MAX_JSON_RETRIES = 1;
 
+    // ==================== Improvement 12: Fuzz History (per URL+param+vuln) ====================
+    // Tracks every payload already sent for a given URL path + parameter + vuln type.
+    // Injected into AI prompts so the LLM never regenerates payloads already tested.
+    private final ConcurrentHashMap<String, FuzzHistoryEntry> fuzzHistory = new ConcurrentHashMap<>();
+    private static final int MAX_HISTORY_ENTRIES = 5000;
+    private static final int MAX_PAYLOADS_IN_PROMPT = 50; // cap history shown to AI per key
+
     // ==================== Improvement 10: Cost Tracking ====================
     private final AtomicLong totalInputTokens = new AtomicLong(0);
     private final AtomicLong totalOutputTokens = new AtomicLong(0);
@@ -576,74 +583,10 @@ public class AiVulnAnalyzer implements ScanModule {
 
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
-        // Quick filtering on the proxy thread — never block
-        if (requestResponse.response() == null) return Collections.emptyList();
-
-        String url = requestResponse.request().url();
-        String method = requestResponse.request().method();
-
-        // Skip static resources
-        if (isStaticResource(url)) return Collections.emptyList();
-
-        // Skip uninteresting content types
-        String contentType = getContentType(requestResponse);
-        if (shouldSkipContentType(contentType)) return Collections.emptyList();
-
-        // Skip tiny or huge responses
-        String responseBody = requestResponse.response().bodyToString();
-        if (responseBody == null || responseBody.length() < 50 || responseBody.length() > 100000) {
-            return Collections.emptyList();
-        }
-
-        // Dedup by METHOD + normalized path
-        String dedupKey = method + "+" + normalizePath(url);
-        if (analyzed.putIfAbsent(dedupKey, Boolean.TRUE) != null) {
-            return Collections.emptyList();
-        }
-
-        // Capture data as an immutable snapshot (safe for background thread)
-        CapturedHttpExchange exchange;
-        try {
-            exchange = CapturedHttpExchange.from(requestResponse, maxBodySize);
-        } catch (Exception e) {
-            return Collections.emptyList();
-        }
-
-        // Queue passive analysis
-        if (passiveAnalysisEnabled) {
-            try {
-                llmExecutor.submit(() -> {
-                    activeScansRunning.incrementAndGet();
-                    try {
-                        analyzeWithLlm(exchange, requestResponse);
-                    } finally {
-                        activeScansRunning.decrementAndGet();
-                    }
-                });
-                queuedCount.set(getQueueSize());
-            } catch (RejectedExecutionException ignored) {
-                // Queue full
-            }
-        }
-
-        // Queue smart fuzzing (active) — capture flags at queue time
-        if (smartFuzzingEnabled) {
-            final boolean waf = wafBypassEnabled;
-            final boolean adaptive = adaptiveScanEnabled;
-            try {
-                fuzzExecutor.submit(() -> {
-                    activeScansRunning.incrementAndGet();
-                    try {
-                        performSmartFuzzing(exchange, requestResponse, waf, adaptive);
-                    } finally {
-                        activeScansRunning.decrementAndGet();
-                    }
-                });
-            } catch (RejectedExecutionException ignored) {
-                // Queue full
-            }
-        }
-
+        // AI scanning is MANUAL ONLY — triggered via right-click context menu.
+        // Automatic scanning from proxy traffic is disabled to prevent massive
+        // token waste when every request in target scope hits the LLM.
+        // The manualScan() method is the only entry point for AI analysis/fuzzing.
         return Collections.emptyList();
     }
 
@@ -772,6 +715,9 @@ public class AiVulnAnalyzer implements ScanModule {
             // Improvement 8: Static scanner dedup
             String dedupContext = buildStaticScannerDedup(exchange.getUrl(), targetModuleId);
 
+            // Improvement 12: Fuzz history — tell AI what payloads were already tested
+            String historyContext = buildFuzzHistoryContext(exchange.getUrl(), targetParameter, targetModuleId);
+
             // Step 1: Ask LLM for targeted payloads
             String paramConstraint = "";
             if (targetParameter != null) {
@@ -787,6 +733,7 @@ public class AiVulnAnalyzer implements ScanModule {
             if (!techContext.isEmpty()) enrichedPrompt.append(techContext);
             if (!sessionContext.isEmpty()) enrichedPrompt.append(sessionContext);
             if (!dedupContext.isEmpty()) enrichedPrompt.append(dedupContext);
+            if (!historyContext.isEmpty()) enrichedPrompt.append(historyContext);
             enrichedPrompt.append(paramConstraint);
 
             enrichedPrompt.append(exchange.toPromptText());
@@ -835,8 +782,12 @@ public class AiVulnAnalyzer implements ScanModule {
                 }
             }
 
+            // Improvement 12: Filter out payloads already tested (fuzz history dedup)
+            payloads = filterAlreadyTested(payloads, exchange.getUrl());
+
             if (payloads.isEmpty()) {
-                logInfo("Smart Fuzzing: No payloads generated for " + exchange.getUrl());
+                logInfo("Smart Fuzzing: No NEW payloads generated for " + exchange.getUrl()
+                        + " (all were already tested — attack vectors may be exhausted)");
                 return;
             }
 
@@ -873,7 +824,11 @@ public class AiVulnAnalyzer implements ScanModule {
                     allResults.add(result);
 
                     // Check for immediate vulnerability indicators
-                    checkForVulnIndicators(result, exchange.getUrl(), targetModuleId);
+                    boolean vulnFound = checkForVulnIndicators(result, exchange.getUrl(), targetModuleId);
+
+                    // Improvement 12: Record this payload in fuzz history
+                    recordTestedPayload(exchange.getUrl(), resolvedPayload, response,
+                            wafDetected, elapsed, vulnFound);
 
                     // Step 3: WAF bypass if blocked
                     if (wafBypass && wafDetected && !cancelled) {
@@ -1004,10 +959,15 @@ public class AiVulnAnalyzer implements ScanModule {
                     FuzzResult result = new FuzzResult(bypassPayload, response, stillBlocked, elapsed);
                     results.add(result);
 
+                    boolean vulnFound = false;
                     if (!stillBlocked) {
                         logInfo("WAF Bypass: Successfully bypassed with [" + bypass.technique + "]");
-                        checkForVulnIndicators(result, originalRequest.url(), targetModuleId);
+                        vulnFound = checkForVulnIndicators(result, originalRequest.url(), targetModuleId);
                     }
+
+                    // Improvement 12: Record WAF bypass payloads in fuzz history
+                    recordTestedPayload(originalRequest.url(), bypassPayload, response,
+                            stillBlocked, elapsed, vulnFound);
                 } catch (Exception e) {
                     errorCount.incrementAndGet();
                 }
@@ -1080,7 +1040,11 @@ public class AiVulnAnalyzer implements ScanModule {
                     boolean wafDetected = isWafBlocked(response);
                     FuzzResult result = new FuzzResult(resolved, response, wafDetected, elapsed);
                     results.add(result);
-                    checkForVulnIndicators(result, originalRequest.url(), targetModuleId);
+                    boolean vulnFound = checkForVulnIndicators(result, originalRequest.url(), targetModuleId);
+
+                    // Improvement 12: Record adaptive payloads in fuzz history
+                    recordTestedPayload(originalRequest.url(), resolved, response,
+                            wafDetected, elapsed, vulnFound);
                 } catch (Exception e) {
                     errorCount.incrementAndGet();
                 }
@@ -1098,11 +1062,11 @@ public class AiVulnAnalyzer implements ScanModule {
      * Checks a single fuzz result for common vulnerability indicators
      * (error messages, reflection, time delays) and reports immediately.
      */
-    private void checkForVulnIndicators(FuzzResult result, String url, String targetModuleId) {
-        if (result.response == null || result.response.response() == null) return;
+    private boolean checkForVulnIndicators(FuzzResult result, String url, String targetModuleId) {
+        if (result.response == null || result.response.response() == null) return false;
 
         String body = result.response.response().bodyToString();
-        if (body == null) return;
+        if (body == null) return false;
         String bodyLower = body.toLowerCase();
         int status = result.response.response().statusCode();
 
@@ -1117,7 +1081,7 @@ public class AiVulnAnalyzer implements ScanModule {
                             "SQL Injection — database error triggered",
                             "Database error '" + indicator + "' found in response after injecting: "
                                     + truncate(result.payload.payload, 200));
-                    return;
+                    return true;
                 }
             }
             // Time-based blind SQLi: payload contains SLEEP/WAITFOR/pg_sleep AND response took >5s
@@ -1129,7 +1093,7 @@ public class AiVulnAnalyzer implements ScanModule {
                             "Possible Blind SQL Injection — time delay detected",
                             "Response took " + result.responseTimeMs + "ms after time-based payload: "
                                     + truncate(result.payload.payload, 200));
-                    return;
+                    return true;
                 }
             }
         }
@@ -1141,7 +1105,7 @@ public class AiVulnAnalyzer implements ScanModule {
                         "Reflected XSS — payload reflected unescaped in response",
                         "Injected payload reflected verbatim in response body: "
                                 + truncate(result.payload.payload, 200));
-                return;
+                return true;
             }
         }
 
@@ -1154,7 +1118,7 @@ public class AiVulnAnalyzer implements ScanModule {
                             "Command Injection — OS command output detected",
                             "OS-level output '" + indicator + "' detected after injecting: "
                                     + truncate(result.payload.payload, 200));
-                    return;
+                    return true;
                 }
             }
             // Time-based blind command injection
@@ -1166,7 +1130,7 @@ public class AiVulnAnalyzer implements ScanModule {
                             "Possible Blind Command Injection — time delay detected",
                             "Response took " + result.responseTimeMs + "ms after time-based payload: "
                                     + truncate(result.payload.payload, 200));
-                    return;
+                    return true;
                 }
             }
         }
@@ -1187,7 +1151,7 @@ public class AiVulnAnalyzer implements ScanModule {
                             "Template expression '" + entry.getKey() + "' evaluated to '"
                                     + entry.getValue() + "' in response. Payload: "
                                     + truncate(result.payload.payload, 200));
-                    return;
+                    return true;
                 }
             }
         }
@@ -1201,7 +1165,7 @@ public class AiVulnAnalyzer implements ScanModule {
                             "Path Traversal — file content leaked",
                             "File content indicator '" + indicator + "' found after injecting: "
                                     + truncate(result.payload.payload, 200));
-                    return;
+                    return true;
                 }
             }
         }
@@ -1215,10 +1179,12 @@ public class AiVulnAnalyzer implements ScanModule {
                             "Possible SSRF — internal resource indicator in response",
                             "Internal indicator '" + indicator + "' found after injecting: "
                                     + truncate(result.payload.payload, 200));
-                    return;
+                    return true;
                 }
             }
         }
+
+        return false;
     }
 
     /**
@@ -1983,8 +1949,181 @@ public class AiVulnAnalyzer implements ScanModule {
         }
     }
 
+    // ==================== Fuzz History Data Classes (Improvement 12) ====================
+
+    /** A single payload that was already sent, with its result. */
+    private record TestedPayload(String payload, String attackType, int statusCode,
+                                  long responseTimeMs, boolean wafBlocked, boolean vulnFound) {
+        String toPromptLine() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("  - ").append(truncateStatic(payload, 120));
+            sb.append(" → status=").append(statusCode);
+            sb.append(", time=").append(responseTimeMs).append("ms");
+            if (wafBlocked) sb.append(", WAF_BLOCKED");
+            if (vulnFound) sb.append(", VULN_FOUND");
+            return sb.toString();
+        }
+    }
+
+    /**
+     * Per URL+param+vulnType history of all payloads already tested.
+     * Thread-safe — all mutations go through synchronized methods.
+     */
+    static class FuzzHistoryEntry {
+        private final String urlPath;
+        private final String parameter;
+        private final String vulnType;
+        private final List<TestedPayload> payloads = new ArrayList<>();
+        private int totalTested = 0;
+
+        FuzzHistoryEntry(String urlPath, String parameter, String vulnType) {
+            this.urlPath = urlPath;
+            this.parameter = parameter;
+            this.vulnType = vulnType;
+        }
+
+        synchronized void record(String payload, String attackType, int statusCode,
+                                  long responseTimeMs, boolean wafBlocked, boolean vulnFound) {
+            payloads.add(new TestedPayload(payload, attackType, statusCode,
+                    responseTimeMs, wafBlocked, vulnFound));
+            totalTested++;
+        }
+
+        synchronized int size() { return totalTested; }
+
+        synchronized boolean hasPayload(String payload) {
+            if (payload == null) return false;
+            String normalized = payload.trim().toLowerCase();
+            for (TestedPayload tp : payloads) {
+                if (tp.payload != null && tp.payload.trim().toLowerCase().equals(normalized)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /** Builds prompt text showing what was already tested — capped at MAX_PAYLOADS_IN_PROMPT. */
+        synchronized String toPromptText(int maxEntries) {
+            if (payloads.isEmpty()) return "";
+            StringBuilder sb = new StringBuilder();
+            sb.append("[").append(vulnType.toUpperCase()).append("] param='")
+                    .append(parameter != null ? parameter : "*").append("' — ")
+                    .append(totalTested).append(" payload(s) already tested");
+            int wafCount = 0, vulnCount = 0;
+            for (TestedPayload tp : payloads) {
+                if (tp.wafBlocked) wafCount++;
+                if (tp.vulnFound) vulnCount++;
+            }
+            if (wafCount > 0) sb.append(" (").append(wafCount).append(" WAF-blocked)");
+            if (vulnCount > 0) sb.append(" (").append(vulnCount).append(" triggered vuln)");
+            sb.append(":\n");
+
+            int shown = 0;
+            for (TestedPayload tp : payloads) {
+                if (shown >= maxEntries) {
+                    sb.append("  ... and ").append(totalTested - shown).append(" more\n");
+                    break;
+                }
+                sb.append(tp.toPromptLine()).append("\n");
+                shown++;
+            }
+            return sb.toString();
+        }
+    }
+
     /** Token usage from a single API call (Improvement 10). */
     private record TokenUsage(long inputTokens, long outputTokens) {}
+
+    // ==================== Fuzz History Helpers (Improvement 12) ====================
+
+    /** Builds a dedup key for fuzz history: normalized_path + param + vulnType */
+    private String fuzzHistoryKey(String url, String parameter, String vulnType) {
+        String path = normalizePath(url);
+        String param = (parameter != null && !parameter.isEmpty()) ? parameter : "*";
+        String vuln = (vulnType != null && !vulnType.isEmpty()) ? vulnType.toLowerCase() : "all";
+        return path + "|" + param + "|" + vuln;
+    }
+
+    /** Records a tested payload in fuzz history. */
+    private void recordTestedPayload(String url, FuzzPayload payload, HttpRequestResponse response,
+                                      boolean wafBlocked, long responseTimeMs, boolean vulnFound) {
+        if (fuzzHistory.size() >= MAX_HISTORY_ENTRIES) return; // prevent unbounded growth
+        String key = fuzzHistoryKey(url, payload.parameter(), payload.attackType());
+        FuzzHistoryEntry entry = fuzzHistory.computeIfAbsent(key,
+                k -> new FuzzHistoryEntry(normalizePath(url), payload.parameter(), payload.attackType()));
+        int statusCode = (response != null && response.response() != null) ? response.response().statusCode() : 0;
+        entry.record(payload.payload(), payload.attackType(), statusCode, responseTimeMs, wafBlocked, vulnFound);
+    }
+
+    /**
+     * Builds a prompt section telling the AI what payloads have already been tested
+     * for this URL and (optionally) specific parameter and vuln type.
+     * This prevents the AI from regenerating the same payloads.
+     */
+    private String buildFuzzHistoryContext(String url, String targetParameter, String targetModuleId) {
+        String normalizedPath = normalizePath(url);
+        List<FuzzHistoryEntry> relevantEntries = new ArrayList<>();
+
+        for (Map.Entry<String, FuzzHistoryEntry> e : fuzzHistory.entrySet()) {
+            FuzzHistoryEntry entry = e.getValue();
+            // Match URL path
+            if (!normalizedPath.equals(entry.urlPath)) continue;
+            // If targeting a specific parameter, only show history for that param (and wildcard)
+            if (targetParameter != null && entry.parameter != null
+                    && !"*".equals(entry.parameter)
+                    && !entry.parameter.equalsIgnoreCase(targetParameter)) continue;
+            // If targeting a specific module/vuln type, only show that vuln's history
+            if (targetModuleId != null) {
+                String expectedVuln = getAttackType(targetModuleId);
+                if (!"unknown".equals(expectedVuln) && !"all".equals(entry.vulnType)
+                        && !entry.vulnType.equals(expectedVuln)) continue;
+            }
+            relevantEntries.add(entry);
+        }
+
+        if (relevantEntries.isEmpty()) return "";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("ALREADY TESTED — The following payloads have ALREADY been sent to this endpoint. ")
+                .append("Do NOT regenerate these. Generate DIFFERENT, NOVEL payloads that explore ")
+                .append("techniques not yet tried. If all reasonable attack vectors have been exhausted, ")
+                .append("return an empty payload list.\n\n");
+
+        for (FuzzHistoryEntry entry : relevantEntries) {
+            sb.append(entry.toPromptText(MAX_PAYLOADS_IN_PROMPT));
+            sb.append("\n");
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Filters out payloads the AI regenerated despite being told not to.
+     * Compares against fuzz history using normalized payload string matching.
+     */
+    private List<FuzzPayload> filterAlreadyTested(List<FuzzPayload> payloads, String url) {
+        if (payloads.isEmpty()) return payloads;
+        List<FuzzPayload> novel = new ArrayList<>();
+        int dupes = 0;
+        for (FuzzPayload p : payloads) {
+            String key = fuzzHistoryKey(url, p.parameter(), p.attackType());
+            FuzzHistoryEntry entry = fuzzHistory.get(key);
+            if (entry != null && entry.hasPayload(p.payload())) {
+                dupes++;
+            } else {
+                novel.add(p);
+            }
+        }
+        if (dupes > 0) {
+            logInfo("Fuzz History: Filtered out " + dupes + " duplicate payload(s) already tested");
+        }
+        return novel;
+    }
+
+    /** Clears the fuzz history. */
+    public void clearFuzzHistory() { fuzzHistory.clear(); }
+
+    /** Returns the total number of tracked fuzz history entries. */
+    public int getFuzzHistorySize() { return fuzzHistory.size(); }
 
     // ==================== Filtering helpers ====================
 
@@ -2332,6 +2471,8 @@ public class AiVulnAnalyzer implements ScanModule {
     /** Clears dedup map so endpoints can be re-analyzed. */
     public void resetDedup() {
         analyzed.clear();
+        // Note: fuzz history is NOT cleared here — it persists across dedup resets
+        // so the AI still knows what was already tested. Call clearFuzzHistory() separately.
     }
 
     // ==================== Batch Scan ====================
