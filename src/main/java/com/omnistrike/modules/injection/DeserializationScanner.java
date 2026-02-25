@@ -2432,7 +2432,9 @@ public class DeserializationScanner implements ScanModule {
                             HttpParameter.urlParameter(dp.name, PayloadEncoder.encode(payload)));
                     break;
                 case "header":
-                    modified = request.withRemovedHeader(dp.name).withAddedHeader(dp.name, payload);
+                    // Sanitize CRLF to prevent header injection
+                    String safeHeaderVal = payload.replace("\r", "").replace("\n", "");
+                    modified = request.withRemovedHeader(dp.name).withAddedHeader(dp.name, safeHeaderVal);
                     break;
                 case "body":
                     // For ViewState and raw body injection
