@@ -108,7 +108,7 @@ public class AiVulnAnalyzer implements ScanModule {
     // Token budget constants (approximate: 1 token ≈ 4 chars)
     private static final int CONTEXT_TOKEN_BUDGET = 8000;
     private static final int CONTEXT_CHAR_BUDGET = CONTEXT_TOKEN_BUDGET * 4; // ~32K chars
-    private static final int RESPONSE_BODY_TRUNCATE = 500; // bytes for adaptive results
+    private static final int RESPONSE_BODY_TRUNCATE = 2000; // chars for adaptive results (keep script content visible)
 
     // ==================== Improvement 9: Structured Output Enforcement ====================
     private static final int MAX_JSON_RETRIES = 1;
@@ -1680,23 +1680,19 @@ public class AiVulnAnalyzer implements ScanModule {
     private String trimToTokenBudget(String context, int charBudget) {
         if (context.length() <= charBudget) return context;
 
-        // Step 1: Strip CSS blocks
+        // Step 1: Strip CSS blocks (never useful for vuln analysis)
         context = context.replaceAll("<style[^>]*>[\\s\\S]*?</style>", "[CSS removed]");
         if (context.length() <= charBudget) return context;
 
-        // Step 2: Strip inline JS boilerplate (but keep src/urls)
-        context = context.replaceAll("<script[^>]*>[\\s\\S]*?</script>", "[JS block removed]");
+        // Step 2: Strip non-script HTML tags (keep text content and script blocks)
+        context = context.replaceAll("<(?!/?script)[^>]+>", " ");
         if (context.length() <= charBudget) return context;
 
-        // Step 3: Strip HTML tags (keep text content)
-        context = context.replaceAll("<[^>]+>", " ");
-        if (context.length() <= charBudget) return context;
-
-        // Step 4: Collapse whitespace
+        // Step 3: Collapse whitespace
         context = context.replaceAll("\\s+", " ");
         if (context.length() <= charBudget) return context;
 
-        // Step 5: Hard truncate
+        // Step 4: Hard truncate (script content preserved up to this point)
         return context.substring(0, charBudget) + "\n[... truncated to fit token budget]";
     }
 
@@ -1705,9 +1701,9 @@ public class AiVulnAnalyzer implements ScanModule {
      */
     private String stripResponseBoilerplate(String body, int maxLen) {
         if (body == null) return "";
-        // Remove CSS and large JS blocks
+        // Remove CSS blocks only — keep <script> content for DOM XSS, reflected XSS, secrets analysis
         body = body.replaceAll("<style[^>]*>[\\s\\S]*?</style>", "");
-        body = body.replaceAll("<script[^>]*>[\\s\\S]*?</script>", "");
+        body = body.replaceAll("<(?!/?script)[^>]+>", " "); // Strip non-script HTML tags
         body = body.replaceAll("\\s+", " ");
         return truncate(body, maxLen);
     }
