@@ -2447,6 +2447,12 @@ public class DeserializationScanner implements ScanModule {
 
     private HttpRequestResponse sendPayload(HttpRequestResponse original, DeserPoint dp, String payload) {
         try {
+            // If the original value was base64-encoded, wrap the payload in base64 to match.
+            // Skip if payload is already base64 (binary Java/Python/.NET payloads).
+            if (dp.encoding != null && dp.encoding.contains("base64") && !isAlreadyBase64(payload)) {
+                payload = Base64.getEncoder().encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+            }
+
             HttpRequest request = original.request();
             HttpRequest modified;
 
