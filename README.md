@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.23-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.24-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -473,12 +473,16 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ---
 
-## What's New in v1.23
+## What's New in v1.24
 
-- **Fuzz History** &mdash; AI scanner now remembers every payload already sent for each URL + parameter + vulnerability type. On re-scan, the AI receives the full history and generates only novel payloads. Duplicate payloads are filtered even if the LLM ignores the instruction. Each vuln type (SQLi, XSS, SSTI, SSRF, CMDi, XXE, etc.) maintains its own separate per-parameter record.
-- **Manual-Only AI Scanning** &mdash; AI analysis and fuzzing now fire exclusively via right-click context menu. Removed auto-fire from proxy traffic to prevent massive token waste when target scope contains hundreds of requests.
-- WAF bypass and adaptive round payloads are now also tracked in fuzz history.
-- `checkForVulnIndicators` now returns whether a vuln was found, enabling accurate history recording.
+- **Evidence-Based Exploit Confidence** &mdash; AI exploitation results are now FIRM only when concrete evidence is found in the response (e.g., `/etc/passwd` content, database schema dumps, OS command output, password hashes, cloud metadata). No evidence = not reported. Eliminates noise from 200 OK responses with no actual exploitation proof.
+- **Exploit Response Highlighting** &mdash; matched evidence is set as `responseEvidence` so Burp highlights the exact extracted content (file data, DB tables, command output) in the response viewer.
+- **Per-Vuln-Type Evidence Detection** &mdash; exploitation evidence matching is attack-type-aware: deserialization/path traversal checks for file contents, SQLi checks for schema/hash dumps, CMDi checks for OS output, SSTI checks for math canary evaluation and config leaks, SSRF checks for cloud metadata, XXE checks for file exfil, XSS checks for verbatim reflection.
+
+### Previous (v1.23)
+
+- **Fuzz History** &mdash; AI scanner remembers every payload already sent per URL + parameter + vulnerability type. On re-scan, only novel payloads are generated.
+- **Manual-Only AI Scanning** &mdash; AI fires exclusively via right-click context menu. No auto-fire from proxy traffic.
 
 ---
 

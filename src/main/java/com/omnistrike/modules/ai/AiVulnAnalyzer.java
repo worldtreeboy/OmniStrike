@@ -2946,28 +2946,8 @@ public class AiVulnAnalyzer implements ScanModule {
                         FuzzResult result = new FuzzResult(resolved, response, isWafBlocked(response), elapsed);
                         allResults.add(result);
 
-                        // Report any interesting extraction as a finding
-                        if (response.response() != null) {
-                            String body = response.response().bodyToString();
-                            if (body != null && !body.isEmpty()) {
-                                int status = response.response().statusCode();
-                                if (status == 200 && body.length() > 10) {
-                                    findingsStore.addFinding(Finding.builder("ai-vuln-analyzer",
-                                                    "Exploitation Result — " + truncate(ep.description, 60),
-                                                    Severity.HIGH, Confidence.FIRM)
-                                            .url(url)
-                                            .parameter(ep.parameter)
-                                            .payload(ep.payload)
-                                            .evidence("Exploitation payload: " + truncate(ep.payload, 200)
-                                                    + "\n\nResponse (status " + status + "):\n"
-                                                    + truncate(body, 1000))
-                                            .description("[AI Exploit] " + ep.description)
-                                            .requestResponse(response)
-                                            .build());
-                                    findingsCount.incrementAndGet();
-                                }
-                            }
-                        }
+                        // Report exploitation results — only if concrete evidence found
+                        reportExploitResult(ep, response, url, attackType);
                     } catch (Exception e) {
                         errorCount.incrementAndGet();
                         logError("Exploit: Payload error — " + e.getMessage());
@@ -2986,6 +2966,201 @@ public class AiVulnAnalyzer implements ScanModule {
 
         logInfo("Exploit: Completed — " + allResults.size() + " total requests across "
                 + Math.min(MAX_EXPLOIT_ROUNDS, allResults.size()) + " rounds");
+    }
+
+    /**
+     * Reports an exploitation result with evidence-based confidence.
+     * FIRM = concrete exploitation evidence found in response (file contents, DB data, command output).
+     * TENTATIVE = 200 OK but no concrete evidence matched.
+     * Skipped entirely if response is error/WAF/empty.
+     */
+    private void reportExploitResult(FuzzPayload ep, HttpRequestResponse response,
+                                      String url, String attackType) {
+        if (response == null || response.response() == null) return;
+
+        String body = response.response().bodyToString();
+        if (body == null || body.isEmpty()) return;
+        int status = response.response().statusCode();
+
+        // Skip error/WAF responses — nothing was exploited
+        if (status >= 400) return;
+        if (isWafBlocked(response)) return;
+
+        String bodyLower = body.toLowerCase();
+
+        // Try to find concrete exploitation evidence based on attack type
+        ExploitEvidence evidence = detectExploitEvidence(ep, body, bodyLower, attackType);
+
+        if (evidence.found) {
+            // FIRM — concrete evidence of successful exploitation
+            findingsStore.addFinding(Finding.builder("ai-vuln-analyzer",
+                            "Exploitation Result — " + truncate(ep.description(), 60),
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .parameter(ep.parameter())
+                    .payload(ep.payload())
+                    .evidence("Exploitation payload: " + truncate(ep.payload(), 200)
+                            + "\n\nEvidence: " + evidence.description
+                            + "\n\nResponse (status " + status + "):\n"
+                            + truncate(body, 1000))
+                    .responseEvidence(evidence.matchedText)
+                    .description("[AI Exploit] " + ep.description())
+                    .requestResponse(response)
+                    .build());
+            findingsCount.incrementAndGet();
+            logInfo("Exploit: FIRM evidence — " + evidence.description);
+        }
+        // No evidence matched — don't report. The AI final analysis round will
+        // review all results anyway. Avoids flooding findings with noise.
+    }
+
+    /** Evidence detection result. */
+    private record ExploitEvidence(boolean found, String description, String matchedText) {
+        static ExploitEvidence none() { return new ExploitEvidence(false, "", ""); }
+        static ExploitEvidence of(String desc, String matched) { return new ExploitEvidence(true, desc, matched); }
+    }
+
+    /**
+     * Detects concrete exploitation evidence in the response body.
+     * Returns the matched evidence string for response highlighting.
+     */
+    private ExploitEvidence detectExploitEvidence(FuzzPayload payload, String body,
+                                                   String bodyLower, String attackType) {
+        // === Deserialization / Path Traversal / LFI: File content indicators ===
+        if ("deserialization".equals(attackType) || "path_traversal".equals(attackType)
+                || attackType == null || "unknown".equals(attackType)) {
+            // /etc/passwd
+            if (bodyLower.contains("root:x:0:0:")) {
+                int idx = bodyLower.indexOf("root:x:0:0:");
+                return ExploitEvidence.of("/etc/passwd content extracted",
+                        body.substring(idx, Math.min(idx + 100, body.length())));
+            }
+            // /etc/shadow
+            if (bodyLower.contains("root:$") || bodyLower.contains("root:!")) {
+                int idx = Math.max(bodyLower.indexOf("root:$"), bodyLower.indexOf("root:!"));
+                return ExploitEvidence.of("/etc/shadow content extracted",
+                        body.substring(idx, Math.min(idx + 80, body.length())));
+            }
+            // /etc/hostname or command output
+            if (bodyLower.contains("/bin/bash") || bodyLower.contains("/bin/sh")
+                    || bodyLower.contains("/usr/sbin/nologin")) {
+                int idx = bodyLower.indexOf("/bin/");
+                if (idx < 0) idx = bodyLower.indexOf("/usr/sbin/nologin");
+                return ExploitEvidence.of("Unix system file content extracted",
+                        body.substring(Math.max(0, idx - 30), Math.min(idx + 60, body.length())));
+            }
+            // Windows files
+            if (bodyLower.contains("[boot loader]") || bodyLower.contains("[extensions]")) {
+                String marker = bodyLower.contains("[boot loader]") ? "[boot loader]" : "[extensions]";
+                int idx = bodyLower.indexOf(marker);
+                return ExploitEvidence.of("Windows system file content extracted",
+                        body.substring(idx, Math.min(idx + 100, body.length())));
+            }
+            // PHP source code leaked
+            if (body.contains("<?php")) {
+                int idx = body.indexOf("<?php");
+                return ExploitEvidence.of("PHP source code extracted",
+                        body.substring(idx, Math.min(idx + 200, body.length())));
+            }
+        }
+
+        // === SQLi: Database content indicators ===
+        if ("sqli".equals(attackType) || attackType == null || "unknown".equals(attackType)) {
+            // Table/column data dumps
+            for (String indicator : List.of("information_schema", "table_name", "column_name",
+                    "mysql.user", "pg_catalog", "sqlite_master", "sys.objects",
+                    "CREATE TABLE", "INSERT INTO")) {
+                if (bodyLower.contains(indicator.toLowerCase())) {
+                    int idx = bodyLower.indexOf(indicator.toLowerCase());
+                    return ExploitEvidence.of("Database schema/data extracted (" + indicator + ")",
+                            body.substring(idx, Math.min(idx + 150, body.length())));
+                }
+            }
+            // Password hashes in response
+            if (bodyLower.contains("$2y$") || bodyLower.contains("$2a$")
+                    || bodyLower.contains("$6$") || bodyLower.contains("$5$")) {
+                for (String hash : List.of("$2y$", "$2a$", "$6$", "$5$")) {
+                    if (body.contains(hash)) {
+                        int idx = body.indexOf(hash);
+                        return ExploitEvidence.of("Password hash extracted",
+                                body.substring(Math.max(0, idx - 20), Math.min(idx + 80, body.length())));
+                    }
+                }
+            }
+        }
+
+        // === Command Injection / RCE: OS output ===
+        if ("cmdi".equals(attackType) || "rce".equals(attackType)
+                || attackType == null || "unknown".equals(attackType)) {
+            for (String indicator : List.of("uid=0(root)", "uid=", "root:x:0:0:",
+                    "volume serial number", "windows_nt", "linux version",
+                    "total ", "drwx")) {
+                if (bodyLower.contains(indicator)) {
+                    int idx = bodyLower.indexOf(indicator);
+                    return ExploitEvidence.of("OS command output detected (" + indicator + ")",
+                            body.substring(idx, Math.min(idx + 120, body.length())));
+                }
+            }
+        }
+
+        // === SSTI: Template evaluation ===
+        if ("ssti".equals(attackType) || attackType == null || "unknown".equals(attackType)) {
+            var mathCanaries = Map.of(
+                    "133*991", "131803", "7739*397", "3072383",
+                    "9281*473", "4389913", "8123*547", "4443281", "3571*661", "2360431");
+            for (var entry : mathCanaries.entrySet()) {
+                if (payload.payload() != null && payload.payload().contains(entry.getKey())
+                        && body.contains(entry.getValue())) {
+                    int idx = body.indexOf(entry.getValue());
+                    return ExploitEvidence.of("SSTI expression evaluated: " + entry.getKey() + "=" + entry.getValue(),
+                            body.substring(Math.max(0, idx - 10), Math.min(idx + 30, body.length())));
+                }
+            }
+            // Config/env dump
+            if (bodyLower.contains("secret_key") || bodyLower.contains("database_url")
+                    || bodyLower.contains("aws_access_key")) {
+                for (String s : List.of("SECRET_KEY", "DATABASE_URL", "AWS_ACCESS_KEY")) {
+                    if (body.contains(s)) {
+                        int idx = body.indexOf(s);
+                        return ExploitEvidence.of("Sensitive config leaked via SSTI (" + s + ")",
+                                body.substring(idx, Math.min(idx + 100, body.length())));
+                    }
+                }
+            }
+        }
+
+        // === SSRF: Internal resource content ===
+        if ("ssrf".equals(attackType) || attackType == null || "unknown".equals(attackType)) {
+            for (String indicator : List.of("ami-", "instance-id", "iam/security-credentials",
+                    "computeMetadata", "169.254.169.254", "metadata/v1")) {
+                if (bodyLower.contains(indicator.toLowerCase())) {
+                    int idx = bodyLower.indexOf(indicator.toLowerCase());
+                    return ExploitEvidence.of("Internal/cloud metadata extracted (" + indicator + ")",
+                            body.substring(idx, Math.min(idx + 150, body.length())));
+                }
+            }
+        }
+
+        // === XXE: File content or error ===
+        if ("xxe".equals(attackType) || attackType == null || "unknown".equals(attackType)) {
+            if (bodyLower.contains("root:x:0:0:")) {
+                int idx = bodyLower.indexOf("root:x:0:0:");
+                return ExploitEvidence.of("XXE file exfiltration — /etc/passwd",
+                        body.substring(idx, Math.min(idx + 100, body.length())));
+            }
+        }
+
+        // === XSS: Payload reflected verbatim ===
+        if ("xss".equals(attackType) && payload.payload() != null) {
+            if (body.contains(payload.payload())) {
+                int idx = body.indexOf(payload.payload());
+                return ExploitEvidence.of("XSS payload reflected verbatim",
+                        body.substring(idx, Math.min(idx + payload.payload().length() + 20, body.length())));
+            }
+        }
+
+        // No concrete evidence found
+        return ExploitEvidence.none();
     }
 
     /** Guess the attack_type string from a finding title for the exploitation prompt. */
