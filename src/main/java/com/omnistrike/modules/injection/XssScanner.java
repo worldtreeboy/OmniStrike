@@ -237,8 +237,15 @@ public class XssScanner implements ScanModule {
     };
 
     // Prototype pollution source patterns — detect code that merges/extends objects unsafely
+    // Only matches high-confidence PP vectors:
+    //   - Direct __proto__ access or constructor.prototype bracket notation
+    //   - $.extend(true, ...) with deep=true (shallow extend is safe)
+    //   - _.merge / _.defaultsDeep (inherently deep)
+    //   - Named deep merge libraries
+    //   - JSON.parse of user-controlled input (URL/query/name sources)
+    // Does NOT match plain Object.assign() — it's shallow and doesn't cause PP
     private static final Pattern PROTO_POLLUTION_SOURCE = Pattern.compile(
-            "(?:__proto__|constructor\\s*\\[\\s*[\"']prototype[\"']\\s*\\]|Object\\.assign\\s*\\(|"
+            "(?:__proto__|constructor\\s*\\[\\s*[\"']prototype[\"']\\s*\\]|"
                     + "\\$\\.extend\\s*\\(\\s*(?:true|!0)|_\\.merge\\s*\\(|_\\.defaultsDeep\\s*\\(|"
                     + "deepmerge\\s*\\(|deepExtend\\s*\\(|"
                     + "JSON\\.parse\\s*\\([^)]*(?:location|document\\.URL|window\\.name|searchParams))",
@@ -905,43 +912,47 @@ public class XssScanner implements ScanModule {
             // Check if the expression references a tainted variable
             for (String tainted : taintedVars.keySet()) {
                 if (expression.matches(".*\\b" + Pattern.quote(tainted) + "\\b.*")) {
-                    // The property chain is now tainted — check if the chain ends in a sink
+                    // The property chain is now tainted — check if the chain ENDS in a sink
+                    // Must be an exact suffix match to avoid FPs like "innerHTMLParser"
                     for (String sink : DOM_SINKS_ALL) {
-                        String sinkBase = sink.replace("(", "").replace(" ", "").replace(".", "");
-                        if (propChain.contains(sinkBase) || propChain.endsWith(sink.replace("=", ""))) {
-                            String key = "propchain:" + propChain + "|" + sink;
-                            if (reported.contains(key)) continue;
+                        String sinkSuffix = sink.replace("=", "").replace("(", "").trim();
+                        // Require the property chain to end with ".innerHTML", ".outerHTML", etc.
+                        boolean matchesSink = propChain.endsWith(sinkSuffix)
+                                || propChain.endsWith("." + sinkSuffix);
+                        if (!matchesSink) continue;
 
-                            String sourceChain = taintedVars.get(tainted);
-                            boolean sanitized = isSanitized(
-                                    script.substring(Math.max(0, propChainMatcher.start() - 100),
-                                            Math.min(script.length(), propChainMatcher.end() + 100)));
+                        String key = "propchain:" + propChain + "|" + sink;
+                        if (reported.contains(key)) continue;
 
-                            Severity sev = sanitized ? Severity.LOW : Severity.HIGH;
+                        String sourceChain = taintedVars.get(tainted);
+                        boolean sanitized = isSanitized(
+                                script.substring(Math.max(0, propChainMatcher.start() - 100),
+                                        Math.min(script.length(), propChainMatcher.end() + 100)));
 
-                            findings.add(Finding.builder("xss-scanner",
-                                            "DOM XSS via Property Chain: " + sourceChain + " → "
-                                                    + tainted + " → " + propChain
-                                                    + (sanitized ? " (sanitizer detected)" : ""),
-                                            sev, sanitized ? Confidence.TENTATIVE : Confidence.TENTATIVE)
-                                    .url(url)
-                                    .evidence("Source chain: " + sourceChain
-                                            + "\nTainted variable: " + tainted
-                                            + "\nProperty chain sink: " + propChain
-                                            + (sanitized ? "\nSanitizer detected nearby" : ""))
-                                    .description("Data flows from user-controlled source '" + sourceChain
-                                            + "' through variable '" + tainted + "' into property chain '"
-                                            + propChain + "', which resolves to a dangerous sink."
-                                            + (sanitized ? " A sanitizer was detected, but verify correctness."
-                                            : " No sanitization detected in the flow."))
-                                    .remediation("Sanitize the variable '" + tainted
-                                            + "' before assigning to " + propChain + ".")
-                                    .requestResponse(reqResp)
-                                    .responseEvidence(propChain)
-                                    .build());
-                            reported.add(key);
-                            break;
-                        }
+                        Severity sev = sanitized ? Severity.LOW : Severity.HIGH;
+
+                        findings.add(Finding.builder("xss-scanner",
+                                        "DOM XSS via Property Chain: " + sourceChain + " → "
+                                                + tainted + " → " + propChain
+                                                + (sanitized ? " (sanitizer detected)" : ""),
+                                        sev, sanitized ? Confidence.TENTATIVE : Confidence.TENTATIVE)
+                                .url(url)
+                                .evidence("Source chain: " + sourceChain
+                                        + "\nTainted variable: " + tainted
+                                        + "\nProperty chain sink: " + propChain
+                                        + (sanitized ? "\nSanitizer detected nearby" : ""))
+                                .description("Data flows from user-controlled source '" + sourceChain
+                                        + "' through variable '" + tainted + "' into property chain '"
+                                        + propChain + "', which resolves to a dangerous sink."
+                                        + (sanitized ? " A sanitizer was detected, but verify correctness."
+                                        : " No sanitization detected in the flow."))
+                                .remediation("Sanitize the variable '" + tainted
+                                        + "' before assigning to " + propChain + ".")
+                                .requestResponse(reqResp)
+                                .responseEvidence(propChain)
+                                .build());
+                        reported.add(key);
+                        break;
                     }
                     break;
                 }
@@ -957,18 +968,28 @@ public class XssScanner implements ScanModule {
             if (paramName == null) paramName = callbackMatcher.group(3);
             if (paramName == null) continue;
 
-            // Check if the callback is chained from a tainted source (e.g., fetch(location.href).then(...)
+            // Check if the callback is chained from a tainted source
+            // Only propagate taint if we can confirm the chain originates from tainted data
+            // e.g., fetch(taintedVar).then(function(resp) ...) — taintedVar must be in taintedVars
             String beforeCallback = script.substring(
                     Math.max(0, callbackMatcher.start() - 300), callbackMatcher.start());
             for (String tainted : taintedVars.keySet()) {
-                if (beforeCallback.contains(tainted) || beforeCallback.contains("fetch(")
-                        || beforeCallback.contains(".responseText") || beforeCallback.contains(".responseJSON")) {
-                    // The callback parameter inherits taint from the source
+                if (beforeCallback.contains(tainted)) {
+                    // Direct: the tainted variable appears before this callback in the chain
                     if (!taintedVars.containsKey(paramName)) {
-                        taintedVars.put(paramName, taintedVars.getOrDefault(tainted,
-                                "callback param from tainted context") + " → callback(" + paramName + ")");
+                        taintedVars.put(paramName, taintedVars.get(tainted)
+                                + " → callback(" + paramName + ")");
                     }
                     break;
+                }
+            }
+            // Also check if a DOM source directly feeds the chain (e.g., fetch(location.href).then(...))
+            if (!taintedVars.containsKey(paramName)) {
+                for (String source : DOM_SOURCES_ALL) {
+                    if (beforeCallback.contains(source)) {
+                        taintedVars.put(paramName, source + " → callback(" + paramName + ")");
+                        break;
+                    }
                 }
             }
         }
@@ -1860,11 +1881,21 @@ public class XssScanner implements ScanModule {
             // Check if the gadget property is actually used in a sink-like pattern
             boolean gadgetUsed;
             if ("Object".equals(library)) {
-                // For generic gadgets, require the property to appear as a setter/assignment
+                // For generic gadgets, require the property to appear as a dynamic setter
+                // that could be influenced by prototype pollution (not just static assignments).
+                // Pattern: obj[prop] = value or computed property access near the PP source
                 gadgetUsed = script.contains("." + property + " =")
-                        || script.contains("." + property + "=")
-                        || script.contains("[\"" + property + "\"]")
-                        || script.contains("['" + property + "']");
+                        || script.contains("." + property + "=");
+                // Also require that the property is accessed on a variable (not a DOM API call)
+                // to avoid FPs on normal code like `img.src = '/static/logo.png'`
+                if (gadgetUsed) {
+                    // Tighten: check that the setter is near a merge/extend call (within 1000 chars)
+                    int propIdx = script.indexOf("." + property + " =");
+                    if (propIdx < 0) propIdx = script.indexOf("." + property + "=");
+                    if (propIdx >= 0 && Math.abs(propIdx - ppMatcher.start()) > 1000) {
+                        gadgetUsed = false; // Too far from the PP source
+                    }
+                }
             } else {
                 gadgetUsed = script.contains(property);
             }
@@ -3268,6 +3299,10 @@ public class XssScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
+
+            // Baseline check: skip if marker was already present in the canary response body
+            String canaryBaselineBody = canaryResult.response().bodyToString();
+            if (canaryBaselineBody != null && canaryBaselineBody.contains(checkFor)) continue;
 
             if (body.contains(checkFor)) {
                 ReflectionVerdict verdict = validateExecutableContext(result, payload, checkFor);
