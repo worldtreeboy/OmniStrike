@@ -2477,9 +2477,6 @@ public class XssScanner implements ScanModule {
             if (config.getBool("xss.encodingXss.enabled", true)) {
                 testEncodingXss(original, target, url);
             }
-            if (config.getBool("xss.headerInjection.enabled", true)) {
-                testHeaderReflectionXss(original, target, url);
-            }
             return;
         }
 
@@ -2561,12 +2558,7 @@ public class XssScanner implements ScanModule {
             testEncodingXss(original, target, url);
         }
 
-        // Step 8: Response header injection XSS (Improvement 7)
-        if (config.getBool("xss.headerInjection.enabled", true)) {
-            testHeaderReflectionXss(original, target, url);
-        }
-
-        // Step 9: Blind XSS via Collaborator
+        // Step 8: Blind XSS via Collaborator
         if (config.getBool("xss.blindOob.enabled", true)
                 && collaboratorManager != null && collaboratorManager.isAvailable()) {
             testBlindXss(original, target, url);
@@ -3227,116 +3219,6 @@ public class XssScanner implements ScanModule {
                                 + "was decoded and the marker '" + checkFor + "' appeared in the response.")
                         .remediation("Always specify charset=UTF-8 in the Content-Type header. "
                                 + "Add: Content-Type: text/html; charset=UTF-8")
-                        .requestResponse(result)
-                        .payload(payload)
-                        .responseEvidence(checkFor)
-                        .build());
-                return;
-            }
-            perHostDelay();
-        }
-    }
-
-    // ==================== RESPONSE HEADER INJECTION XSS (Improvement 7) ====================
-
-    /**
-     * Tests for reflection in response headers and CRLF injection leading to XSS.
-     * If input is reflected in a response header, tries CRLF injection to inject HTML.
-     */
-    private void testHeaderReflectionXss(HttpRequestResponse original, XssTarget target,
-                                          String url) throws InterruptedException {
-        // Step 1: Check if canary appears in any response header
-        HttpRequestResponse canaryResult = sendPayload(original, target, CANARY);
-        if (canaryResult == null || canaryResult.response() == null) return;
-
-        boolean reflectedInHeader = false;
-        String reflectedHeaderName = "";
-        for (var header : canaryResult.response().headers()) {
-            if (header.value().contains(CANARY)) {
-                reflectedInHeader = true;
-                reflectedHeaderName = header.name();
-                break;
-            }
-        }
-
-        if (!reflectedInHeader) return;
-
-        api.logging().logToOutput("[XSS] Canary reflected in response header '"
-                + reflectedHeaderName + "' for param '" + target.name + "'");
-
-        findingsStore.addFinding(Finding.builder("xss-scanner",
-                        "Input Reflected in Response Header: " + reflectedHeaderName,
-                        Severity.MEDIUM, Confidence.FIRM)
-                .url(url).parameter(target.name)
-                .evidence("Canary '" + CANARY + "' found in response header '"
-                        + reflectedHeaderName + "'")
-                .description("User input from parameter '" + target.name + "' is reflected in "
-                        + "the response header '" + reflectedHeaderName + "'. Testing for CRLF "
-                        + "injection to achieve XSS via header injection.")
-                .requestResponse(canaryResult)
-                .payload(CANARY)
-                .responseEvidence(CANARY)
-                .build());
-
-        // Step 2: Try CRLF injection
-        String[][] crlfPayloads = {
-                {CANARY + "\r\n\r\n<script>alert(1)</script>",
-                        "<script>alert(1)</script>", "Raw CRLF injection"},
-                {CANARY + "%0d%0a%0d%0a<script>alert(1)</script>",
-                        "<script>alert(1)</script>", "URL-encoded CRLF injection"},
-                {CANARY + "\r\nContent-Type: text/html\r\n\r\n<script>alert(1)</script>",
-                        "<script>alert(1)</script>", "CRLF with Content-Type override"},
-                {CANARY + "%0d%0aContent-Type:%20text/html%0d%0a%0d%0a<img src=x onerror=alert(1)>",
-                        "onerror=alert", "URL-encoded CRLF + Content-Type"},
-        };
-
-        for (String[] entry : crlfPayloads) {
-            String payload = entry[0];
-            String checkFor = entry[1];
-            String technique = entry[2];
-
-            HttpRequestResponse result = sendPayload(original, target, payload);
-            if (result == null || result.response() == null) continue;
-
-            String body = result.response().bodyToString();
-
-            // Baseline check: skip if marker was already present in the canary response body
-            String canaryBaselineBody = canaryResult.response().bodyToString();
-            if (canaryBaselineBody != null && canaryBaselineBody.contains(checkFor)) continue;
-
-            if (body.contains(checkFor)) {
-                ReflectionVerdict verdict = validateExecutableContext(result, payload, checkFor);
-                if (verdict == ReflectionVerdict.ENCODED) {
-                    api.logging().logToOutput("[XSS] Skipping CRLF XSS — payload HTML-encoded for param '" + target.name + "'");
-                    continue;
-                }
-
-                Severity sev = Severity.HIGH;
-                String verdictNote = "";
-                if (verdict == ReflectionVerdict.NON_HTML_CONTENT_TYPE) {
-                    sev = Severity.INFO;
-                    verdictNote = " | Reflected in non-HTML response";
-                } else if (verdict == ReflectionVerdict.DEAD_CONTAINER) {
-                    sev = Severity.INFO;
-                    verdictNote = " | Reflected inside non-executable container";
-                } else if (verdict == ReflectionVerdict.CSP_RESTRICTED) {
-                    sev = downgradeSeverity(Severity.HIGH);
-                    verdictNote = " | CSP restricts inline execution";
-                }
-
-                findingsStore.addFinding(Finding.builder("xss-scanner",
-                                "XSS via Header Injection (CRLF): " + technique,
-                                sev, Confidence.FIRM)
-                        .url(url).parameter(target.name)
-                        .evidence("Technique: " + technique + " | Reflected header: "
-                                + reflectedHeaderName + " | Injected HTML found in response body" + verdictNote)
-                        .description("CRLF injection in the '" + reflectedHeaderName + "' response header "
-                                + "allows injecting arbitrary response body content via " + technique + ". "
-                                + "The injected HTML marker '" + checkFor + "' appeared in the response body, "
-                                + "confirming XSS via header injection.")
-                        .remediation("Sanitize user input before reflecting in response headers. "
-                                + "Strip or reject CR (\\r) and LF (\\n) characters. Use framework-level "
-                                + "header-setting methods that prevent CRLF injection.")
                         .requestResponse(result)
                         .payload(payload)
                         .responseEvidence(checkFor)

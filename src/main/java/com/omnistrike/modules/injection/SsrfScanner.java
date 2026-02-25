@@ -137,8 +137,6 @@ public class SsrfScanner implements ScanModule {
             "dict://127.0.0.1:6379/INFO",
             "ftp://127.0.0.1/",
             "jar:https://example.com!/",
-            "gopher://127.0.0.1:6379/_*1%0d%0a$4%0d%0aINFO%0d%0a",  // Redis RESP via gopher
-            "gopher://127.0.0.1:11211/_stats%0d%0a",                  // Memcached via gopher
             "tftp://127.0.0.1/test",                                    // TFTP protocol
             "ldap://127.0.0.1/dc=example,dc=com",                      // LDAP protocol
             "file:///proc/self/fd/0",
@@ -147,7 +145,6 @@ public class SsrfScanner implements ScanModule {
             "file:///proc/1/cmdline",
             "file:///c:/windows/system.ini",
             "file:///c:/inetpub/wwwroot/web.config",
-            "gopher://127.0.0.1:25/_EHLO%0d%0a",              // SMTP via gopher
             "gopher://127.0.0.1:27017/_test",                    // MongoDB via gopher
             "gopher://127.0.0.1:5432/_test",                     // PostgreSQL via gopher
             "gopher://127.0.0.1:3306/_test",                     // MySQL via gopher

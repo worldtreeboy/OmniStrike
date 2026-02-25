@@ -69,8 +69,6 @@ public class CommandInjectionScanner implements ScanModule {
             {";sl${EMPTY}eep SLEEP_SECS;", "sleep-envconcat"},
             // Backtick nesting
             {"$(sleep `echo SLEEP_SECS`)", "sleep-backtick-nest"},
-            // CRLF injection
-            {"%0d%0asleep SLEEP_SECS%0d%0a", "sleep-crlf"},
             // Tab as separator
             {";sleep\tSLEEP_SECS;", "sleep-tab"},
             // Brace expansion

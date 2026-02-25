@@ -105,7 +105,6 @@ public class ScanConfigDialog extends JDialog {
                 boolEntry("xss.csti.enabled", true),
                 boolEntry("xss.frameworkXss.enabled", true),
                 boolEntry("xss.encodingXss.enabled", true),
-                boolEntry("xss.headerInjection.enabled", true),
                 boolEntry("xss.blindOob.enabled", true),
                 intEntry("xss.perHostDelay", 300)
         ));
