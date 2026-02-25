@@ -61,7 +61,7 @@ public class SstiScanner implements ScanModule {
             {"{{range.constructor('return 133*991')()}}", SSTI_EXPECTED, "Nunjucks/Handlebars range constructor"},
             {"{php}echo 133*991;{/php}", SSTI_EXPECTED, "Smarty PHP block (legacy)"},
             {"{%set x=133*991%}{{x}}", SSTI_EXPECTED, "Jinja2 set tag"},
-            {"${131000+881}", SSTI_EXPECTED, "Spring EL addition"},
+            {"${131000+803}", SSTI_EXPECTED, "Spring EL addition"},
             {"<%= 133.*(991) %>", SSTI_EXPECTED, "ERB method call"},
             {"p #{133*991}", SSTI_EXPECTED, "Slim template (Ruby)"},
             {"{{ 133 | times: 991 }}", SSTI_EXPECTED, "Liquid template eval"},
@@ -652,8 +652,8 @@ public class SstiScanner implements ScanModule {
                 String body = request.bodyToString();
                 String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
                 if (target.name.contains(".")) {
-                    // Nested key — parse, replace, serialize
-                    String newBody = replaceNestedJsonValue(body, target.name, escaped);
+                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
+                    String newBody = replaceNestedJsonValue(body, target.name, payload);
                     return request.withBody(newBody);
                 } else {
                     String jsonPattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";

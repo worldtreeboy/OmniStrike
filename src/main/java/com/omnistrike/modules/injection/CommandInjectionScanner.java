@@ -110,7 +110,7 @@ public class CommandInjectionScanner implements ScanModule {
             {"& waitfor /T SLEEP_SECS omni 2>nul &", "waitfor"},
             // PowerShell sleep variants
             {"& powershell -c \"Start-Sleep SLEEP_SECS\" &", "powershell-c"},
-            {"& powershell -enc BASE64SLEEP &", "powershell-enc"},
+            {"& powershell -c \"Start-Sleep -Seconds SLEEP_SECS\" &", "powershell-enc"},
             // choice command
             {"& choice /C Y /T SLEEP_SECS /D Y >nul &", "choice"},
             // pathping delay
@@ -661,8 +661,8 @@ public class CommandInjectionScanner implements ScanModule {
                 String body = request.bodyToString();
                 String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
                 if (target.name.contains(".")) {
-                    // Nested key — parse, replace, serialize
-                    String newBody = replaceNestedJsonValue(body, target.name, escaped);
+                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
+                    String newBody = replaceNestedJsonValue(body, target.name, payload);
                     return request.withBody(newBody);
                 } else {
                     String pattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";

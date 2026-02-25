@@ -59,10 +59,10 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
     // Static file extensions where active injection testing is pointless
     private static final Set<String> STATIC_EXTENSIONS = Set.of(
-            ".js", ".css", ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg",
-            ".gif", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".otf", ".map",
-            ".webp", ".mp3", ".mp4", ".avi", ".mov", ".pdf", ".zip", ".gz",
-            ".tar", ".xml", ".json", ".txt", ".csv", ".wasm", ".mjs"
+            ".css", ".js", ".mjs", ".jsx", ".ts", ".map",
+            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+            ".woff", ".woff2", ".ttf", ".eot", ".otf",
+            ".mp4", ".mp3", ".webm", ".pdf"
     );
 
     public OmniStrikeContextMenu(MontoyaApi api, ModuleRegistry registry,

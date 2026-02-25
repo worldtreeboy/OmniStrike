@@ -1726,8 +1726,8 @@ public class SmartSqliDetector implements ScanModule {
                 String body = request.bodyToString();
                 String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
                 if (ip.name.contains(".")) {
-                    // Nested key — parse, replace, serialize
-                    String newBody = replaceNestedJsonValue(body, ip.name, escaped);
+                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
+                    String newBody = replaceNestedJsonValue(body, ip.name, payload);
                     return request.withBody(newBody);
                 } else {
                     String jsonPattern = "\"" + Pattern.quote(ip.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
