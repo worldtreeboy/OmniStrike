@@ -628,6 +628,15 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
+        // Blind OOB spray if passive found nothing — but only for the target parameter
+        if (deserPoints.isEmpty()) {
+            try {
+                blindOobSprayForParameter(requestResponse, urlPath, targetParameterName);
+            } catch (Exception e) {
+                api.logging().logToError("Deser blind OOB spray error: " + e.getMessage());
+            }
+        }
+
         // Return passive findings (e.g., ".NET BinaryFormatter detected") so the caller
         // adds them to FindingsStore. Previously returned emptyList(), discarding all passive findings.
         List<Finding> enriched = new ArrayList<>(findings.size());
@@ -692,6 +701,16 @@ public class DeserializationScanner implements ScanModule {
                 activeTest(requestResponse, dp);
             } catch (Exception e) {
                 api.logging().logToError("Deser active test error: " + e.getMessage());
+            }
+        }
+
+        // If passive detection found NO deserialization points, blind-spray OOB
+        // payloads into all cookies and body parameters for every language.
+        if (deserPoints.isEmpty()) {
+            try {
+                blindOobSpray(requestResponse, urlPath);
+            } catch (Exception e) {
+                api.logging().logToError("Deser blind OOB spray error: " + e.getMessage());
             }
         }
 
@@ -2963,6 +2982,88 @@ public class DeserializationScanner implements ScanModule {
     private void perHostDelay() throws InterruptedException {
         int delay = config.getInt("deser.perHostDelay", 500);
         if (delay > 0) Thread.sleep(delay);
+    }
+
+    // ==================== BLIND OOB SPRAY ====================
+
+    private static final String[] ALL_DESER_LANGUAGES = {"Java", "PHP", ".NET", "Python", "Ruby", "Node.js"};
+
+    /**
+     * Blind OOB spray: when passive detection finds NO deserialization points,
+     * spray OOB payloads for ALL languages into every cookie and body parameter.
+     * OOB-only via Collaborator — no timing tests, no error-based tests.
+     */
+    private void blindOobSpray(HttpRequestResponse original, String urlPath) throws InterruptedException {
+        if (collaboratorManager == null || !collaboratorManager.isAvailable()) return;
+
+        HttpRequest request = original.request();
+        String url = request.url();
+        List<DeserPoint> blindPoints = collectBlindPoints(request);
+
+        if (blindPoints.isEmpty()) return;
+        api.logging().logToOutput("[Deser] No deserialization detected passively — blind OOB spray on "
+                + blindPoints.size() + " injection points: " + url);
+
+        fireBlindOob(original, url, urlPath, blindPoints);
+    }
+
+    /**
+     * Blind OOB spray filtered to a single parameter name.
+     */
+    private void blindOobSprayForParameter(HttpRequestResponse original, String urlPath,
+                                            String targetParam) throws InterruptedException {
+        if (collaboratorManager == null || !collaboratorManager.isAvailable()) return;
+
+        HttpRequest request = original.request();
+        String url = request.url();
+        List<DeserPoint> blindPoints = collectBlindPoints(request);
+        blindPoints.removeIf(dp -> !dp.name.equalsIgnoreCase(targetParam));
+
+        if (blindPoints.isEmpty()) return;
+        api.logging().logToOutput("[Deser] No deserialization detected passively — blind OOB spray on param '"
+                + targetParam + "': " + url);
+
+        fireBlindOob(original, url, urlPath, blindPoints);
+    }
+
+    /**
+     * Collects all cookies and body parameters as blind DeserPoints, one per language.
+     */
+    private List<DeserPoint> collectBlindPoints(HttpRequest request) {
+        List<DeserPoint> points = new ArrayList<>();
+        for (var param : request.parameters()) {
+            if (param.type() == burp.api.montoya.http.message.params.HttpParameterType.COOKIE) {
+                for (String lang : ALL_DESER_LANGUAGES) {
+                    points.add(new DeserPoint("cookie", param.name(), param.value(), lang, "blind OOB spray"));
+                }
+            } else if (param.type() == burp.api.montoya.http.message.params.HttpParameterType.BODY) {
+                for (String lang : ALL_DESER_LANGUAGES) {
+                    points.add(new DeserPoint("body_param", param.name(), param.value(), lang, "blind OOB spray"));
+                }
+            }
+        }
+        return points;
+    }
+
+    /**
+     * Fires OOB-only active testing for each blind DeserPoint. Deduplicates by
+     * param+language so repeated requests to the same endpoint don't re-spray.
+     */
+    private void fireBlindOob(HttpRequestResponse original, String url, String urlPath,
+                               List<DeserPoint> blindPoints) throws InterruptedException {
+        for (DeserPoint dp : blindPoints) {
+            String dedupKey = dp.name + ":" + dp.language + ":blind";
+            if (!dedup.markIfNew("deser-scanner", urlPath, dedupKey)) continue;
+
+            try {
+                activeTestOob(original, dp, url);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (Exception e) {
+                api.logging().logToError("Deser blind OOB error (" + dp.language + " " + dp.name + "): " + e.getMessage());
+            }
+        }
     }
 
     @Override

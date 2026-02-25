@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.27-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.28-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -467,7 +467,15 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ---
 
-## What's New in v1.27
+## What's New in v1.28
+
+**Blind OOB Deserialization Spray** &mdash; Deserialization scanner no longer requires passive detection before active testing. When no serialized data is found in traffic, the scanner now blind-sprays OOB payloads (Collaborator) into all cookies and body parameters across all 6 languages (Java, PHP, .NET, Python, Ruby, Node.js). OOB-first, as always.
+
+- **Blind spray on zero passive hits** &mdash; Previously, if `passiveAnalyzeRequest()` found no `DeserPoint`s, the scanner returned immediately with no active testing. Now it falls back to blind OOB testing on every cookie and body parameter.
+- **Per-parameter blind spray** &mdash; Context menu "Scan parameter" mode also triggers blind OOB spray when passive detection finds nothing for the target parameter.
+- **Deduplication** &mdash; Blind spray uses separate dedup keys (`param:language:blind`) so it doesn't interfere with normal passive→active flow, and won't re-spray the same endpoint on repeated scans.
+
+### Previous (v1.27)
 
 **Comprehensive Bug Audit** &mdash; Full codebase audit across all 19 modules with 30+ bug fixes covering thread safety, false positives, race conditions, and logic errors.
 
