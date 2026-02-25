@@ -105,9 +105,8 @@ public class AiVulnAnalyzer implements ScanModule {
     private final ConcurrentHashMap<String, RateLimitTracker> rateLimitTrackers = new ConcurrentHashMap<>();
 
     // ==================== Improvement 7: Prompt Size Management ====================
-    // Token budget constants (approximate: 1 token ≈ 4 chars)
-    private static final int CONTEXT_TOKEN_BUDGET = 8000;
-    private static final int CONTEXT_CHAR_BUDGET = CONTEXT_TOKEN_BUDGET * 4; // ~32K chars
+    // No token budget — let the model's context window be the only limit.
+    // CSS is still stripped (useless for vuln analysis) but everything else passes through.
 
     // ==================== Improvement 9: Structured Output Enforcement ====================
     private static final int MAX_JSON_RETRIES = 1;
@@ -669,13 +668,7 @@ public class AiVulnAnalyzer implements ScanModule {
             String sessionContext = buildSessionFindingsContext();
             if (!sessionContext.isEmpty()) promptBuilder.append(sessionContext);
 
-            // Improvement 7: Trim exchange text to fit budget
-            String exchangeText = exchange.toPromptText();
-            int remaining = CONTEXT_CHAR_BUDGET - promptBuilder.length();
-            if (exchangeText.length() > remaining && remaining > 1000) {
-                exchangeText = trimToTokenBudget(exchangeText, remaining);
-            }
-            promptBuilder.append(exchangeText);
+            promptBuilder.append(exchange.toPromptText());
 
             String prompt = promptBuilder.toString();
             trackInputTokens(prompt);
@@ -796,13 +789,7 @@ public class AiVulnAnalyzer implements ScanModule {
             if (!dedupContext.isEmpty()) enrichedPrompt.append(dedupContext);
             enrichedPrompt.append(paramConstraint);
 
-            // Improvement 7: Trim the exchange text to fit token budget
-            String exchangeText = exchange.toPromptText();
-            int remaining = CONTEXT_CHAR_BUDGET - enrichedPrompt.length();
-            if (exchangeText.length() > remaining && remaining > 1000) {
-                exchangeText = trimToTokenBudget(exchangeText, remaining);
-            }
-            enrichedPrompt.append(exchangeText);
+            enrichedPrompt.append(exchange.toPromptText());
 
             String prompt = enrichedPrompt.toString();
             trackInputTokens(prompt);
@@ -1673,29 +1660,6 @@ public class AiVulnAnalyzer implements ScanModule {
     // ==================== Prompt Size Management (Improvement 7) ====================
 
     /**
-     * Trims prompt context to fit within the token budget.
-     * Strips boilerplate, truncates bodies, summarizes if needed.
-     */
-    private String trimToTokenBudget(String context, int charBudget) {
-        if (context.length() <= charBudget) return context;
-
-        // Step 1: Strip CSS blocks (never useful for vuln analysis)
-        context = context.replaceAll("<style[^>]*>[\\s\\S]*?</style>", "[CSS removed]");
-        if (context.length() <= charBudget) return context;
-
-        // Step 2: Strip non-script HTML tags (keep text content and script blocks)
-        context = context.replaceAll("<(?!/?script)[^>]+>", " ");
-        if (context.length() <= charBudget) return context;
-
-        // Step 3: Collapse whitespace
-        context = context.replaceAll("\\s+", " ");
-        if (context.length() <= charBudget) return context;
-
-        // Step 4: Hard truncate (script content preserved up to this point)
-        return context.substring(0, charBudget) + "\n[... truncated to fit token budget]";
-    }
-
-    /**
      * Strips boilerplate from an HTTP response body for inclusion in prompts.
      */
     private String stripResponseBoilerplate(String body) {
@@ -1874,7 +1838,6 @@ public class AiVulnAnalyzer implements ScanModule {
     private String formatResultsForLlm(List<FuzzResult> results) {
         StringBuilder sb = new StringBuilder();
         int i = 1;
-        int charBudget = CONTEXT_CHAR_BUDGET;
 
         for (FuzzResult r : results) {
             StringBuilder entry = new StringBuilder();
@@ -1910,13 +1873,6 @@ public class AiVulnAnalyzer implements ScanModule {
                 entry.append("Response Body: ").append(stripResponseBoilerplate(body)).append("\n");
             }
             entry.append("\n");
-
-            // Improvement 7: Check if adding this entry exceeds the budget
-            if (sb.length() + entry.length() > charBudget) {
-                sb.append("[... ").append(results.size() - i + 1)
-                        .append(" more results omitted — token budget reached]\n");
-                break;
-            }
             sb.append(entry);
         }
         return sb.toString();
