@@ -1,11 +1,12 @@
 package com.omnistrike.ui;
 
+import static com.omnistrike.ui.CyberTheme.*;
+
 import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.model.Finding;
 
 import javax.swing.*;
-import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
@@ -49,14 +50,19 @@ public class RequestResponsePanel extends JPanel {
     public RequestResponsePanel(FindingsStore findingsStore) {
         this.findingsStore = findingsStore;
         setLayout(new BorderLayout());
+        setBackground(BG_DARK);
 
         // Top controls
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        controls.setBackground(BG_DARK);
         JButton refreshBtn = new JButton("Refresh");
         refreshBtn.addActionListener(e -> refreshTable());
+        CyberTheme.styleButton(refreshBtn, NEON_CYAN);
         controls.add(refreshBtn);
 
         countLabel = new JLabel("Entries: 0");
+        countLabel.setForeground(FG_PRIMARY);
+        countLabel.setFont(MONO_BOLD);
         controls.add(Box.createHorizontalStrut(10));
         controls.add(countLabel);
         add(controls, BorderLayout.NORTH);
@@ -69,6 +75,7 @@ public class RequestResponsePanel extends JPanel {
         table = new JTable(tableModel);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setAutoCreateRowSorter(true);
+        CyberTheme.styleTable(table);
         table.getColumnModel().getColumn(0).setPreferredWidth(70);
         table.getColumnModel().getColumn(1).setPreferredWidth(70);
         table.getColumnModel().getColumn(2).setPreferredWidth(100);
@@ -76,7 +83,7 @@ public class RequestResponsePanel extends JPanel {
         table.getColumnModel().getColumn(4).setPreferredWidth(220);
         table.getColumnModel().getColumn(5).setPreferredWidth(80);
         table.getColumnModel().getColumn(6).setPreferredWidth(70);
-        table.getColumnModel().getColumn(0).setCellRenderer(createSeverityRenderer());
+        table.getColumnModel().getColumn(0).setCellRenderer(CyberTheme.createSeverityRenderer());
 
         // Right-click context menu
         JPopupMenu popupMenu = new JPopupMenu();
@@ -120,36 +127,51 @@ public class RequestResponsePanel extends JPanel {
         // Request area (left)
         requestArea = new JTextArea();
         requestArea.setEditable(false);
-        requestArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        requestArea.setBackground(BG_INPUT);
+        requestArea.setForeground(NEON_GREEN);
+        requestArea.setCaretColor(NEON_GREEN);
+        requestArea.setFont(MONO_FONT);
         requestArea.setLineWrap(true);
         requestArea.setWrapStyleWord(true);
 
         // Response area (right)
         responseArea = new JTextArea();
         responseArea.setEditable(false);
-        responseArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        responseArea.setBackground(BG_INPUT);
+        responseArea.setForeground(NEON_CYAN);
+        responseArea.setCaretColor(NEON_CYAN);
+        responseArea.setFont(MONO_FONT);
         responseArea.setLineWrap(true);
         responseArea.setWrapStyleWord(true);
 
         // Labels for request/response panes
         JPanel requestPanel = new JPanel(new BorderLayout());
+        requestPanel.setBackground(BG_DARK);
         JLabel reqLabel = new JLabel("  Request / Evidence");
-        reqLabel.setFont(reqLabel.getFont().deriveFont(Font.BOLD));
+        reqLabel.setForeground(NEON_GREEN);
+        reqLabel.setFont(MONO_BOLD);
         reqLabel.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2));
         requestPanel.add(reqLabel, BorderLayout.NORTH);
-        requestPanel.add(new JScrollPane(requestArea), BorderLayout.CENTER);
+        JScrollPane reqScrollPane = new JScrollPane(requestArea);
+        CyberTheme.styleScrollPane(reqScrollPane);
+        requestPanel.add(reqScrollPane, BorderLayout.CENTER);
 
         JPanel responsePanel = new JPanel(new BorderLayout());
+        responsePanel.setBackground(BG_DARK);
         JLabel respLabel = new JLabel("  Response / Details");
-        respLabel.setFont(respLabel.getFont().deriveFont(Font.BOLD));
+        respLabel.setForeground(NEON_CYAN);
+        respLabel.setFont(MONO_BOLD);
         respLabel.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2));
         responsePanel.add(respLabel, BorderLayout.NORTH);
-        responsePanel.add(new JScrollPane(responseArea), BorderLayout.CENTER);
+        JScrollPane respScrollPane = new JScrollPane(responseArea);
+        CyberTheme.styleScrollPane(respScrollPane);
+        responsePanel.add(respScrollPane, BorderLayout.CENTER);
 
         // Side-by-side split pane
         JSplitPane reqRespSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 requestPanel, responsePanel);
         reqRespSplit.setResizeWeight(0.5);
+        CyberTheme.styleSplitPane(reqRespSplit);
 
         // Fix setDividerLocation(0.5) - must be set after the component is laid out
         reqRespSplit.addComponentListener(new ComponentAdapter() {
@@ -165,9 +187,12 @@ public class RequestResponsePanel extends JPanel {
         });
 
         // Table on top, request/response below
+        JScrollPane tableScrollPane = new JScrollPane(table);
+        CyberTheme.styleScrollPane(tableScrollPane);
         JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-                new JScrollPane(table), reqRespSplit);
+                tableScrollPane, reqRespSplit);
         mainSplit.setDividerLocation(150);
+        CyberTheme.styleSplitPane(mainSplit);
 
         add(mainSplit, BorderLayout.CENTER);
 
@@ -347,32 +372,6 @@ public class RequestResponsePanel extends JPanel {
             sb.append("[Error formatting response: ").append(e.getMessage()).append("]");
         }
         return sb.toString();
-    }
-
-    private DefaultTableCellRenderer createSeverityRenderer() {
-        return new DefaultTableCellRenderer() {
-            @Override
-            public Component getTableCellRendererComponent(JTable table, Object value,
-                    boolean isSelected, boolean hasFocus, int row, int column) {
-                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-                if (!isSelected && value != null) {
-                    String sev = value.toString();
-                    switch (sev) {
-                        case "CRITICAL" -> { c.setBackground(new Color(180, 30, 30)); c.setForeground(Color.WHITE); }
-                        case "HIGH" -> { c.setBackground(new Color(220, 80, 40)); c.setForeground(Color.WHITE); }
-                        case "MEDIUM" -> { c.setBackground(new Color(230, 160, 30)); c.setForeground(Color.BLACK); }
-                        case "LOW" -> { c.setBackground(new Color(70, 140, 200)); c.setForeground(Color.WHITE); }
-                        case "INFO" -> { c.setBackground(new Color(130, 130, 130)); c.setForeground(Color.WHITE); }
-                        default -> { c.setBackground(table.getBackground()); c.setForeground(table.getForeground()); }
-                    }
-                } else if (!isSelected) {
-                    c.setBackground(table.getBackground());
-                    c.setForeground(table.getForeground());
-                }
-                setHorizontalAlignment(SwingConstants.CENTER);
-                return c;
-            }
-        };
     }
 
     /** Sets the Montoya API reference for Send to Repeater integration. */

@@ -1,5 +1,7 @@
 package com.omnistrike.ui;
 
+import static com.omnistrike.ui.CyberTheme.*;
+
 import javax.swing.*;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
@@ -15,21 +17,28 @@ public class LogPanel extends JPanel {
 
     public LogPanel() {
         setLayout(new BorderLayout());
+        setBackground(BG_DARK);
 
         logArea = new JTextArea();
         logArea.setEditable(false);
-        logArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        logArea.setFont(MONO_FONT);
+        logArea.setBackground(BG_DARK);
+        logArea.setForeground(NEON_GREEN);
+        logArea.setCaretColor(NEON_GREEN);
         logArea.setLineWrap(true);
         logArea.setWrapStyleWord(true);
 
         JScrollPane scrollPane = new JScrollPane(logArea);
         scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_ALWAYS);
+        CyberTheme.styleScrollPane(scrollPane);
         add(scrollPane, BorderLayout.CENTER);
 
         // Controls
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        controls.setBackground(BG_DARK);
 
         JButton copyAllBtn = new JButton("Copy All");
+        CyberTheme.styleButton(copyAllBtn, NEON_CYAN);
         copyAllBtn.setToolTipText("Copy all log contents to the clipboard");
         copyAllBtn.addActionListener(e -> {
             String text = logArea.getText();
@@ -41,6 +50,7 @@ public class LogPanel extends JPanel {
         controls.add(copyAllBtn);
 
         JButton clearBtn = new JButton("Clear Log");
+        CyberTheme.styleButton(clearBtn, NEON_RED);
         clearBtn.addActionListener(e -> logArea.setText(""));
         controls.add(clearBtn);
 

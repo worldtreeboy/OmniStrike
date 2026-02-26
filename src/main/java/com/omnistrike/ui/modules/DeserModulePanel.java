@@ -8,7 +8,6 @@ import com.omnistrike.modules.injection.deser.DeserPayloadGenerator.Encoding;
 import com.omnistrike.modules.injection.deser.DeserPayloadGenerator.Language;
 
 import javax.swing.*;
-import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
@@ -16,6 +15,9 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.List;
+
+import com.omnistrike.ui.CyberTheme;
+import static com.omnistrike.ui.CyberTheme.*;
 
 /**
  * Deserialization payload generator panel for OmniStrike.
@@ -50,22 +52,23 @@ public class DeserModulePanel extends JPanel {
 
     public DeserModulePanel(MontoyaApi api, FindingsStore findingsStore) {
         super(new BorderLayout(0, 6));
+        setBackground(BG_DARK);
         setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
         this.api = api;
         this.findingsStore = findingsStore;
 
         // ── Controls: Language, Chain, Encoding ─────────────────────────────
         languageCombo = new JComboBox<>(Language.values());
-        languageCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        CyberTheme.styleComboBox(languageCombo);
 
         chainCombo = new JComboBox<>();
-        chainCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        CyberTheme.styleComboBox(chainCombo);
         chainCombo.setPreferredSize(new Dimension(280, 28));
 
         chainLabel = label("Chain:");
 
         formatterCombo = new JComboBox<>();
-        formatterCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        CyberTheme.styleComboBox(formatterCombo);
         formatterCombo.setPreferredSize(new Dimension(200, 28));
 
         formatterLabel = label("Formatter:");
@@ -73,16 +76,17 @@ public class DeserModulePanel extends JPanel {
         formatterCombo.setVisible(false);
 
         phpFunctionCombo = new JComboBox<>();
-        phpFunctionCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        CyberTheme.styleComboBox(phpFunctionCombo);
         phpFunctionCombo.setPreferredSize(new Dimension(160, 28));
         phpFunctionLabel = label("Function:");
         phpFunctionLabel.setVisible(false);
         phpFunctionCombo.setVisible(false);
 
         encodingCombo = new JComboBox<>(Encoding.values());
-        encodingCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        CyberTheme.styleComboBox(encodingCombo);
 
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        row1.setBackground(BG_DARK);
         row1.add(label("Language:"));
         row1.add(languageCombo);
         row1.add(chainLabel);
@@ -96,36 +100,38 @@ public class DeserModulePanel extends JPanel {
 
         // ── Chain description label ─────────────────────────────────────────
         chainDescLabel = new JLabel(" ");
-        chainDescLabel.setFont(new Font("Segoe UI", Font.ITALIC, 11));
-        chainDescLabel.setForeground(new Color(100, 100, 100));
+        chainDescLabel.setFont(MONO_SMALL);
+        chainDescLabel.setForeground(FG_SECONDARY);
         chainDescLabel.setBorder(BorderFactory.createEmptyBorder(0, 12, 0, 0));
 
         // ── Command field ───────────────────────────────────────────────────
         commandField = new JTextField("curl http://attacker.com/callback", 40);
-        commandField.setFont(new Font("Consolas", Font.PLAIN, 13));
+        CyberTheme.styleTextField(commandField);
         commandField.setToolTipText("OS command or callback URL for the payload");
 
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        row2.setBackground(BG_DARK);
         row2.add(label("Command:"));
         row2.add(commandField);
 
         // ── Buttons ─────────────────────────────────────────────────────────
         JButton generateBtn = new JButton("Generate Payload");
-        generateBtn.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        CyberTheme.styleFilledButton(generateBtn, NEON_GREEN);
         generateBtn.setToolTipText("Generate the deserialization payload");
 
         JButton copyB64Btn = new JButton("Copy Base64");
-        copyB64Btn.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        CyberTheme.styleButton(copyB64Btn, NEON_CYAN);
         copyB64Btn.setToolTipText("Copy base64-encoded payload to clipboard");
 
         JButton copyRawBtn = new JButton("Copy Raw");
-        copyRawBtn.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        CyberTheme.styleButton(copyRawBtn, NEON_CYAN);
         copyRawBtn.setToolTipText("Copy raw payload text to clipboard");
 
         JButton clearBtn = new JButton("Clear");
-        clearBtn.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        CyberTheme.styleButton(clearBtn, NEON_RED);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        btnPanel.setBackground(BG_DARK);
         btnPanel.add(generateBtn);
         btnPanel.add(copyB64Btn);
         btnPanel.add(copyRawBtn);
@@ -133,6 +139,7 @@ public class DeserModulePanel extends JPanel {
 
         // ── Top section ─────────────────────────────────────────────────────
         JPanel topSection = new JPanel();
+        topSection.setBackground(BG_DARK);
         topSection.setLayout(new BoxLayout(topSection, BoxLayout.Y_AXIS));
         topSection.add(row1);
         topSection.add(chainDescLabel);
@@ -142,15 +149,16 @@ public class DeserModulePanel extends JPanel {
         // ── Payload preview (dark terminal style) ───────────────────────────
         previewArea = new JTextArea(18, 60);
         previewArea.setEditable(false);
-        previewArea.setFont(new Font("Consolas", Font.BOLD, 13));
-        previewArea.setBackground(new Color(30, 30, 30));
-        previewArea.setForeground(new Color(0, 255, 128));
-        previewArea.setCaretColor(new Color(0, 255, 128));
+        previewArea.setFont(MONO_BOLD.deriveFont(13f));
+        previewArea.setBackground(BG_DARK);
+        previewArea.setForeground(NEON_GREEN);
+        previewArea.setCaretColor(NEON_GREEN);
         previewArea.setLineWrap(true);
         previewArea.setWrapStyleWord(true);
 
         // ── Preview color selector ───────────────────────────────────────────
         JPanel colorPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
+        colorPanel.setBackground(BG_DARK);
         colorPanel.add(label("Text Color:"));
         ButtonGroup colorGroup = new ButtonGroup();
         JRadioButton greenRadio = new JRadioButton("Green");
@@ -158,14 +166,14 @@ public class DeserModulePanel extends JPanel {
         JRadioButton blueRadio = new JRadioButton("Blue");
         JRadioButton whiteRadio = new JRadioButton("White");
         greenRadio.setSelected(true);
-        greenRadio.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        redRadio.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        blueRadio.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        whiteRadio.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        greenRadio.setForeground(new Color(0, 180, 80));
-        redRadio.setForeground(new Color(220, 50, 50));
-        blueRadio.setForeground(new Color(80, 140, 255));
-        whiteRadio.setForeground(new Color(80, 80, 80));
+        CyberTheme.styleRadioButton(greenRadio);
+        greenRadio.setForeground(NEON_GREEN);
+        CyberTheme.styleRadioButton(redRadio);
+        redRadio.setForeground(NEON_RED);
+        CyberTheme.styleRadioButton(blueRadio);
+        blueRadio.setForeground(NEON_BLUE);
+        CyberTheme.styleRadioButton(whiteRadio);
+        whiteRadio.setForeground(FG_PRIMARY);
         colorGroup.add(greenRadio);
         colorGroup.add(redRadio);
         colorGroup.add(blueRadio);
@@ -177,10 +185,10 @@ public class DeserModulePanel extends JPanel {
 
         java.awt.event.ActionListener colorAction = e -> {
             Color c;
-            if (redRadio.isSelected()) c = new Color(255, 80, 80);
-            else if (blueRadio.isSelected()) c = new Color(100, 160, 255);
-            else if (whiteRadio.isSelected()) c = Color.WHITE;
-            else c = new Color(0, 255, 128);
+            if (redRadio.isSelected()) c = NEON_RED;
+            else if (blueRadio.isSelected()) c = NEON_BLUE;
+            else if (whiteRadio.isSelected()) c = FG_PRIMARY;
+            else c = NEON_GREEN;
             previewArea.setForeground(c);
             previewArea.setCaretColor(c);
         };
@@ -190,14 +198,12 @@ public class DeserModulePanel extends JPanel {
         whiteRadio.addActionListener(colorAction);
 
         JPanel previewWrapper = new JPanel(new BorderLayout());
+        previewWrapper.setBackground(BG_DARK);
         previewWrapper.add(colorPanel, BorderLayout.NORTH);
-        previewWrapper.add(new JScrollPane(previewArea), BorderLayout.CENTER);
-        previewWrapper.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(new Color(60, 60, 60)),
-                "Payload Preview",
-                javax.swing.border.TitledBorder.DEFAULT_JUSTIFICATION,
-                javax.swing.border.TitledBorder.DEFAULT_POSITION,
-                new Font("Segoe UI", Font.BOLD, 12)));
+        JScrollPane previewScroll = new JScrollPane(previewArea);
+        CyberTheme.styleScrollPane(previewScroll);
+        previewWrapper.add(previewScroll, BorderLayout.CENTER);
+        CyberTheme.styleTitledBorder(previewWrapper, "Payload Preview", NEON_CYAN);
 
         // ── Findings table ──────────────────────────────────────────────────
         findingsTableModel = new DefaultTableModel(
@@ -205,13 +211,13 @@ public class DeserModulePanel extends JPanel {
             @Override public boolean isCellEditable(int r, int c) { return false; }
         };
         JTable findingsTable = new JTable(findingsTableModel);
-        findingsTable.setRowHeight(20);
+        CyberTheme.styleTable(findingsTable);
         findingsTable.setAutoCreateRowSorter(true);
-        findingsTable.getColumnModel().getColumn(0).setCellRenderer(createSeverityRenderer());
+        findingsTable.getColumnModel().getColumn(0).setCellRenderer(CyberTheme.createSeverityRenderer());
 
         JTextArea findingsDetailArea = new JTextArea(4, 60);
         findingsDetailArea.setEditable(false);
-        findingsDetailArea.setFont(new Font("Consolas", Font.PLAIN, 13));
+        CyberTheme.styleTextArea(findingsDetailArea);
         findingsDetailArea.setLineWrap(true);
 
         findingsTable.getSelectionModel().addListSelectionListener(e -> {
@@ -250,11 +256,17 @@ public class DeserModulePanel extends JPanel {
 
         // ── Bottom tabs: Preview + Findings ─────────────────────────────────
         JTabbedPane toolTabs = new JTabbedPane();
-        toolTabs.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        CyberTheme.styleTabbedPane(toolTabs);
         toolTabs.addTab("Payload Preview", previewWrapper);
 
+        JScrollPane findingsTableScroll = new JScrollPane(findingsTable);
+        CyberTheme.styleScrollPane(findingsTableScroll);
+        JScrollPane findingsDetailScroll = new JScrollPane(findingsDetailArea);
+        CyberTheme.styleScrollPane(findingsDetailScroll);
+
         JSplitPane findingsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-                new JScrollPane(findingsTable), new JScrollPane(findingsDetailArea));
+                findingsTableScroll, findingsDetailScroll);
+        CyberTheme.styleSplitPane(findingsSplit);
         findingsSplit.setResizeWeight(0.6);
         findingsSplit.setDividerLocation(200);
         toolTabs.addTab("Findings (" + findingsList.size() + ")", findingsSplit);
@@ -262,6 +274,7 @@ public class DeserModulePanel extends JPanel {
         // ── Main layout ─────────────────────────────────────────────────────
         JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 topSection, toolTabs);
+        CyberTheme.styleSplitPane(mainSplit);
         mainSplit.setResizeWeight(0.15);
         mainSplit.setDividerLocation(140);
 
@@ -504,38 +517,13 @@ public class DeserModulePanel extends JPanel {
 
     private static JLabel label(String text) {
         JLabel l = new JLabel(text);
-        l.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        l.setForeground(NEON_CYAN);
+        l.setFont(MONO_BOLD);
         return l;
     }
 
     private static String truncate(String s, int max) {
         if (s == null) return "";
         return s.length() > max ? s.substring(0, max) + "..." : s;
-    }
-
-    private DefaultTableCellRenderer createSeverityRenderer() {
-        return new DefaultTableCellRenderer() {
-            @Override
-            public Component getTableCellRendererComponent(JTable table, Object value,
-                    boolean isSelected, boolean hasFocus, int row, int column) {
-                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-                if (!isSelected && value != null) {
-                    String sev = value.toString();
-                    switch (sev) {
-                        case "CRITICAL" -> { c.setBackground(new Color(180, 30, 30)); c.setForeground(Color.WHITE); }
-                        case "HIGH" -> { c.setBackground(new Color(220, 80, 40)); c.setForeground(Color.WHITE); }
-                        case "MEDIUM" -> { c.setBackground(new Color(230, 160, 30)); c.setForeground(Color.BLACK); }
-                        case "LOW" -> { c.setBackground(new Color(70, 140, 200)); c.setForeground(Color.WHITE); }
-                        case "INFO" -> { c.setBackground(new Color(130, 130, 130)); c.setForeground(Color.WHITE); }
-                        default -> { c.setBackground(table.getBackground()); c.setForeground(table.getForeground()); }
-                    }
-                } else if (!isSelected) {
-                    c.setBackground(table.getBackground());
-                    c.setForeground(table.getForeground());
-                }
-                setHorizontalAlignment(SwingConstants.CENTER);
-                return c;
-            }
-        };
     }
 }

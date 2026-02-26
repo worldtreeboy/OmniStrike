@@ -17,27 +17,16 @@ import java.awt.*;
 import java.util.*;
 import java.util.List;
 
+import static com.omnistrike.ui.CyberTheme.*;
+
 /**
  * Custom scan configuration dialog.
  * Left panel: module checkboxes grouped by category (AI Analysis, Active Scanners, Passive Analyzers).
  * Right panel: dynamic config keys for the currently highlighted module.
  * OK starts scanning with checked modules using configured settings. Cancel aborts.
- * Dark theme to match Burp's look.
+ * Cyberpunk/neon theme via CyberTheme.
  */
 public class ScanConfigDialog extends JDialog {
-
-    // Dark theme colors
-    private static final Color BG_DARK = new Color(43, 43, 43);
-    private static final Color BG_PANEL = new Color(50, 50, 50);
-    private static final Color BG_INPUT = new Color(60, 60, 60);
-    private static final Color BG_LIST = new Color(55, 55, 55);
-    private static final Color BG_SELECTED = new Color(75, 110, 175);
-    private static final Color FG_NORMAL = new Color(187, 187, 187);
-    private static final Color FG_HEADER = new Color(220, 220, 220);
-    private static final Color FG_KEY = new Color(152, 195, 121);
-    private static final Color FG_DEFAULT = new Color(120, 120, 120);
-    private static final Color BORDER_COLOR = new Color(80, 80, 80);
-    private static final Color ACCENT = new Color(86, 156, 214);
 
     private final ModuleRegistry registry;
     private final MontoyaApi api;
@@ -211,8 +200,8 @@ public class ScanConfigDialog extends JDialog {
 
         // ==================== HEADER ====================
         JLabel headerLabel = new JLabel("Custom Scan — " + truncate(reqResp.request().url(), 70));
-        headerLabel.setForeground(ACCENT);
-        headerLabel.setFont(headerLabel.getFont().deriveFont(Font.BOLD, 14f));
+        headerLabel.setForeground(NEON_CYAN);
+        headerLabel.setFont(MONO_BOLD.deriveFont(14f));
         headerLabel.setBorder(new EmptyBorder(0, 4, 8, 0));
         root.add(headerLabel, BorderLayout.NORTH);
 
@@ -224,8 +213,8 @@ public class ScanConfigDialog extends JDialog {
         rightPanel.setBackground(BG_DARK);
 
         configTitleLabel = new JLabel("Select a module to configure");
-        configTitleLabel.setForeground(FG_HEADER);
-        configTitleLabel.setFont(configTitleLabel.getFont().deriveFont(Font.BOLD, 13f));
+        configTitleLabel.setForeground(FG_PRIMARY);
+        configTitleLabel.setFont(MONO_BOLD.deriveFont(13f));
         configTitleLabel.setBorder(new EmptyBorder(4, 8, 8, 0));
         rightPanel.add(configTitleLabel, BorderLayout.NORTH);
 
@@ -236,7 +225,7 @@ public class ScanConfigDialog extends JDialog {
         JScrollPane configScroll = new JScrollPane(configPanel);
         configScroll.setBackground(BG_DARK);
         configScroll.getViewport().setBackground(BG_DARK);
-        configScroll.setBorder(BorderFactory.createLineBorder(BORDER_COLOR));
+        configScroll.setBorder(BorderFactory.createLineBorder(BORDER));
         configScroll.getVerticalScrollBar().setUnitIncrement(16);
         rightPanel.add(configScroll, BorderLayout.CENTER);
 
@@ -267,8 +256,10 @@ public class ScanConfigDialog extends JDialog {
         buttonBar.add(cancelBtn);
 
         JButton okBtn = createDarkButton("Scan");
-        okBtn.setBackground(new Color(40, 100, 60));
-        okBtn.setForeground(Color.WHITE);
+        okBtn.setBackground(NEON_GREEN);
+        okBtn.setForeground(BG_DARK);
+        okBtn.setFont(MONO_BOLD);
+        okBtn.setBorder(BorderFactory.createEmptyBorder(5, 14, 5, 14));
         okBtn.addActionListener(e -> {
             applyConfigChanges();
             confirmed = true;
@@ -340,7 +331,7 @@ public class ScanConfigDialog extends JDialog {
         JScrollPane scroll = new JScrollPane(listContent);
         scroll.setBackground(BG_DARK);
         scroll.getViewport().setBackground(BG_DARK);
-        scroll.setBorder(BorderFactory.createLineBorder(BORDER_COLOR));
+        scroll.setBorder(BorderFactory.createLineBorder(BORDER));
         scroll.getVerticalScrollBar().setUnitIncrement(16);
 
         panel.add(scroll, BorderLayout.CENTER);
@@ -349,8 +340,8 @@ public class ScanConfigDialog extends JDialog {
 
     private void addGroupLabel(JPanel container, String text) {
         JLabel label = new JLabel(text);
-        label.setForeground(ACCENT);
-        label.setFont(label.getFont().deriveFont(Font.BOLD, 12f));
+        label.setForeground(NEON_CYAN);
+        label.setFont(MONO_BOLD);
         label.setBorder(new EmptyBorder(6, 4, 2, 0));
         label.setAlignmentX(Component.LEFT_ALIGNMENT);
         label.setMaximumSize(new Dimension(Integer.MAX_VALUE, 24));
@@ -361,7 +352,8 @@ public class ScanConfigDialog extends JDialog {
         JCheckBox cb = new JCheckBox(module.getName());
         cb.setSelected(defaultChecked);
         cb.setBackground(BG_DARK);
-        cb.setForeground(FG_NORMAL);
+        cb.setForeground(FG_PRIMARY);
+        cb.setFont(MONO_FONT);
         cb.setFocusPainted(false);
         cb.setToolTipText(module.getDescription());
         cb.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -426,7 +418,7 @@ public class ScanConfigDialog extends JDialog {
 
         if (merged.isEmpty()) {
             JLabel noConfig = new JLabel("  No configurable options for this module");
-            noConfig.setForeground(FG_DEFAULT);
+            noConfig.setForeground(FG_DIM);
             noConfig.setAlignmentX(Component.LEFT_ALIGNMENT);
             configPanel.add(Box.createVerticalStrut(20));
             configPanel.add(noConfig);
@@ -467,8 +459,8 @@ public class ScanConfigDialog extends JDialog {
         gbc.gridx = 0;
         gbc.weightx = 0.45;
         JLabel keyLabel = new JLabel(entry.key);
-        keyLabel.setForeground(FG_KEY);
-        keyLabel.setFont(keyLabel.getFont().deriveFont(Font.PLAIN, 12f));
+        keyLabel.setForeground(NEON_GREEN);
+        keyLabel.setFont(MONO_FONT);
         row.add(keyLabel, gbc);
 
         // Column 2: Value editor (35% width)
@@ -482,7 +474,7 @@ public class ScanConfigDialog extends JDialog {
             JCheckBox cb = new JCheckBox();
             cb.setSelected(currentVal);
             cb.setBackground(BG_DARK);
-            cb.setForeground(FG_NORMAL);
+            cb.setForeground(FG_PRIMARY);
             cb.setFocusPainted(false);
             row.add(cb, gbc);
             configEditors.put(entry.key, cb);
@@ -498,12 +490,7 @@ public class ScanConfigDialog extends JDialog {
                         : entry.defaultValue;
             }
             JTextField tf = new JTextField(currentVal);
-            tf.setBackground(BG_INPUT);
-            tf.setForeground(FG_NORMAL);
-            tf.setCaretColor(FG_NORMAL);
-            tf.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(BORDER_COLOR),
-                    new EmptyBorder(2, 4, 2, 4)));
+            CyberTheme.styleTextField(tf);
             row.add(tf, gbc);
             configEditors.put(entry.key, tf);
         }
@@ -512,8 +499,8 @@ public class ScanConfigDialog extends JDialog {
         gbc.gridx = 2;
         gbc.weightx = 0.20;
         JLabel defaultLabel = new JLabel("default: " + entry.defaultValue);
-        defaultLabel.setForeground(FG_DEFAULT);
-        defaultLabel.setFont(defaultLabel.getFont().deriveFont(Font.ITALIC, 11f));
+        defaultLabel.setForeground(FG_DIM);
+        defaultLabel.setFont(MONO_SMALL);
         row.add(defaultLabel, gbc);
 
         return row;
@@ -531,10 +518,8 @@ public class ScanConfigDialog extends JDialog {
         gbc.insets = new Insets(0, 4, 0, 4);
         gbc.anchor = GridBagConstraints.WEST;
 
-        Font font = isHeader
-                ? row.getFont().deriveFont(Font.BOLD, 11f)
-                : row.getFont().deriveFont(Font.PLAIN, 12f);
-        Color fg = isHeader ? FG_HEADER : FG_NORMAL;
+        Font font = isHeader ? MONO_BOLD : MONO_FONT;
+        Color fg = isHeader ? FG_PRIMARY : FG_PRIMARY;
 
         gbc.gridx = 0; gbc.weightx = 0.45;
         JLabel l1 = new JLabel(col1); l1.setForeground(fg); l1.setFont(font); row.add(l1, gbc);
@@ -550,7 +535,7 @@ public class ScanConfigDialog extends JDialog {
 
     private JSeparator createSeparator() {
         JSeparator sep = new JSeparator(JSeparator.HORIZONTAL);
-        sep.setForeground(BORDER_COLOR);
+        sep.setForeground(BORDER);
         sep.setBackground(BG_DARK);
         sep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 2));
         sep.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -630,12 +615,7 @@ public class ScanConfigDialog extends JDialog {
 
     private JButton createDarkButton(String text) {
         JButton btn = new JButton(text);
-        btn.setBackground(BG_PANEL);
-        btn.setForeground(FG_NORMAL);
-        btn.setFocusPainted(false);
-        btn.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(BORDER_COLOR),
-                new EmptyBorder(4, 12, 4, 12)));
+        CyberTheme.styleButton(btn, NEON_CYAN);
         return btn;
     }
 

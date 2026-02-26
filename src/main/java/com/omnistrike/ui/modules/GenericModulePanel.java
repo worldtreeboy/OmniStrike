@@ -4,8 +4,11 @@ import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.model.Finding;
 
+import static com.omnistrike.ui.CyberTheme.*;
+
+import com.omnistrike.ui.CyberTheme;
+
 import javax.swing.*;
-import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
@@ -58,10 +61,12 @@ public class GenericModulePanel extends JPanel {
         this.findingsStore = findingsStore;
         this.api = api;
         setLayout(new BorderLayout());
+        setBackground(BG_DARK);
 
         // Header
         JLabel header = new JLabel(moduleName + " Findings");
-        header.setFont(header.getFont().deriveFont(Font.BOLD, 14f));
+        header.setForeground(NEON_CYAN);
+        header.setFont(MONO_BOLD.deriveFont(14f));
         header.setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
 
         // Table
@@ -72,7 +77,8 @@ public class GenericModulePanel extends JPanel {
         table = new JTable(tableModel);
         table.setAutoCreateRowSorter(true);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-        table.getColumnModel().getColumn(0).setCellRenderer(createSeverityRenderer());
+        CyberTheme.styleTable(table);
+        table.getColumnModel().getColumn(0).setCellRenderer(CyberTheme.createSeverityRenderer());
 
         // Right-click context menu on the table
         setupTableContextMenu();
@@ -80,7 +86,7 @@ public class GenericModulePanel extends JPanel {
         // Detail area
         detailArea = new JTextArea(6, 80);
         detailArea.setEditable(false);
-        detailArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        CyberTheme.styleTextArea(detailArea);
         detailArea.setLineWrap(true);
 
         table.getSelectionModel().addListSelectionListener(e -> {
@@ -114,21 +120,29 @@ public class GenericModulePanel extends JPanel {
             }
         });
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-                new JScrollPane(table), new JScrollPane(detailArea));
+        JScrollPane tableScroll = new JScrollPane(table);
+        CyberTheme.styleScrollPane(tableScroll);
+        JScrollPane detailScroll = new JScrollPane(detailArea);
+        CyberTheme.styleScrollPane(detailScroll);
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, detailScroll);
         splitPane.setDividerLocation(250);
+        CyberTheme.styleSplitPane(splitPane);
 
         // Controls
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        controls.setBackground(BG_DARK);
         JButton refreshBtn = new JButton("Refresh");
+        CyberTheme.styleButton(refreshBtn, NEON_CYAN);
         refreshBtn.addActionListener(e -> refreshTable());
         controls.add(refreshBtn);
 
         JButton exportBtn = new JButton("Export");
+        CyberTheme.styleButton(exportBtn, NEON_CYAN);
         exportBtn.addActionListener(e -> exportFindings());
         controls.add(exportBtn);
 
         JButton clearBtn = new JButton("Clear");
+        CyberTheme.styleButton(clearBtn, NEON_RED);
         clearBtn.addActionListener(e -> {
             int confirm = JOptionPane.showConfirmDialog(
                     this,
@@ -346,32 +360,6 @@ public class GenericModulePanel extends JPanel {
             sb.append("[Error formatting response: ").append(e.getMessage()).append("]");
         }
         return sb.toString();
-    }
-
-    private DefaultTableCellRenderer createSeverityRenderer() {
-        return new DefaultTableCellRenderer() {
-            @Override
-            public Component getTableCellRendererComponent(JTable table, Object value,
-                    boolean isSelected, boolean hasFocus, int row, int column) {
-                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-                if (!isSelected && value != null) {
-                    String sev = value.toString();
-                    switch (sev) {
-                        case "CRITICAL" -> { c.setBackground(new Color(180, 30, 30)); c.setForeground(Color.WHITE); }
-                        case "HIGH" -> { c.setBackground(new Color(220, 80, 40)); c.setForeground(Color.WHITE); }
-                        case "MEDIUM" -> { c.setBackground(new Color(230, 160, 30)); c.setForeground(Color.BLACK); }
-                        case "LOW" -> { c.setBackground(new Color(70, 140, 200)); c.setForeground(Color.WHITE); }
-                        case "INFO" -> { c.setBackground(new Color(130, 130, 130)); c.setForeground(Color.WHITE); }
-                        default -> { c.setBackground(table.getBackground()); c.setForeground(table.getForeground()); }
-                    }
-                } else if (!isSelected) {
-                    c.setBackground(table.getBackground());
-                    c.setForeground(table.getForeground());
-                }
-                setHorizontalAlignment(SwingConstants.CENTER);
-                return c;
-            }
-        };
     }
 
     /**

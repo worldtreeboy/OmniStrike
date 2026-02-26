@@ -1,5 +1,7 @@
 package com.omnistrike.ui;
 
+import static com.omnistrike.ui.CyberTheme.*;
+
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.ModuleRegistry;
 import com.omnistrike.model.ScanModule;
@@ -29,11 +31,13 @@ public class ModuleListPanel extends JPanel {
         this.registry = registry;
         this.findingsStore = findingsStore;
         setLayout(new BorderLayout());
-        setBorder(BorderFactory.createTitledBorder("Modules"));
+        setBackground(BG_DARK);
+        CyberTheme.styleTitledBorder(this, "Modules", NEON_CYAN);
         setPreferredSize(new Dimension(250, 0));
 
         // Select All / Deselect All buttons at the top
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
+        buttonPanel.setBackground(BG_DARK);
         JButton selectAllBtn = new JButton("Select All");
         selectAllBtn.setToolTipText("Enable all scan modules");
         selectAllBtn.setMargin(new Insets(2, 6, 2, 6));
@@ -43,6 +47,7 @@ public class ModuleListPanel extends JPanel {
             }
             rebuildModuleList();
         });
+        CyberTheme.styleButton(selectAllBtn, NEON_CYAN);
         buttonPanel.add(selectAllBtn);
 
         JButton deselectAllBtn = new JButton("Deselect All");
@@ -54,6 +59,7 @@ public class ModuleListPanel extends JPanel {
             }
             rebuildModuleList();
         });
+        CyberTheme.styleButton(deselectAllBtn, NEON_CYAN);
         buttonPanel.add(deselectAllBtn);
 
         add(buttonPanel, BorderLayout.NORTH);
@@ -61,10 +67,12 @@ public class ModuleListPanel extends JPanel {
         // Scrollable container for module entries
         listContainer = new JPanel();
         listContainer.setLayout(new BoxLayout(listContainer, BoxLayout.Y_AXIS));
+        listContainer.setBackground(BG_DARK);
         JScrollPane scrollPane = new JScrollPane(listContainer);
         scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
         scrollPane.setBorder(null);
+        CyberTheme.styleScrollPane(scrollPane);
         add(scrollPane, BorderLayout.CENTER);
 
         buildModuleList();
@@ -137,11 +145,11 @@ public class ModuleListPanel extends JPanel {
         header.setMaximumSize(new Dimension(Integer.MAX_VALUE, 24));
         header.setPreferredSize(new Dimension(250, 24));
         header.setBorder(BorderFactory.createEmptyBorder(4, 8, 2, 4));
-        header.setOpaque(false);
+        header.setBackground(BG_DARK);
 
         JLabel label = new JLabel(title);
-        label.setFont(label.getFont().deriveFont(Font.BOLD, 11f));
-        label.setForeground(new Color(100, 100, 100));
+        label.setFont(MONO_LABEL);
+        label.setForeground(NEON_CYAN);
         header.add(label, BorderLayout.WEST);
 
         return header;
@@ -154,8 +162,8 @@ public class ModuleListPanel extends JPanel {
         JPanel sep = new JPanel();
         sep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 6));
         sep.setPreferredSize(new Dimension(250, 6));
-        sep.setOpaque(false);
-        sep.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(200, 200, 200)));
+        sep.setBackground(BG_DARK);
+        sep.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER));
         return sep;
     }
 
@@ -173,33 +181,40 @@ public class ModuleListPanel extends JPanel {
         entry.setMaximumSize(new Dimension(Integer.MAX_VALUE, entryHeight));
         entry.setPreferredSize(new Dimension(250, entryHeight));
 
-        entry.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        entry.setBackground(BG_PANEL);
+        entry.setOpaque(true);
+        entry.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER),
+                BorderFactory.createEmptyBorder(4, 4, 4, 4)));
         entry.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         JCheckBox enableBox = new JCheckBox();
         enableBox.setSelected(registry.isEnabled(module.getId()));
         enableBox.setToolTipText("Enable/disable " + module.getName());
         enableBox.addActionListener(e -> registry.setEnabled(module.getId(), enableBox.isSelected()));
+        CyberTheme.styleCheckBox(enableBox);
 
         JPanel textPanel = new JPanel(new GridLayout(2, 1));
         textPanel.setOpaque(false);
+        textPanel.setBackground(BG_PANEL);
 
         JLabel nameLabel = new JLabel(module.getName());
-        nameLabel.setFont(nameLabel.getFont().deriveFont(Font.BOLD, 12f));
+        nameLabel.setForeground(FG_PRIMARY);
+        nameLabel.setFont(MONO_BOLD);
 
         String tag = module.getCategory().name();
         String type = module.isPassive() ? "Passive" : "Active";
         String suffix = ModuleRegistry.AI_MODULE_ID.equals(module.getId()) ? " | Optional" : "";
         JLabel descLabel = new JLabel(tag + " | " + type + suffix);
-        descLabel.setFont(descLabel.getFont().deriveFont(Font.PLAIN, 10f));
-        descLabel.setForeground(Color.GRAY);
+        descLabel.setFont(MONO_SMALL);
+        descLabel.setForeground(FG_SECONDARY);
 
         textPanel.add(nameLabel);
         textPanel.add(descLabel);
 
         JLabel countLabel = new JLabel("0");
-        countLabel.setFont(countLabel.getFont().deriveFont(Font.BOLD));
-        countLabel.setForeground(new Color(100, 100, 100));
+        countLabel.setFont(MONO_BOLD);
+        countLabel.setForeground(FG_DIM);
 
         entry.add(enableBox, BorderLayout.WEST);
         entry.add(textPanel, BorderLayout.CENTER);
@@ -219,8 +234,10 @@ public class ModuleListPanel extends JPanel {
 
         // Restore selection highlight if this module was previously selected
         if (module.getId().equals(selectedModuleId)) {
-            entry.setBackground(new Color(200, 220, 240));
-            entry.setOpaque(true);
+            entry.setBackground(BG_HOVER);
+            entry.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(0, 3, 0, 0, NEON_CYAN),
+                    BorderFactory.createEmptyBorder(4, 1, 4, 4)));
         }
 
         moduleEntries.put(module.getId(), entry);
@@ -233,11 +250,17 @@ public class ModuleListPanel extends JPanel {
         // Update visual selection
         for (Map.Entry<String, JPanel> entry : moduleEntries.entrySet()) {
             if (entry.getKey().equals(moduleId)) {
-                entry.getValue().setBackground(new Color(200, 220, 240));
+                entry.getValue().setBackground(BG_HOVER);
                 entry.getValue().setOpaque(true);
+                entry.getValue().setBorder(BorderFactory.createCompoundBorder(
+                        BorderFactory.createMatteBorder(0, 3, 0, 0, NEON_CYAN),
+                        BorderFactory.createEmptyBorder(4, 1, 4, 4)));
             } else {
-                entry.getValue().setOpaque(false);
-                entry.getValue().setBackground(null);
+                entry.getValue().setBackground(BG_PANEL);
+                entry.getValue().setOpaque(true);
+                entry.getValue().setBorder(BorderFactory.createCompoundBorder(
+                        BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER),
+                        BorderFactory.createEmptyBorder(4, 4, 4, 4)));
             }
             entry.getValue().repaint();
         }
@@ -257,7 +280,7 @@ public class ModuleListPanel extends JPanel {
                         int count = findingsStore.getCountByModule(module.getId());
                         ((JLabel) eastComp).setText(String.valueOf(count));
                         if (count > 0) {
-                            ((JLabel) eastComp).setForeground(new Color(200, 50, 50));
+                            ((JLabel) eastComp).setForeground(NEON_MAGENTA);
                         }
                     }
                 }

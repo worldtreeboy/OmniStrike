@@ -11,6 +11,9 @@ import com.omnistrike.modules.ai.llm.AiConnectionMode;
 import com.omnistrike.modules.ai.llm.ApiKeyProvider;
 import com.omnistrike.modules.ai.llm.LlmProvider;
 
+import com.omnistrike.ui.CyberTheme;
+import static com.omnistrike.ui.CyberTheme.*;
+
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.table.DefaultTableModel;
@@ -91,15 +94,6 @@ public class AiModulePanel extends JPanel {
             "Severity", "Confidence", "Title", "URL", "Parameter", "Time"
     };
 
-    // Colors
-    private static final Color BANNER_BG = new Color(255, 248, 225);
-    private static final Color BANNER_BORDER = new Color(255, 193, 7);
-    private static final Color BANNER_TEXT = new Color(102, 77, 3);
-    private static final Color ACCENT = new Color(59, 130, 246);
-    private static final Color SUCCESS = new Color(34, 139, 34);
-    private static final Color ERROR_COLOR = new Color(220, 53, 69);
-    private static final Color MUTED = new Color(108, 117, 125);
-
     // Mode card names
     private static final String CARD_OFF = "off";
     private static final String CARD_CLI = "cli";
@@ -113,10 +107,12 @@ public class AiModulePanel extends JPanel {
         this.api = api;
         this.scopeManager = scopeManager;
         setLayout(new BorderLayout());
+        setBackground(BG_DARK);
 
         // ============ TOP: Notice + Mode Selector + Config + Toggles ============
         JPanel topSection = new JPanel();
         topSection.setLayout(new BoxLayout(topSection, BoxLayout.Y_AXIS));
+        topSection.setBackground(BG_DARK);
 
         // --- Notice Banner ---
         topSection.add(createNoticeBanner());
@@ -130,6 +126,7 @@ public class AiModulePanel extends JPanel {
         // --- Mode-specific config cards ---
         modeCardLayout = new CardLayout();
         modeCards = new JPanel(modeCardLayout);
+        modeCards.setBackground(BG_DARK);
         modeCards.setAlignmentX(LEFT_ALIGNMENT);
         modeCards.add(createOffCard(), CARD_OFF);
         modeCards.add(createCliCard(), CARD_CLI);
@@ -153,13 +150,14 @@ public class AiModulePanel extends JPanel {
         statsBar.setBorder(new EmptyBorder(4, 12, 6, 12));
         statsBar.setAlignmentX(LEFT_ALIGNMENT);
         statsBar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
+        statsBar.setBackground(BG_DARK);
 
         statsLabel = new JLabel("Running: 0  |  Queued: 0  |  Analyzed: 0  |  Findings: 0  |  Fuzz Requests: 0  |  Errors: 0");
-        statsLabel.setFont(statsLabel.getFont().deriveFont(Font.PLAIN, 12f));
-        statsLabel.setForeground(MUTED);
+        statsLabel.setFont(MONO_FONT);
+        statsLabel.setForeground(FG_SECONDARY);
         statsBar.add(statsLabel, BorderLayout.CENTER);
 
-        cancelScansBtn = createStyledButton("Cancel All Scans", ERROR_COLOR);
+        cancelScansBtn = createStyledButton("Cancel All Scans", NEON_RED);
         cancelScansBtn.setToolTipText("Stop all running and queued AI scans");
         cancelScansBtn.setVisible(false);
         cancelScansBtn.addActionListener(e -> {
@@ -182,6 +180,7 @@ public class AiModulePanel extends JPanel {
         findingsTable.setShowGrid(false);
         findingsTable.setIntercellSpacing(new Dimension(0, 0));
         findingsTable.getTableHeader().setReorderingAllowed(false);
+        CyberTheme.styleTable(findingsTable);
 
         setupTableContextMenu();
 
@@ -198,24 +197,35 @@ public class AiModulePanel extends JPanel {
         detailArea.setLineWrap(true);
         detailArea.setWrapStyleWord(true);
         detailArea.setMargin(new Insets(8, 8, 8, 8));
+        CyberTheme.styleTextArea(detailArea);
 
         findingsTable.getSelectionModel().addListSelectionListener(e -> {
             if (!e.getValueIsAdjusting()) showSelectedDetail();
         });
 
         JScrollPane tableScroll = new JScrollPane(findingsTable);
-        tableScroll.setBorder(BorderFactory.createTitledBorder("AI Findings"));
+        CyberTheme.styleScrollPane(tableScroll);
+        tableScroll.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(NEON_CYAN, 1),
+                "AI Findings", javax.swing.border.TitledBorder.DEFAULT_JUSTIFICATION,
+                javax.swing.border.TitledBorder.DEFAULT_POSITION, MONO_BOLD, NEON_CYAN));
 
         JScrollPane detailScroll = new JScrollPane(detailArea);
-        detailScroll.setBorder(BorderFactory.createTitledBorder("Finding Details"));
+        CyberTheme.styleScrollPane(detailScroll);
+        detailScroll.setBorder(BorderFactory.createTitledBorder(
+                BorderFactory.createLineBorder(NEON_CYAN, 1),
+                "Finding Details", javax.swing.border.TitledBorder.DEFAULT_JUSTIFICATION,
+                javax.swing.border.TitledBorder.DEFAULT_POSITION, MONO_BOLD, NEON_CYAN));
 
         JSplitPane findingsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 tableScroll, detailScroll);
         findingsSplit.setDividerLocation(280);
         findingsSplit.setResizeWeight(0.6);
+        CyberTheme.styleSplitPane(findingsSplit);
 
         // Wrap top config section in a scroll pane so it doesn't crush findings
         JScrollPane topScroll = new JScrollPane(topSection);
+        CyberTheme.styleScrollPane(topScroll);
         topScroll.setBorder(null);
         topScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         topScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
@@ -227,26 +237,32 @@ public class AiModulePanel extends JPanel {
         mainSplit.setDividerLocation(320);
         mainSplit.setResizeWeight(0.0); // give all extra space to findings
         mainSplit.setOneTouchExpandable(true); // the "arrow" buttons on the divider
+        CyberTheme.styleSplitPane(mainSplit);
 
         add(mainSplit, BorderLayout.CENTER);
 
         // ============ BOTTOM: Controls ============
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         controls.setBorder(new EmptyBorder(2, 4, 4, 4));
+        controls.setBackground(BG_DARK);
 
         JButton refreshBtn = createStyledButton("Refresh", null);
+        CyberTheme.styleButton(refreshBtn, NEON_CYAN);
         refreshBtn.addActionListener(e -> refreshTable());
         controls.add(refreshBtn);
 
         JButton exportBtn = createStyledButton("Export CSV", null);
+        CyberTheme.styleButton(exportBtn, NEON_CYAN);
         exportBtn.addActionListener(e -> exportFindings());
         controls.add(exportBtn);
 
         JButton clearBtn = createStyledButton("Clear Findings", null);
+        CyberTheme.styleButton(clearBtn, NEON_RED);
         clearBtn.addActionListener(e -> clearFindings());
         controls.add(clearBtn);
 
         JButton resetDedupBtn = createStyledButton("Reset Dedup", null);
+        CyberTheme.styleButton(resetDedupBtn, NEON_ORANGE);
         resetDedupBtn.setToolTipText("Clear the deduplication cache so endpoints can be re-analyzed");
         resetDedupBtn.addActionListener(e -> {
             analyzer.resetDedup();
@@ -266,28 +282,31 @@ public class AiModulePanel extends JPanel {
 
     private JPanel createModeSelector() {
         JPanel outer = new JPanel(new BorderLayout());
-        outer.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Connection Mode"),
-                new EmptyBorder(4, 8, 4, 8)));
+        outer.setBackground(BG_DARK);
+        CyberTheme.styleTitledBorder(outer, "Connection Mode", NEON_CYAN);
         outer.setAlignmentX(LEFT_ALIGNMENT);
         outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 70));
 
         JPanel radioPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 16, 4));
+        radioPanel.setBackground(BG_DARK);
         ButtonGroup group = new ButtonGroup();
 
         offRadio = new JRadioButton("Off");
         offRadio.setSelected(true);
         offRadio.setToolTipText("AI analysis disabled — no LLM calls");
+        CyberTheme.styleRadioButton(offRadio);
         group.add(offRadio);
         radioPanel.add(offRadio);
 
         cliRadio = new JRadioButton("CLI Tool");
         cliRadio.setToolTipText("Use local CLI tools (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI)");
+        CyberTheme.styleRadioButton(cliRadio);
         group.add(cliRadio);
         radioPanel.add(cliRadio);
 
         apiKeyRadio = new JRadioButton("API Key");
         apiKeyRadio.setToolTipText("Use API keys to call Anthropic, OpenAI, or Google Gemini APIs directly over HTTP");
+        CyberTheme.styleRadioButton(apiKeyRadio);
         group.add(apiKeyRadio);
         radioPanel.add(apiKeyRadio);
 
@@ -316,10 +335,11 @@ public class AiModulePanel extends JPanel {
 
     private JPanel createOffCard() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 16));
+        panel.setBackground(BG_DARK);
         panel.setAlignmentX(LEFT_ALIGNMENT);
         JLabel label = new JLabel("AI analysis is disabled. Select CLI Tool or API Key above to enable it.");
-        label.setForeground(MUTED);
-        label.setFont(label.getFont().deriveFont(Font.ITALIC, 12f));
+        label.setForeground(FG_SECONDARY);
+        label.setFont(MONO_FONT);
         panel.add(label);
         panel.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
         return panel;
@@ -327,13 +347,13 @@ public class AiModulePanel extends JPanel {
 
     private JPanel createCliCard() {
         JPanel outer = new JPanel(new BorderLayout());
-        outer.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("CLI Tool Configuration"),
-                new EmptyBorder(6, 8, 6, 8)));
+        outer.setBackground(BG_DARK);
+        CyberTheme.styleTitledBorder(outer, "CLI Tool Configuration", NEON_CYAN);
         outer.setAlignmentX(LEFT_ALIGNMENT);
         outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 140));
 
         JPanel form = new JPanel(new GridBagLayout());
+        form.setBackground(BG_DARK);
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.insets = new Insets(3, 6, 3, 6);
         gbc.anchor = GridBagConstraints.WEST;
@@ -346,6 +366,7 @@ public class AiModulePanel extends JPanel {
                 LlmProvider.CLI_CODEX, LlmProvider.CLI_OPENCODE};
         cliProviderCombo = new JComboBox<>(cliProviders);
         cliProviderCombo.setPreferredSize(new Dimension(200, 28));
+        CyberTheme.styleComboBox(cliProviderCombo);
         gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 0.5;
         form.add(cliProviderCombo, gbc);
 
@@ -355,6 +376,7 @@ public class AiModulePanel extends JPanel {
         cliBinaryField = new JTextField(20);
         cliBinaryField.setText("claude");
         cliBinaryField.setToolTipText("Path to CLI binary (or just the name if it's on PATH)");
+        CyberTheme.styleTextField(cliBinaryField);
         gbc.gridx = 3; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 0.5;
         form.add(cliBinaryField, gbc);
 
@@ -363,7 +385,8 @@ public class AiModulePanel extends JPanel {
         form.add(Box.createHorizontalStrut(1), gbc);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        JButton applyBtn = createStyledButton("Apply Settings", ACCENT);
+        btnPanel.setBackground(BG_DARK);
+        JButton applyBtn = createStyledButton("Apply Settings", NEON_CYAN);
         applyBtn.addActionListener(e -> applyCliConfig());
         btnPanel.add(applyBtn);
 
@@ -372,7 +395,7 @@ public class AiModulePanel extends JPanel {
         btnPanel.add(cliTestBtn);
 
         cliTestStatusLabel = new JLabel("");
-        cliTestStatusLabel.setFont(cliTestStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        cliTestStatusLabel.setFont(MONO_SMALL);
         btnPanel.add(cliTestStatusLabel);
 
         gbc.gridx = 1; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.HORIZONTAL;
@@ -391,13 +414,13 @@ public class AiModulePanel extends JPanel {
 
     private JPanel createApiKeyCard() {
         JPanel outer = new JPanel(new BorderLayout());
-        outer.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("API Key Configuration"),
-                new EmptyBorder(6, 8, 6, 8)));
+        outer.setBackground(BG_DARK);
+        CyberTheme.styleTitledBorder(outer, "API Key Configuration", NEON_CYAN);
         outer.setAlignmentX(LEFT_ALIGNMENT);
         outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 170));
 
         JPanel form = new JPanel(new GridBagLayout());
+        form.setBackground(BG_DARK);
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.insets = new Insets(3, 6, 3, 6);
         gbc.anchor = GridBagConstraints.WEST;
@@ -408,6 +431,7 @@ public class AiModulePanel extends JPanel {
 
         apiProviderCombo = new JComboBox<>(ApiKeyProvider.values());
         apiProviderCombo.setPreferredSize(new Dimension(180, 28));
+        CyberTheme.styleComboBox(apiProviderCombo);
         gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 0.4;
         form.add(apiProviderCombo, gbc);
 
@@ -416,6 +440,7 @@ public class AiModulePanel extends JPanel {
 
         apiModelCombo = new JComboBox<>();
         apiModelCombo.setPreferredSize(new Dimension(220, 28));
+        CyberTheme.styleComboBox(apiModelCombo);
         gbc.gridx = 3; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 0.6;
         form.add(apiModelCombo, gbc);
 
@@ -425,6 +450,7 @@ public class AiModulePanel extends JPanel {
 
         apiKeyField = new JPasswordField(40);
         apiKeyField.setToolTipText("Paste your API key (stored in memory only, not persisted to disk)");
+        CyberTheme.stylePasswordField(apiKeyField);
         gbc.gridx = 1; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
         form.add(apiKeyField, gbc);
         gbc.gridwidth = 1;
@@ -434,7 +460,8 @@ public class AiModulePanel extends JPanel {
         form.add(Box.createHorizontalStrut(1), gbc);
 
         JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
-        JButton applyBtn = createStyledButton("Apply Settings", ACCENT);
+        btnPanel.setBackground(BG_DARK);
+        JButton applyBtn = createStyledButton("Apply Settings", NEON_CYAN);
         applyBtn.addActionListener(e -> applyApiKeyConfig());
         btnPanel.add(applyBtn);
 
@@ -443,7 +470,7 @@ public class AiModulePanel extends JPanel {
         btnPanel.add(apiKeyTestBtn);
 
         apiKeyTestStatusLabel = new JLabel("");
-        apiKeyTestStatusLabel.setFont(apiKeyTestStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        apiKeyTestStatusLabel.setFont(MONO_SMALL);
         btnPanel.add(apiKeyTestStatusLabel);
 
         gbc.gridx = 1; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.HORIZONTAL;
@@ -478,17 +505,17 @@ public class AiModulePanel extends JPanel {
 
     private JPanel createNoticeBanner() {
         JPanel banner = new JPanel(new BorderLayout(10, 0));
-        banner.setBackground(BANNER_BG);
+        banner.setBackground(BG_SURFACE);
         banner.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(1, 1, 1, 1, BANNER_BORDER),
+                BorderFactory.createMatteBorder(1, 1, 1, 1, NEON_ORANGE),
                 new EmptyBorder(10, 14, 10, 14)));
         banner.setAlignmentX(LEFT_ALIGNMENT);
 
         JLabel icon = new JLabel("  AI  ");
         icon.setFont(icon.getFont().deriveFont(Font.BOLD, 13f));
         icon.setOpaque(true);
-        icon.setBackground(BANNER_BORDER);
-        icon.setForeground(Color.WHITE);
+        icon.setBackground(NEON_ORANGE);
+        icon.setForeground(BG_DARK);
         icon.setHorizontalAlignment(SwingConstants.CENTER);
         icon.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
 
@@ -496,8 +523,8 @@ public class AiModulePanel extends JPanel {
                 + "HTTP request/response data from in-scope traffic will be sent to the configured LLM provider "
                 + "(via CLI tool or API key). Data leaves your machine. "
                 + "Smart Fuzzing sends active requests \u2014 use responsibly.");
-        text.setFont(text.getFont().deriveFont(Font.PLAIN, 12f));
-        text.setForeground(BANNER_TEXT);
+        text.setForeground(FG_PRIMARY);
+        text.setFont(MONO_FONT);
 
         banner.add(icon, BorderLayout.WEST);
         banner.add(text, BorderLayout.CENTER);
@@ -507,23 +534,24 @@ public class AiModulePanel extends JPanel {
 
     private JPanel createSettingsSection() {
         JPanel outer = new JPanel(new BorderLayout());
-        outer.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("Settings"),
-                new EmptyBorder(4, 8, 4, 8)));
+        outer.setBackground(BG_DARK);
+        CyberTheme.styleTitledBorder(outer, "Settings", NEON_CYAN);
         outer.setAlignmentX(LEFT_ALIGNMENT);
         outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 60));
 
         JPanel limitPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        limitPanel.setBackground(BG_DARK);
         JLabel limitLabel = createFieldLabel("Max Payloads:");
         limitPanel.add(limitLabel);
 
         maxPayloadsField = new JTextField("0", 5);
         maxPayloadsField.setToolTipText("Max payloads per AI request (0 = unlimited — AI decides when to stop)");
+        CyberTheme.styleTextField(maxPayloadsField);
         limitPanel.add(maxPayloadsField);
 
         JLabel limitHint = new JLabel("(0 = unlimited)");
-        limitHint.setFont(limitHint.getFont().deriveFont(Font.PLAIN, 11f));
-        limitHint.setForeground(MUTED);
+        limitHint.setForeground(FG_SECONDARY);
+        limitHint.setFont(MONO_SMALL);
         limitPanel.add(limitHint);
 
         JButton applyLimitBtn = createStyledButton("Apply", null);
@@ -532,17 +560,17 @@ public class AiModulePanel extends JPanel {
                 int val = Integer.parseInt(maxPayloadsField.getText().trim());
                 analyzer.setMaxPayloadsPerRequest(val);
                 limitHint.setText(val == 0 ? "(0 = unlimited)" : "(limit: " + val + ")");
-                limitHint.setForeground(SUCCESS);
+                limitHint.setForeground(NEON_GREEN);
             } catch (NumberFormatException ex) {
                 limitHint.setText("Invalid number");
-                limitHint.setForeground(ERROR_COLOR);
+                limitHint.setForeground(NEON_RED);
             }
         });
         limitPanel.add(applyLimitBtn);
 
         JLabel note = new JLabel("  AI capabilities (fuzzing, WAF bypass, adaptive) are selected per-scan via right-click context menu.");
-        note.setFont(note.getFont().deriveFont(Font.ITALIC, 11f));
-        note.setForeground(MUTED);
+        note.setForeground(FG_SECONDARY);
+        note.setFont(MONO_SMALL);
         limitPanel.add(note);
 
         outer.add(limitPanel, BorderLayout.CENTER);
@@ -551,9 +579,8 @@ public class AiModulePanel extends JPanel {
 
     private JPanel createBatchScanSection() {
         JPanel outer = new JPanel(new BorderLayout());
-        outer.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createTitledBorder("AI Batch Scan (Cross-File Analysis)"),
-                new EmptyBorder(4, 8, 4, 8)));
+        outer.setBackground(BG_DARK);
+        CyberTheme.styleTitledBorder(outer, "AI Batch Scan (Cross-File Analysis)", NEON_CYAN);
         outer.setAlignmentX(LEFT_ALIGNMENT);
         outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 200));
 
@@ -569,6 +596,7 @@ public class AiModulePanel extends JPanel {
         batchTable.setIntercellSpacing(new Dimension(0, 0));
         batchTable.getTableHeader().setReorderingAllowed(false);
         batchTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        CyberTheme.styleTable(batchTable);
 
         batchTable.getColumnModel().getColumn(0).setPreferredWidth(30);
         batchTable.getColumnModel().getColumn(0).setMaxWidth(40);
@@ -603,13 +631,15 @@ public class AiModulePanel extends JPanel {
 
         JScrollPane batchScroll = new JScrollPane(batchTable);
         batchScroll.setPreferredSize(new Dimension(0, 120));
+        CyberTheme.styleScrollPane(batchScroll);
 
         outer.add(batchScroll, BorderLayout.CENTER);
 
         // Button bar
         JPanel btnBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
+        btnBar.setBackground(BG_DARK);
 
-        runBatchBtn = createStyledButton("Run Batch Scan", ACCENT);
+        runBatchBtn = createStyledButton("Run Batch Scan", NEON_CYAN);
         runBatchBtn.setToolTipText("Send all queued files to AI for cross-file analysis");
         runBatchBtn.setEnabled(false);
         runBatchBtn.addActionListener(e -> runBatchScan());
@@ -623,21 +653,21 @@ public class AiModulePanel extends JPanel {
         });
         btnBar.add(clearBatchBtn);
 
-        JButton scrapeSiteMapBtn = createStyledButton("Scrape Site Map", new Color(100, 60, 180));
+        JButton scrapeSiteMapBtn = createStyledButton("Scrape Site Map", NEON_MAGENTA);
         scrapeSiteMapBtn.setToolTipText("Scrape Burp's site map for all in-scope JS/HTML files and add them to the batch queue");
         scrapeSiteMapBtn.addActionListener(e -> scrapeSiteMap());
         btnBar.add(scrapeSiteMapBtn);
 
         batchCountLabel = new JLabel("Queue empty");
-        batchCountLabel.setFont(batchCountLabel.getFont().deriveFont(Font.BOLD, 12f));
-        batchCountLabel.setForeground(MUTED);
+        batchCountLabel.setFont(MONO_BOLD);
+        batchCountLabel.setForeground(FG_SECONDARY);
         btnBar.add(batchCountLabel);
 
         btnBar.add(Box.createHorizontalStrut(16));
 
         batchStatusLabel = new JLabel("");
-        batchStatusLabel.setFont(batchStatusLabel.getFont().deriveFont(Font.ITALIC, 11f));
-        batchStatusLabel.setForeground(MUTED);
+        batchStatusLabel.setFont(MONO_SMALL);
+        batchStatusLabel.setForeground(FG_SECONDARY);
         btnBar.add(batchStatusLabel);
 
         outer.add(btnBar, BorderLayout.SOUTH);
@@ -679,18 +709,18 @@ public class AiModulePanel extends JPanel {
             runBatchBtn.setEnabled(hasItems && aiReady && !scanning);
             clearBatchBtn.setEnabled(hasItems && !scanning);
             batchCountLabel.setText(hasItems ? queueSize + " file(s) queued" : "Queue empty");
-            batchCountLabel.setForeground(hasItems ? new Color(55, 65, 81) : MUTED);
+            batchCountLabel.setForeground(hasItems ? FG_PRIMARY : FG_SECONDARY);
 
             String status = analyzer.getBatchScanStatus();
             batchStatusLabel.setText(status != null ? status : "");
             if (scanning) {
-                batchStatusLabel.setForeground(ACCENT);
+                batchStatusLabel.setForeground(NEON_CYAN);
             } else if (status != null && status.startsWith("Completed")) {
-                batchStatusLabel.setForeground(SUCCESS);
+                batchStatusLabel.setForeground(NEON_GREEN);
             } else if (status != null && status.startsWith("Error")) {
-                batchStatusLabel.setForeground(ERROR_COLOR);
+                batchStatusLabel.setForeground(NEON_RED);
             } else {
-                batchStatusLabel.setForeground(MUTED);
+                batchStatusLabel.setForeground(FG_SECONDARY);
             }
         });
     }
@@ -699,7 +729,7 @@ public class AiModulePanel extends JPanel {
         runBatchBtn.setEnabled(false);
         clearBatchBtn.setEnabled(false);
         batchStatusLabel.setText("Starting...");
-        batchStatusLabel.setForeground(ACCENT);
+        batchStatusLabel.setForeground(NEON_CYAN);
 
         new SwingWorker<Void, Void>() {
             @Override
@@ -728,7 +758,7 @@ public class AiModulePanel extends JPanel {
         }
 
         batchStatusLabel.setText("Scraping site map...");
-        batchStatusLabel.setForeground(ACCENT);
+        batchStatusLabel.setForeground(NEON_CYAN);
 
         new SwingWorker<int[], Void>() {
             @Override
@@ -808,15 +838,15 @@ public class AiModulePanel extends JPanel {
                     int scanned = result[1];
                     if (found == 0) {
                         batchStatusLabel.setText("No JS/HTML found (" + scanned + " site map entries scanned)");
-                        batchStatusLabel.setForeground(MUTED);
+                        batchStatusLabel.setForeground(FG_SECONDARY);
                     } else {
                         batchStatusLabel.setText("Scraped " + found + " JS/HTML file(s) from site map");
-                        batchStatusLabel.setForeground(SUCCESS);
+                        batchStatusLabel.setForeground(NEON_GREEN);
                     }
                     refreshBatchTable();
                 } catch (Exception ex) {
                     batchStatusLabel.setText("Scrape failed: " + ex.getMessage());
-                    batchStatusLabel.setForeground(ERROR_COLOR);
+                    batchStatusLabel.setForeground(NEON_RED);
                 }
             }
         }.execute();
@@ -925,21 +955,17 @@ public class AiModulePanel extends JPanel {
 
     private JLabel createFieldLabel(String text) {
         JLabel label = new JLabel(text);
-        label.setFont(label.getFont().deriveFont(Font.BOLD, 12f));
-        label.setForeground(new Color(55, 65, 81));
+        label.setFont(MONO_BOLD);
+        label.setForeground(NEON_CYAN);
         return label;
     }
 
     private JButton createStyledButton(String text, Color bg) {
         JButton btn = new JButton(text);
-        btn.setFocusPainted(false);
-        btn.setMargin(new Insets(4, 12, 4, 12));
-        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         if (bg != null) {
-            btn.setBackground(bg);
-            btn.setForeground(Color.WHITE);
-            btn.setOpaque(true);
-            btn.setBorderPainted(false);
+            CyberTheme.styleFilledButton(btn, bg);
+        } else {
+            CyberTheme.styleButton(btn, NEON_CYAN);
         }
         return btn;
     }
@@ -1039,14 +1065,14 @@ public class AiModulePanel extends JPanel {
         String binary = cliBinaryField.getText().trim();
         if (binary.isEmpty()) {
             cliTestStatusLabel.setText("Binary path cannot be empty");
-            cliTestStatusLabel.setForeground(ERROR_COLOR);
+            cliTestStatusLabel.setForeground(NEON_RED);
             return false;
         }
 
         analyzer.getLlmClient().configureCli(selected, binary);
         analyzer.setConnectionMode(AiConnectionMode.CLI);
         cliTestStatusLabel.setText("Settings applied");
-        cliTestStatusLabel.setForeground(SUCCESS);
+        cliTestStatusLabel.setForeground(NEON_GREEN);
         return true;
     }
 
@@ -1055,7 +1081,7 @@ public class AiModulePanel extends JPanel {
 
         cliTestBtn.setEnabled(false);
         cliTestStatusLabel.setText("Testing...");
-        cliTestStatusLabel.setForeground(MUTED);
+        cliTestStatusLabel.setForeground(FG_SECONDARY);
 
         new SwingWorker<String, Void>() {
             @Override
@@ -1073,14 +1099,14 @@ public class AiModulePanel extends JPanel {
                     String result = get();
                     if (result.startsWith("ERROR:")) {
                         cliTestStatusLabel.setText(result);
-                        cliTestStatusLabel.setForeground(ERROR_COLOR);
+                        cliTestStatusLabel.setForeground(NEON_RED);
                     } else {
                         cliTestStatusLabel.setText(result);
-                        cliTestStatusLabel.setForeground(SUCCESS);
+                        cliTestStatusLabel.setForeground(NEON_GREEN);
                     }
                 } catch (Exception e) {
                     cliTestStatusLabel.setText("Test failed: " + e.getMessage());
-                    cliTestStatusLabel.setForeground(ERROR_COLOR);
+                    cliTestStatusLabel.setForeground(NEON_RED);
                 }
                 cliTestBtn.setEnabled(true);
             }
@@ -1096,21 +1122,21 @@ public class AiModulePanel extends JPanel {
         String model = (String) apiModelCombo.getSelectedItem();
         if (model == null || model.isBlank()) {
             apiKeyTestStatusLabel.setText("No model selected");
-            apiKeyTestStatusLabel.setForeground(ERROR_COLOR);
+            apiKeyTestStatusLabel.setForeground(NEON_RED);
             return false;
         }
 
         String key = new String(apiKeyField.getPassword()).trim();
         if (key.isEmpty()) {
             apiKeyTestStatusLabel.setText("API key cannot be empty");
-            apiKeyTestStatusLabel.setForeground(ERROR_COLOR);
+            apiKeyTestStatusLabel.setForeground(NEON_RED);
             return false;
         }
 
         analyzer.getLlmClient().configureApiKey(selected, key, model);
         analyzer.setConnectionMode(AiConnectionMode.API_KEY);
         apiKeyTestStatusLabel.setText("Settings applied");
-        apiKeyTestStatusLabel.setForeground(SUCCESS);
+        apiKeyTestStatusLabel.setForeground(NEON_GREEN);
         return true;
     }
 
@@ -1119,7 +1145,7 @@ public class AiModulePanel extends JPanel {
 
         apiKeyTestBtn.setEnabled(false);
         apiKeyTestStatusLabel.setText("Testing...");
-        apiKeyTestStatusLabel.setForeground(MUTED);
+        apiKeyTestStatusLabel.setForeground(FG_SECONDARY);
 
         new SwingWorker<String, Void>() {
             @Override
@@ -1137,14 +1163,14 @@ public class AiModulePanel extends JPanel {
                     String result = get();
                     if (result.startsWith("ERROR:")) {
                         apiKeyTestStatusLabel.setText(result);
-                        apiKeyTestStatusLabel.setForeground(ERROR_COLOR);
+                        apiKeyTestStatusLabel.setForeground(NEON_RED);
                     } else {
                         apiKeyTestStatusLabel.setText(result);
-                        apiKeyTestStatusLabel.setForeground(SUCCESS);
+                        apiKeyTestStatusLabel.setForeground(NEON_GREEN);
                     }
                 } catch (Exception e) {
                     apiKeyTestStatusLabel.setText("Test failed: " + e.getMessage());
-                    apiKeyTestStatusLabel.setForeground(ERROR_COLOR);
+                    apiKeyTestStatusLabel.setForeground(NEON_RED);
                 }
                 apiKeyTestBtn.setEnabled(true);
             }
@@ -1168,7 +1194,7 @@ public class AiModulePanel extends JPanel {
                     + "  |  " + analyzer.getCostSummary());
 
             // Highlight stats when scans are active
-            statsLabel.setForeground(running > 0 ? ACCENT : MUTED);
+            statsLabel.setForeground(running > 0 ? NEON_CYAN : FG_SECONDARY);
 
             // Show/hide cancel button
             cancelScansBtn.setVisible(running > 0 || queued > 0);

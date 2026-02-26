@@ -3,8 +3,9 @@ package com.omnistrike.ui;
 import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.model.Finding;
+import static com.omnistrike.ui.CyberTheme.*;
+
 import javax.swing.*;
-import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableRowSorter;
 import java.awt.*;
@@ -55,6 +56,7 @@ public class FindingsOverviewPanel extends JPanel {
         this.findingsStore = findingsStore;
         this.filter = filter;
         setLayout(new BorderLayout());
+        setBackground(BG_DARK);
 
         // ============ TABLE ============
         tableModel = new DefaultTableModel(COLUMNS, 0) {
@@ -65,6 +67,7 @@ public class FindingsOverviewPanel extends JPanel {
         rowSorter = new TableRowSorter<>(tableModel);
         table.setRowSorter(rowSorter);
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        CyberTheme.styleTable(table);
         table.getColumnModel().getColumn(0).setPreferredWidth(100);
         table.getColumnModel().getColumn(1).setPreferredWidth(70);
         table.getColumnModel().getColumn(2).setPreferredWidth(70);
@@ -73,12 +76,12 @@ public class FindingsOverviewPanel extends JPanel {
         table.getColumnModel().getColumn(5).setPreferredWidth(80);
         table.getColumnModel().getColumn(6).setPreferredWidth(120);
 
-        table.getColumnModel().getColumn(1).setCellRenderer(createSeverityRenderer());
+        table.getColumnModel().getColumn(1).setCellRenderer(CyberTheme.createSeverityRenderer());
 
         // Detail pane at bottom
         detailArea = new JTextArea(8, 80);
         detailArea.setEditable(false);
-        detailArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        CyberTheme.styleTextArea(detailArea);
         detailArea.setLineWrap(true);
         detailArea.setWrapStyleWord(true);
 
@@ -127,28 +130,37 @@ public class FindingsOverviewPanel extends JPanel {
             }
         });
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-                new JScrollPane(table), new JScrollPane(detailArea));
+        JScrollPane tableScroll = new JScrollPane(table);
+        CyberTheme.styleScrollPane(tableScroll);
+        JScrollPane detailScroll = new JScrollPane(detailArea);
+        CyberTheme.styleScrollPane(detailScroll);
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScroll, detailScroll);
         splitPane.setDividerLocation(300);
+        CyberTheme.styleSplitPane(splitPane);
         add(splitPane, BorderLayout.CENTER);
 
         // ============ TOP AREA: controls + filter row ============
         JPanel topPanel = new JPanel();
         topPanel.setLayout(new BoxLayout(topPanel, BoxLayout.Y_AXIS));
+        topPanel.setBackground(BG_DARK);
 
         // Controls row
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        controls.setBackground(BG_DARK);
 
         JButton refreshBtn = new JButton("Refresh");
         refreshBtn.addActionListener(e -> refreshTable());
+        CyberTheme.styleButton(refreshBtn, NEON_CYAN);
         controls.add(refreshBtn);
 
         JButton exportCsvBtn = new JButton("Export CSV");
         exportCsvBtn.addActionListener(e -> exportCsv());
+        CyberTheme.styleButton(exportCsvBtn, NEON_CYAN);
         controls.add(exportCsvBtn);
 
         JButton exportMdBtn = new JButton("Export Markdown");
         exportMdBtn.addActionListener(e -> exportMarkdown());
+        CyberTheme.styleButton(exportMdBtn, NEON_CYAN);
         controls.add(exportMdBtn);
 
         JButton clearBtn = new JButton("Clear All");
@@ -164,9 +176,12 @@ public class FindingsOverviewPanel extends JPanel {
                 refreshTable();
             }
         });
+        CyberTheme.styleButton(clearBtn, NEON_RED);
         controls.add(clearBtn);
 
         JLabel countLabel = new JLabel("Findings: 0");
+        countLabel.setForeground(FG_PRIMARY);
+        countLabel.setFont(MONO_BOLD);
         controls.add(Box.createHorizontalStrut(20));
         controls.add(countLabel);
 
@@ -174,25 +189,38 @@ public class FindingsOverviewPanel extends JPanel {
 
         // Filter row
         JPanel filterPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
-        filterPanel.setBorder(BorderFactory.createTitledBorder("Filters"));
+        filterPanel.setBackground(BG_DARK);
+        CyberTheme.styleTitledBorder(filterPanel, "Filters", NEON_CYAN);
 
-        filterPanel.add(new JLabel("Severity:"));
+        JLabel severityLabel = new JLabel("Severity:");
+        severityLabel.setForeground(NEON_CYAN);
+        severityLabel.setFont(MONO_LABEL);
+        filterPanel.add(severityLabel);
         severityFilter = new JComboBox<>(new String[]{"All", "CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"});
         severityFilter.setToolTipText("Filter findings by severity level");
         severityFilter.addActionListener(e -> applyFilters());
+        CyberTheme.styleComboBox(severityFilter);
         filterPanel.add(severityFilter);
 
         filterPanel.add(Box.createHorizontalStrut(10));
-        filterPanel.add(new JLabel("Module:"));
+        JLabel moduleLabel = new JLabel("Module:");
+        moduleLabel.setForeground(NEON_CYAN);
+        moduleLabel.setFont(MONO_LABEL);
+        filterPanel.add(moduleLabel);
         moduleFilter = new JComboBox<>(new String[]{"All"});
         moduleFilter.setToolTipText("Filter findings by scan module");
         moduleFilter.addActionListener(e -> applyFilters());
+        CyberTheme.styleComboBox(moduleFilter);
         filterPanel.add(moduleFilter);
 
         filterPanel.add(Box.createHorizontalStrut(10));
-        filterPanel.add(new JLabel("Search:"));
+        JLabel searchLabel = new JLabel("Search:");
+        searchLabel.setForeground(NEON_CYAN);
+        searchLabel.setFont(MONO_LABEL);
+        filterPanel.add(searchLabel);
         searchField = new JTextField(20);
         searchField.setToolTipText("Search across all fields (title, URL, parameter, etc.)");
+        CyberTheme.styleTextField(searchField);
         searchField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override
             public void insertUpdate(javax.swing.event.DocumentEvent e) { applyFilters(); }
@@ -209,6 +237,7 @@ public class FindingsOverviewPanel extends JPanel {
             moduleFilter.setSelectedIndex(0);
             searchField.setText("");
         });
+        CyberTheme.styleButton(clearFiltersBtn, NEON_ORANGE);
         filterPanel.add(clearFiltersBtn);
 
         topPanel.add(filterPanel);
@@ -518,32 +547,6 @@ public class FindingsOverviewPanel extends JPanel {
                 JOptionPane.showMessageDialog(this, "Export failed: " + e.getMessage());
             }
         }
-    }
-
-    private DefaultTableCellRenderer createSeverityRenderer() {
-        return new DefaultTableCellRenderer() {
-            @Override
-            public Component getTableCellRendererComponent(JTable table, Object value,
-                    boolean isSelected, boolean hasFocus, int row, int column) {
-                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-                if (!isSelected && value != null) {
-                    String sev = value.toString();
-                    switch (sev) {
-                        case "CRITICAL" -> { c.setBackground(new Color(180, 30, 30)); c.setForeground(Color.WHITE); }
-                        case "HIGH" -> { c.setBackground(new Color(220, 80, 40)); c.setForeground(Color.WHITE); }
-                        case "MEDIUM" -> { c.setBackground(new Color(230, 160, 30)); c.setForeground(Color.BLACK); }
-                        case "LOW" -> { c.setBackground(new Color(70, 140, 200)); c.setForeground(Color.WHITE); }
-                        case "INFO" -> { c.setBackground(new Color(130, 130, 130)); c.setForeground(Color.WHITE); }
-                        default -> { c.setBackground(table.getBackground()); c.setForeground(table.getForeground()); }
-                    }
-                } else if (!isSelected) {
-                    c.setBackground(table.getBackground());
-                    c.setForeground(table.getForeground());
-                }
-                setHorizontalAlignment(SwingConstants.CENTER);
-                return c;
-            }
-        };
     }
 
     private void exportMarkdown() {

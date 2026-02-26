@@ -10,6 +10,8 @@ import com.omnistrike.ui.modules.AiModulePanel;
 import com.omnistrike.ui.modules.DeserModulePanel;
 import com.omnistrike.ui.modules.GenericModulePanel;
 
+import static com.omnistrike.ui.CyberTheme.*;
+
 import javax.swing.*;
 import javax.swing.border.Border;
 import java.awt.*;
@@ -87,17 +89,24 @@ public class MainPanel extends JPanel {
         this.logPanel = new LogPanel();
 
         setLayout(new BorderLayout());
+        setBackground(BG_DARK);
 
         // ============ TOP AREA (2 rows + stats bar) ============
         JPanel topContainer = new JPanel();
         topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
-        topContainer.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY));
+        topContainer.setBackground(BG_DARK);
+        topContainer.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER));
 
         // --- Row 1: Scope, Threads, Rate Limit ---
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
+        row1.setBackground(BG_DARK);
 
-        row1.add(new JLabel("Target Scope:"));
+        JLabel scopeLabel = new JLabel("Target Scope:");
+        scopeLabel.setForeground(NEON_CYAN);
+        scopeLabel.setFont(MONO_LABEL);
+        row1.add(scopeLabel);
         scopeField = new JTextField(30);
+        styleTextField(scopeField);
         scopeField.setToolTipText("Comma-separated target domains (e.g., example.com, api.example.com). Used for automated scanning and site map scraping.");
         scopeField.putClientProperty("JTextField.placeholderText",
                 "e.g. example.com, api.example.com");
@@ -119,8 +128,12 @@ public class MainPanel extends JPanel {
             }
         });
 
-        row1.add(new JLabel("Threads:"));
+        JLabel threadsLabel = new JLabel("Threads:");
+        threadsLabel.setForeground(NEON_CYAN);
+        threadsLabel.setFont(MONO_LABEL);
+        row1.add(threadsLabel);
         threadField = new JTextField("5", 3);
+        styleTextField(threadField);
         threadField.setToolTipText("Number of concurrent scan threads (1-100). Higher values increase speed but also load.");
         defaultThreadFieldBorder = threadField.getBorder();
 
@@ -135,8 +148,12 @@ public class MainPanel extends JPanel {
         });
         row1.add(threadField);
 
-        row1.add(new JLabel("Rate Limit (ms):"));
+        JLabel rateLimitLabel = new JLabel("Rate Limit (ms):");
+        rateLimitLabel.setForeground(NEON_CYAN);
+        rateLimitLabel.setFont(MONO_LABEL);
+        row1.add(rateLimitLabel);
         rateLimitField = new JTextField("0", 4);
+        styleTextField(rateLimitField);
         rateLimitField.setToolTipText("Global delay (ms) before each scan task. 0 = no limit. Applies to all modules. Per-module delays stack on top of this.");
         rateLimitField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override
@@ -152,19 +169,28 @@ public class MainPanel extends JPanel {
 
         // --- Row 2: Buttons, Status, Thread Status, Collaborator, Progress Bar ---
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
+        row2.setBackground(BG_DARK);
 
         startStopBtn = new JToggleButton("Start Auto-Scan");
-        startStopBtn.setBackground(new Color(50, 150, 50));
-        startStopBtn.setForeground(Color.WHITE);
+        startStopBtn.setBackground(BG_PANEL);
+        startStopBtn.setForeground(NEON_GREEN);
         startStopBtn.setFocusPainted(false);
+        startStopBtn.setFont(MONO_BOLD);
+        startStopBtn.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(NEON_GREEN, 1),
+                BorderFactory.createEmptyBorder(4, 12, 4, 12)));
         startStopBtn.setToolTipText("Start or stop automated scanning of all in-scope proxied traffic");
         startStopBtn.addActionListener(e -> toggleScanning());
         row2.add(startStopBtn);
 
         JButton stopScansBtn = new JButton("Stop Manual Scans");
-        stopScansBtn.setBackground(new Color(200, 50, 50));
-        stopScansBtn.setForeground(Color.WHITE);
+        stopScansBtn.setBackground(BG_PANEL);
+        stopScansBtn.setForeground(NEON_RED);
         stopScansBtn.setFocusPainted(false);
+        stopScansBtn.setFont(MONO_BOLD);
+        stopScansBtn.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(NEON_RED, 1),
+                BorderFactory.createEmptyBorder(4, 12, 4, 12)));
         stopScansBtn.setToolTipText("Stop all scans launched via right-click context menu");
         stopScansBtn.addActionListener(e -> {
             int stopped = interceptor.stopManualScans();
@@ -183,6 +209,7 @@ public class MainPanel extends JPanel {
         // Time-based testing toggle — disabled by default, must be explicitly enabled.
         // Controls ALL time-based blind injection tests (SQLi sleep, CmdI sleep/ping).
         JCheckBox timeBasedCheckbox = new JCheckBox("Time-Based Testing");
+        styleCheckBox(timeBasedCheckbox);
         timeBasedCheckbox.setSelected(false); // OFF by default
         timeBasedCheckbox.setToolTipText(
                 "Enable time-based blind injection tests (SQLi SLEEP, CmdI sleep/ping). "
@@ -197,13 +224,13 @@ public class MainPanel extends JPanel {
         row2.add(timeBasedCheckbox);
 
         statusLabel = new JLabel("Stopped");
-        statusLabel.setForeground(Color.RED);
-        statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD));
+        statusLabel.setForeground(NEON_RED);
+        statusLabel.setFont(MONO_BOLD);
         row2.add(statusLabel);
 
         threadStatusLabel = new JLabel("Threads: 0 active | Queue: 0");
-        threadStatusLabel.setForeground(Color.GRAY);
-        threadStatusLabel.setFont(threadStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        threadStatusLabel.setForeground(FG_SECONDARY);
+        threadStatusLabel.setFont(MONO_SMALL);
         row2.add(threadStatusLabel);
 
         // Collaborator status
@@ -211,14 +238,15 @@ public class MainPanel extends JPanel {
                 ? "Collaborator: Active" : "Collaborator: N/A (Pro only)";
         JLabel collabLabel = new JLabel(collabStatus);
         collabLabel.setForeground(collaboratorManager != null && collaboratorManager.isAvailable()
-                ? new Color(50, 150, 50) : Color.GRAY);
+                ? NEON_GREEN : FG_DIM);
+        collabLabel.setFont(MONO_SMALL);
         row2.add(collabLabel);
 
         // Progress bar (visible only while scanning)
         progressBar = new JProgressBar();
+        styleProgressBar(progressBar);
         progressBar.setPreferredSize(new Dimension(150, 16));
         progressBar.setStringPainted(false);
-        progressBar.setForeground(new Color(135, 206, 250)); // sky blue
         progressBar.setVisible(false);
         row2.add(progressBar);
 
@@ -226,24 +254,30 @@ public class MainPanel extends JPanel {
 
         // --- Row 3: Session Keep-Alive controls ---
         JPanel sessionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
+        sessionRow.setBackground(BG_DARK);
 
         JCheckBox sessionCheckbox = new JCheckBox("Session Keep-Alive");
+        styleCheckBox(sessionCheckbox);
         sessionCheckbox.setSelected(false);
         sessionCheckbox.setToolTipText(
                 "Periodically replay a saved login request to keep session cookies fresh. "
                 + "Right-click any request > 'Set as Session Login Request' to configure.");
         sessionRow.add(sessionCheckbox);
 
-        sessionRow.add(new JLabel("Interval:"));
+        JLabel intervalLabel = new JLabel("Interval:");
+        intervalLabel.setForeground(NEON_CYAN);
+        intervalLabel.setFont(MONO_LABEL);
+        sessionRow.add(intervalLabel);
         JComboBox<String> intervalCombo = new JComboBox<>(new String[]{
                 "1 min", "2 min", "3 min", "5 min", "10 min", "15 min", "30 min"});
         intervalCombo.setSelectedItem("5 min");
         intervalCombo.setToolTipText("How often to replay the login request");
+        styleComboBox(intervalCombo);
         sessionRow.add(intervalCombo);
 
         sessionStatusLabel = new JLabel("Session: Not configured");
-        sessionStatusLabel.setForeground(Color.GRAY);
-        sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        sessionStatusLabel.setForeground(FG_SECONDARY);
+        sessionStatusLabel.setFont(MONO_SMALL);
         sessionRow.add(sessionStatusLabel);
 
         // Wire checkbox to SessionKeepAlive
@@ -277,17 +311,17 @@ public class MainPanel extends JPanel {
             SwingUtilities.invokeLater(() -> {
                 sessionStatusLabel.setText(status);
                 if (status.contains("ERROR")) {
-                    sessionStatusLabel.setForeground(Color.RED);
-                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.BOLD, 11f));
+                    sessionStatusLabel.setForeground(NEON_RED);
+                    sessionStatusLabel.setFont(MONO_BOLD.deriveFont(11f));
                 } else if (status.contains("Active")) {
-                    sessionStatusLabel.setForeground(new Color(50, 150, 50));
-                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                    sessionStatusLabel.setForeground(NEON_GREEN);
+                    sessionStatusLabel.setFont(MONO_SMALL);
                 } else if (status.contains("Disabled")) {
-                    sessionStatusLabel.setForeground(new Color(200, 150, 50));
-                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                    sessionStatusLabel.setForeground(NEON_ORANGE);
+                    sessionStatusLabel.setFont(MONO_SMALL);
                 } else {
-                    sessionStatusLabel.setForeground(Color.GRAY);
-                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                    sessionStatusLabel.setForeground(FG_SECONDARY);
+                    sessionStatusLabel.setFont(MONO_SMALL);
                 }
             });
         });
@@ -296,22 +330,26 @@ public class MainPanel extends JPanel {
 
         // --- Stats Bar: severity count badges ---
         JPanel statsBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+        statsBar.setBackground(BG_DARK);
         statsBar.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
 
-        critLabel = createSeverityBadge("CRITICAL: 0", new Color(180, 30, 30), Color.WHITE);
-        highLabel = createSeverityBadge("HIGH: 0", new Color(220, 80, 40), Color.WHITE);
-        medLabel = createSeverityBadge("MEDIUM: 0", new Color(230, 160, 30), Color.BLACK);
-        lowLabel = createSeverityBadge("LOW: 0", new Color(70, 140, 200), Color.WHITE);
-        infoLabel = createSeverityBadge("INFO: 0", new Color(130, 130, 130), Color.WHITE);
+        critLabel = CyberTheme.createSeverityBadge("CRITICAL: 0", SEV_CRITICAL);
+        highLabel = CyberTheme.createSeverityBadge("HIGH: 0", SEV_HIGH);
+        medLabel = CyberTheme.createSeverityBadge("MEDIUM: 0", SEV_MEDIUM);
+        lowLabel = CyberTheme.createSeverityBadge("LOW: 0", SEV_LOW);
+        infoLabel = CyberTheme.createSeverityBadge("INFO: 0", SEV_INFO);
 
         statsBar.add(critLabel);
         statsBar.add(highLabel);
         statsBar.add(medLabel);
         statsBar.add(lowLabel);
         statsBar.add(infoLabel);
-        statsBar.add(new JLabel("  |  "));
+        JLabel separatorLabel = new JLabel("  |  ");
+        separatorLabel.setForeground(FG_DIM);
+        statsBar.add(separatorLabel);
         totalLabel = new JLabel("Total: 0");
-        totalLabel.setFont(totalLabel.getFont().deriveFont(Font.BOLD));
+        totalLabel.setForeground(FG_PRIMARY);
+        totalLabel.setFont(MONO_BOLD);
         statsBar.add(totalLabel);
 
         topContainer.add(statsBar);
@@ -343,16 +381,22 @@ public class MainPanel extends JPanel {
 
         // Placeholder when no module selected
         JPanel placeholder = new JPanel(new GridBagLayout());
-        placeholder.add(new JLabel("Select a module from the left sidebar"));
+        placeholder.setBackground(BG_DARK);
+        JLabel placeholderLabel = new JLabel("Select a module from the left sidebar");
+        placeholderLabel.setForeground(FG_SECONDARY);
+        placeholderLabel.setFont(MONO_FONT);
+        placeholder.add(placeholderLabel);
         moduleDetailContainer.add(placeholder, "none");
         cardLayout.show(moduleDetailContainer, "none");
 
         JSplitPane centerSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 moduleListPanel, moduleDetailContainer);
         centerSplit.setDividerLocation(250);
+        styleSplitPane(centerSplit);
 
         // ============ BOTTOM TABS ============
         JTabbedPane bottomTabs = new JTabbedPane();
+        styleTabbedPane(bottomTabs);
 
         // Build set of passive module IDs for categorizing findings
         java.util.Set<String> passiveModuleIds = new java.util.HashSet<>();
@@ -395,6 +439,7 @@ public class MainPanel extends JPanel {
                 centerSplit, bottomTabs);
         mainSplit.setDividerLocation(450);
         mainSplit.setResizeWeight(0.5);
+        styleSplitPane(mainSplit);
 
         // Allow the bottom tabs to be pulled up high — set small minimum sizes
         centerSplit.setMinimumSize(new Dimension(0, 80));
@@ -460,11 +505,11 @@ public class MainPanel extends JPanel {
                 threadField.setBorder(defaultThreadFieldBorder);
                 threadField.setToolTipText("Number of concurrent scan threads (1-100). Higher values increase speed but also load.");
             } else {
-                threadField.setBorder(BorderFactory.createLineBorder(Color.RED, 2));
+                threadField.setBorder(BorderFactory.createLineBorder(NEON_RED, 2));
                 threadField.setToolTipText("Invalid: thread count must be between 1 and 100");
             }
         } catch (NumberFormatException ex) {
-            threadField.setBorder(BorderFactory.createLineBorder(Color.RED, 2));
+            threadField.setBorder(BorderFactory.createLineBorder(NEON_RED, 2));
             threadField.setToolTipText("Invalid: enter a numeric value between 1 and 100");
         }
     }
@@ -519,9 +564,13 @@ public class MainPanel extends JPanel {
 
             interceptor.setRunning(true);
             startStopBtn.setText("Stop Auto-Scan");
-            startStopBtn.setBackground(new Color(200, 50, 50));
+            startStopBtn.setBackground(BG_PANEL);
+            startStopBtn.setForeground(NEON_RED);
+            startStopBtn.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(NEON_RED, 1),
+                    BorderFactory.createEmptyBorder(4, 12, 4, 12)));
             statusLabel.setText("Running");
-            statusLabel.setForeground(new Color(50, 150, 50));
+            statusLabel.setForeground(NEON_GREEN);
             progressBar.setIndeterminate(true);
             progressBar.setVisible(true);
 
@@ -533,9 +582,13 @@ public class MainPanel extends JPanel {
             interceptor.setRunning(false);
             executor.cancelAll();
             startStopBtn.setText("Start Auto-Scan");
-            startStopBtn.setBackground(new Color(50, 150, 50));
+            startStopBtn.setBackground(BG_PANEL);
+            startStopBtn.setForeground(NEON_GREEN);
+            startStopBtn.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(NEON_GREEN, 1),
+                    BorderFactory.createEmptyBorder(4, 12, 4, 12)));
             statusLabel.setText("Stopped");
-            statusLabel.setForeground(Color.RED);
+            statusLabel.setForeground(NEON_RED);
             progressBar.setIndeterminate(false);
             progressBar.setVisible(false);
 
@@ -572,14 +625,8 @@ public class MainPanel extends JPanel {
         }
     }
 
-    private static JLabel createSeverityBadge(String text, Color bg, Color fg) {
-        JLabel label = new JLabel(text);
-        label.setOpaque(true);
-        label.setBackground(bg);
-        label.setForeground(fg);
-        label.setFont(label.getFont().deriveFont(Font.BOLD, 11f));
-        label.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
-        return label;
+    private static JLabel createSeverityBadge(String text, Color neon) {
+        return CyberTheme.createSeverityBadge(text, neon);
     }
 
     /**
