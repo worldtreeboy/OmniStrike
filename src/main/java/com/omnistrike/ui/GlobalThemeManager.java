@@ -766,4 +766,75 @@ public final class GlobalThemeManager {
         bar.setBackground(p.bgDark);
         bar.setForeground(p.fgDim);
     }
+
+    // ═════════════════════════════════════════════════════════════════════
+    //  AMBIENT BREATHING GLOW — border color pulsing via GlowBorders
+    // ═════════════════════════════════════════════════════════════════════
+
+    /** Timer driving the breathing animation (~50ms ticks). */
+    private static Timer breathTimer;
+
+    /** Current phase in radians for the sine wave. */
+    private static float breathPhase = 0f;
+
+    /** Whether the breathing glow is currently active. */
+    private static boolean breathingEnabled = false;
+
+    /**
+     * Returns the current breath lerp factor (0..1) for GlowBorders to query.
+     * 0 = no glow (base border color), 1 = full glow (accent-tinted).
+     * When breathing is disabled, always returns 0.
+     */
+    public static float getBreathAmount() {
+        if (!breathingEnabled) return 0f;
+        return ((float) Math.sin(breathPhase) + 1f) / 2f;
+    }
+
+    /**
+     * Start the ambient breathing glow. GlowBorders throughout the UI
+     * will pulse between their base color and the theme's accent color.
+     * Only borders are affected — backgrounds and text stay untouched.
+     */
+    public static void startBreathing() {
+        if (breathingEnabled) return;
+        breathingEnabled = true;
+        breathPhase = 0f;
+
+        // Timer repaints all frames; GlowBorders read breathPhase at paint time
+        breathTimer = new Timer(50, e -> {
+            breathPhase += 0.03f;
+            if (breathPhase > (float)(2 * Math.PI)) {
+                breathPhase -= (float)(2 * Math.PI);
+            }
+            for (Frame f : Frame.getFrames()) {
+                f.repaint();
+            }
+        });
+        breathTimer.start();
+    }
+
+    /**
+     * Stop the ambient breathing glow. Borders return to their base colors.
+     */
+    public static void stopBreathing() {
+        if (!breathingEnabled) return;
+        breathingEnabled = false;
+
+        if (breathTimer != null) {
+            breathTimer.stop();
+            breathTimer = null;
+        }
+
+        // Repaint all frames to restore base border colors
+        SwingUtilities.invokeLater(() -> {
+            for (Frame f : Frame.getFrames()) {
+                f.repaint();
+            }
+        });
+    }
+
+    /** Returns whether the breathing glow is currently active. */
+    public static boolean isBreathing() {
+        return breathingEnabled;
+    }
 }

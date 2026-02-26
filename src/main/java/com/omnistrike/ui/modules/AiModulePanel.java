@@ -206,14 +206,14 @@ public class AiModulePanel extends JPanel {
         JScrollPane tableScroll = new JScrollPane(findingsTable);
         CyberTheme.styleScrollPane(tableScroll);
         tableScroll.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(NEON_CYAN, 1),
+                new CyberTheme.GlowLineBorder(NEON_CYAN, 1),
                 "AI Findings", javax.swing.border.TitledBorder.DEFAULT_JUSTIFICATION,
                 javax.swing.border.TitledBorder.DEFAULT_POSITION, MONO_BOLD, NEON_CYAN));
 
         JScrollPane detailScroll = new JScrollPane(detailArea);
         CyberTheme.styleScrollPane(detailScroll);
         detailScroll.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createLineBorder(NEON_CYAN, 1),
+                new CyberTheme.GlowLineBorder(NEON_CYAN, 1),
                 "Finding Details", javax.swing.border.TitledBorder.DEFAULT_JUSTIFICATION,
                 javax.swing.border.TitledBorder.DEFAULT_POSITION, MONO_BOLD, NEON_CYAN));
 
@@ -507,7 +507,7 @@ public class AiModulePanel extends JPanel {
         JPanel banner = new JPanel(new BorderLayout(10, 0));
         banner.setBackground(BG_SURFACE);
         banner.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(1, 1, 1, 1, NEON_ORANGE),
+                new CyberTheme.GlowMatteBorder(1, 1, 1, 1, NEON_ORANGE),
                 new EmptyBorder(10, 14, 10, 14)));
         banner.setAlignmentX(LEFT_ALIGNMENT);
 

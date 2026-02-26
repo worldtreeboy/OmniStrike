@@ -163,7 +163,7 @@ public class ModuleListPanel extends JPanel {
         sep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 6));
         sep.setPreferredSize(new Dimension(250, 6));
         sep.setBackground(BG_DARK);
-        sep.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER));
+        sep.setBorder(new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER));
         return sep;
     }
 
@@ -184,7 +184,7 @@ public class ModuleListPanel extends JPanel {
         entry.setBackground(BG_PANEL);
         entry.setOpaque(true);
         entry.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER),
+                new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER),
                 BorderFactory.createEmptyBorder(4, 4, 4, 4)));
         entry.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
@@ -236,7 +236,7 @@ public class ModuleListPanel extends JPanel {
         if (module.getId().equals(selectedModuleId)) {
             entry.setBackground(BG_HOVER);
             entry.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createMatteBorder(0, 3, 0, 0, NEON_CYAN),
+                    new CyberTheme.GlowMatteBorder(0, 3, 0, 0, NEON_CYAN),
                     BorderFactory.createEmptyBorder(4, 1, 4, 4)));
         }
 
@@ -253,13 +253,13 @@ public class ModuleListPanel extends JPanel {
                 entry.getValue().setBackground(BG_HOVER);
                 entry.getValue().setOpaque(true);
                 entry.getValue().setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createMatteBorder(0, 3, 0, 0, NEON_CYAN),
+                        new CyberTheme.GlowMatteBorder(0, 3, 0, 0, NEON_CYAN),
                         BorderFactory.createEmptyBorder(4, 1, 4, 4)));
             } else {
                 entry.getValue().setBackground(BG_PANEL);
                 entry.getValue().setOpaque(true);
                 entry.getValue().setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER),
+                        new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER),
                         BorderFactory.createEmptyBorder(4, 4, 4, 4)));
             }
             entry.getValue().repaint();

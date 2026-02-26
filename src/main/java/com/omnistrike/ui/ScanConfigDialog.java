@@ -225,7 +225,7 @@ public class ScanConfigDialog extends JDialog {
         JScrollPane configScroll = new JScrollPane(configPanel);
         configScroll.setBackground(BG_DARK);
         configScroll.getViewport().setBackground(BG_DARK);
-        configScroll.setBorder(BorderFactory.createLineBorder(BORDER));
+        configScroll.setBorder(new CyberTheme.GlowLineBorder(BORDER, 1));
         configScroll.getVerticalScrollBar().setUnitIncrement(16);
         rightPanel.add(configScroll, BorderLayout.CENTER);
 
@@ -331,7 +331,7 @@ public class ScanConfigDialog extends JDialog {
         JScrollPane scroll = new JScrollPane(listContent);
         scroll.setBackground(BG_DARK);
         scroll.getViewport().setBackground(BG_DARK);
-        scroll.setBorder(BorderFactory.createLineBorder(BORDER));
+        scroll.setBorder(new CyberTheme.GlowLineBorder(BORDER, 1));
         scroll.getVerticalScrollBar().setUnitIncrement(16);
 
         panel.add(scroll, BorderLayout.CENTER);

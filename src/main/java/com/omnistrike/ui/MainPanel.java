@@ -95,7 +95,7 @@ public class MainPanel extends JPanel {
         JPanel topContainer = new JPanel();
         topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
         topContainer.setBackground(BG_DARK);
-        topContainer.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER));
+        topContainer.setBorder(new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER));
 
         // --- Row 1: Scope, Threads, Rate Limit ---
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
@@ -188,6 +188,20 @@ public class MainPanel extends JPanel {
         });
         row1.add(themeCombo);
 
+        // Ambient Glow toggle — subtle breathing color overlay on entire Burp UI
+        JCheckBox glowCheckbox = new JCheckBox("Ambient Glow");
+        styleCheckBox(glowCheckbox);
+        glowCheckbox.setSelected(false);
+        glowCheckbox.setToolTipText("Toggle a subtle breathing glow effect across the entire Burp Suite UI");
+        glowCheckbox.addActionListener(e -> {
+            if (glowCheckbox.isSelected()) {
+                GlobalThemeManager.startBreathing();
+            } else {
+                GlobalThemeManager.stopBreathing();
+            }
+        });
+        row1.add(glowCheckbox);
+
         topContainer.add(row1);
 
         // --- Row 2: Buttons, Status, Thread Status, Collaborator, Progress Bar ---
@@ -200,7 +214,7 @@ public class MainPanel extends JPanel {
         startStopBtn.setFocusPainted(false);
         startStopBtn.setFont(MONO_BOLD);
         startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(NEON_GREEN, 1),
+                new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
                 BorderFactory.createEmptyBorder(4, 12, 4, 12)));
         startStopBtn.setToolTipText("Start or stop automated scanning of all in-scope proxied traffic");
         startStopBtn.addActionListener(e -> toggleScanning());
@@ -212,7 +226,7 @@ public class MainPanel extends JPanel {
         stopScansBtn.setFocusPainted(false);
         stopScansBtn.setFont(MONO_BOLD);
         stopScansBtn.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(NEON_RED, 1),
+                new CyberTheme.GlowLineBorder(NEON_RED, 1),
                 BorderFactory.createEmptyBorder(4, 12, 4, 12)));
         stopScansBtn.setToolTipText("Stop all scans launched via right-click context menu");
         stopScansBtn.addActionListener(e -> {
@@ -614,11 +628,11 @@ public class MainPanel extends JPanel {
                 threadField.setBorder(defaultThreadFieldBorder);
                 threadField.setToolTipText("Number of concurrent scan threads (1-100). Higher values increase speed but also load.");
             } else {
-                threadField.setBorder(BorderFactory.createLineBorder(NEON_RED, 2));
+                threadField.setBorder(new CyberTheme.GlowLineBorder(NEON_RED, 2));
                 threadField.setToolTipText("Invalid: thread count must be between 1 and 100");
             }
         } catch (NumberFormatException ex) {
-            threadField.setBorder(BorderFactory.createLineBorder(NEON_RED, 2));
+            threadField.setBorder(new CyberTheme.GlowLineBorder(NEON_RED, 2));
             threadField.setToolTipText("Invalid: enter a numeric value between 1 and 100");
         }
     }
@@ -676,7 +690,7 @@ public class MainPanel extends JPanel {
             startStopBtn.setBackground(BG_PANEL);
             startStopBtn.setForeground(NEON_RED);
             startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(NEON_RED, 1),
+                    new CyberTheme.GlowLineBorder(NEON_RED, 1),
                     BorderFactory.createEmptyBorder(4, 12, 4, 12)));
             statusLabel.setText("Running");
             statusLabel.setForeground(NEON_GREEN);
@@ -694,7 +708,7 @@ public class MainPanel extends JPanel {
             startStopBtn.setBackground(BG_PANEL);
             startStopBtn.setForeground(NEON_GREEN);
             startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(NEON_GREEN, 1),
+                    new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
                     BorderFactory.createEmptyBorder(4, 12, 4, 12)));
             statusLabel.setText("Stopped");
             statusLabel.setForeground(NEON_RED);
@@ -718,6 +732,8 @@ public class MainPanel extends JPanel {
         if (updateTimer != null) {
             updateTimer.stop();
         }
+        // Stop ambient breathing glow if active
+        GlobalThemeManager.stopBreathing();
         // FindingsOverviewPanels do not currently have timers that need stopping.
         if (requestResponsePanel != null) {
             requestResponsePanel.stopTimers();
@@ -777,7 +793,7 @@ public class MainPanel extends JPanel {
                 startStopBtn.setForeground(NEON_RED);
                 startStopBtn.setFont(MONO_BOLD);
                 startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createLineBorder(NEON_RED, 1),
+                        new CyberTheme.GlowLineBorder(NEON_RED, 1),
                         BorderFactory.createEmptyBorder(4, 12, 4, 12)));
                 statusLabel.setText("Running");
                 statusLabel.setForeground(NEON_GREEN);
@@ -787,7 +803,7 @@ public class MainPanel extends JPanel {
                 startStopBtn.setForeground(NEON_GREEN);
                 startStopBtn.setFont(MONO_BOLD);
                 startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createLineBorder(NEON_GREEN, 1),
+                        new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
                         BorderFactory.createEmptyBorder(4, 12, 4, 12)));
                 statusLabel.setText("Stopped");
                 statusLabel.setForeground(NEON_RED);
@@ -819,7 +835,7 @@ public class MainPanel extends JPanel {
         badge.setForeground(neonColor);
         badge.setFont(MONO_BOLD.deriveFont(11f));
         badge.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(neonColor, 1),
+                new CyberTheme.GlowLineBorder(neonColor, 1),
                 BorderFactory.createEmptyBorder(2, 8, 2, 8)));
     }
 

@@ -846,7 +846,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             JPanel toast = new JPanel(new BorderLayout(8, 4));
             toast.setBackground(new Color(30, 30, 30));
             toast.setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(new Color(80, 80, 80), 1),
+                    new com.omnistrike.ui.CyberTheme.GlowLineBorder(new Color(80, 80, 80), 1),
                     BorderFactory.createEmptyBorder(12, 16, 12, 16)));
 
             JLabel titleLabel = new JLabel(title);

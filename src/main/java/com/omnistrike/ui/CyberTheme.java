@@ -130,7 +130,7 @@ public final class CyberTheme {
         btn.setFocusPainted(false);
         btn.setFont(MONO_FONT);
         btn.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(neon, 1),
+                new GlowLineBorder(neon, 1),
                 BorderFactory.createEmptyBorder(4, 12, 4, 12)));
         btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         btn.setOpaque(true);
@@ -141,14 +141,14 @@ public final class CyberTheme {
             public void mouseEntered(MouseEvent e) {
                 btn.setBackground(BG_HOVER);
                 btn.setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createLineBorder(neon, 2),
+                        new GlowLineBorder(neon, 2),
                         BorderFactory.createEmptyBorder(3, 11, 3, 11)));
             }
             @Override
             public void mouseExited(MouseEvent e) {
                 btn.setBackground(BG_PANEL);
                 btn.setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createLineBorder(neon, 1),
+                        new GlowLineBorder(neon, 1),
                         BorderFactory.createEmptyBorder(4, 12, 4, 12)));
             }
         });
@@ -173,7 +173,7 @@ public final class CyberTheme {
         field.setCaretColor(NEON_CYAN);
         field.setFont(MONO_FONT);
         field.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(BORDER),
+                new GlowLineBorder(BORDER, 1),
                 BorderFactory.createEmptyBorder(3, 6, 3, 6)));
         field.setSelectionColor(BG_HOVER);
         field.setSelectedTextColor(NEON_CYAN);
@@ -186,7 +186,7 @@ public final class CyberTheme {
         field.setCaretColor(NEON_CYAN);
         field.setFont(MONO_FONT);
         field.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(BORDER),
+                new GlowLineBorder(BORDER, 1),
                 BorderFactory.createEmptyBorder(3, 6, 3, 6)));
         field.setSelectionColor(BG_HOVER);
         field.setSelectedTextColor(NEON_CYAN);
@@ -207,7 +207,7 @@ public final class CyberTheme {
         combo.setBackground(BG_INPUT);
         combo.setForeground(FG_PRIMARY);
         combo.setFont(MONO_FONT);
-        combo.setBorder(BorderFactory.createLineBorder(BORDER));
+        combo.setBorder(new GlowLineBorder(BORDER, 1));
         // Style the renderer for dropdown items
         combo.setRenderer(new DefaultListCellRenderer() {
             @Override
@@ -261,7 +261,7 @@ public final class CyberTheme {
         header.setBackground(BG_SURFACE);
         header.setForeground(NEON_CYAN);
         header.setFont(MONO_BOLD);
-        header.setBorder(BorderFactory.createMatteBorder(0, 0, 2, 0, NEON_CYAN));
+        header.setBorder(new GlowMatteBorder(0, 0, 2, 0, NEON_CYAN));
         header.setDefaultRenderer(new DefaultTableCellRenderer() {
             @Override
             public Component getTableCellRendererComponent(JTable t, Object value,
@@ -272,7 +272,7 @@ public final class CyberTheme {
                 setFont(MONO_BOLD);
                 setHorizontalAlignment(SwingConstants.LEFT);
                 setBorder(BorderFactory.createCompoundBorder(
-                        BorderFactory.createMatteBorder(0, 0, 2, 1, BORDER),
+                        new GlowMatteBorder(0, 0, 2, 1, BORDER),
                         BorderFactory.createEmptyBorder(4, 6, 4, 6)));
                 return this;
             }
@@ -302,7 +302,7 @@ public final class CyberTheme {
     public static void styleScrollPane(JScrollPane sp) {
         sp.setBackground(BG_DARK);
         sp.getViewport().setBackground(BG_DARK);
-        sp.setBorder(BorderFactory.createLineBorder(BORDER));
+        sp.setBorder(new GlowLineBorder(BORDER, 1));
 
         styleScrollBar(sp.getVerticalScrollBar());
         styleScrollBar(sp.getHorizontalScrollBar());
@@ -378,7 +378,7 @@ public final class CyberTheme {
     public static void styleProgressBar(JProgressBar pb) {
         pb.setBackground(BG_INPUT);
         pb.setForeground(NEON_CYAN);
-        pb.setBorder(BorderFactory.createLineBorder(BORDER));
+        pb.setBorder(new GlowLineBorder(BORDER, 1));
         pb.setFont(MONO_SMALL);
     }
 
@@ -386,13 +386,13 @@ public final class CyberTheme {
 
     /** Creates a line border with a neon color. */
     public static Border createNeonBorder(Color neonColor) {
-        return BorderFactory.createLineBorder(neonColor, 1);
+        return new GlowLineBorder(neonColor, 1);
     }
 
     /** Creates a compound neon border with inner padding. */
     public static Border createNeonBorderPadded(Color neonColor, int top, int left, int bottom, int right) {
         return BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(neonColor, 1),
+                new GlowLineBorder(neonColor, 1),
                 BorderFactory.createEmptyBorder(top, left, bottom, right));
     }
 
@@ -446,7 +446,7 @@ public final class CyberTheme {
         label.setForeground(neonColor);
         label.setFont(MONO_BOLD.deriveFont(11f));
         label.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(neonColor, 1),
+                new GlowLineBorder(neonColor, 1),
                 BorderFactory.createEmptyBorder(2, 8, 2, 8)));
         return label;
     }
@@ -456,7 +456,7 @@ public final class CyberTheme {
         Color neon = neonColor != null ? neonColor : NEON_CYAN;
         comp.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder(
-                        BorderFactory.createLineBorder(neon, 1),
+                        new GlowLineBorder(neon, 1),
                         title,
                         javax.swing.border.TitledBorder.DEFAULT_JUSTIFICATION,
                         javax.swing.border.TitledBorder.DEFAULT_POSITION,
@@ -476,6 +476,97 @@ public final class CyberTheme {
                 Math.max(BG_DARK.getRed(), Math.min(255, r)),
                 Math.max(BG_DARK.getGreen(), Math.min(255, g)),
                 Math.max(BG_DARK.getBlue(), Math.min(255, b)));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  GLOW BORDER CLASSES — animated borders for breathing effect
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * A LineBorder that dynamically tints toward the theme accent color
+     * based on the current breathing phase. When breathing is off,
+     * renders identically to a normal LineBorder. Only the border line
+     * is affected — backgrounds and text stay untouched.
+     */
+    public static class GlowLineBorder extends javax.swing.border.LineBorder {
+        private final Color baseColor;
+
+        public GlowLineBorder(Color baseColor, int thickness) {
+            super(baseColor, thickness);
+            this.baseColor = baseColor;
+        }
+
+        @Override
+        public void paintBorder(Component c, Graphics g, int x, int y, int width, int height) {
+            Color original = this.lineColor;
+            this.lineColor = computeGlowColor();
+            super.paintBorder(c, g, x, y, width, height);
+            this.lineColor = original;
+        }
+
+        @Override
+        public Color getLineColor() {
+            return computeGlowColor();
+        }
+
+        private Color computeGlowColor() {
+            float amount = GlobalThemeManager.getBreathAmount();
+            if (amount <= 0f) return baseColor;
+            Color accent = getAccentColor();
+            // Glow target: bright version of accent (blend with white for strong visibility)
+            Color glowTarget = lerpColor(accent, Color.WHITE, 0.35f);
+            return lerpColor(baseColor, glowTarget, amount);
+        }
+    }
+
+    /**
+     * A MatteBorder that dynamically tints toward the theme accent color
+     * based on the current breathing phase. When breathing is off,
+     * renders identically to a normal MatteBorder. Only the border area
+     * is affected — backgrounds and text stay untouched.
+     */
+    public static class GlowMatteBorder extends javax.swing.border.MatteBorder {
+        private final Color baseColor;
+
+        public GlowMatteBorder(int top, int left, int bottom, int right, Color baseColor) {
+            super(top, left, bottom, right, baseColor);
+            this.baseColor = baseColor;
+        }
+
+        @Override
+        public void paintBorder(Component c, Graphics g, int x, int y, int width, int height) {
+            Color original = this.color;
+            this.color = computeGlowColor();
+            super.paintBorder(c, g, x, y, width, height);
+            this.color = original;
+        }
+
+        private Color computeGlowColor() {
+            float amount = GlobalThemeManager.getBreathAmount();
+            if (amount <= 0f) return baseColor;
+            Color accent = getAccentColor();
+            // Glow target: bright version of accent (blend with white for strong visibility)
+            Color glowTarget = lerpColor(accent, Color.WHITE, 0.35f);
+            return lerpColor(baseColor, glowTarget, amount);
+        }
+    }
+
+    /** Returns the current theme accent color, defaulting to cyan. */
+    private static Color getAccentColor() {
+        ThemePalette palette = GlobalThemeManager.getCurrentPalette();
+        return palette != null ? palette.accentPrimary : new Color(0x00, 0xFF, 0xFF);
+    }
+
+    /** Linearly interpolates between two colors. */
+    private static Color lerpColor(Color a, Color b, float t) {
+        int r = (int)(a.getRed() + (b.getRed() - a.getRed()) * t);
+        int gr = (int)(a.getGreen() + (b.getGreen() - a.getGreen()) * t);
+        int bl = (int)(a.getBlue() + (b.getBlue() - a.getBlue()) * t);
+        return new Color(clamp(r), clamp(gr), clamp(bl));
+    }
+
+    private static int clamp(int v) {
+        return Math.max(0, Math.min(255, v));
     }
 
     /** Apply the cyberpunk theme recursively to all children of a container. */
