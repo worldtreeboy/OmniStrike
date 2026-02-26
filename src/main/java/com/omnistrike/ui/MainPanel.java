@@ -351,10 +351,13 @@ public class MainPanel extends JPanel {
 
         topContainer.add(sessionRow);
 
-        // --- Stats Bar: severity count badges ---
+        // --- Stats Bar: severity count badges (left) + author credit (right) ---
+        JPanel statsBarWrapper = new JPanel(new BorderLayout());
+        statsBarWrapper.setBackground(BG_DARK);
+        statsBarWrapper.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
+
         JPanel statsBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         statsBar.setBackground(BG_DARK);
-        statsBar.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
 
         critLabel = CyberTheme.createSeverityBadge("CRITICAL: 0", SEV_CRITICAL);
         highLabel = CyberTheme.createSeverityBadge("HIGH: 0", SEV_HIGH);
@@ -375,7 +378,27 @@ public class MainPanel extends JPanel {
         totalLabel.setFont(MONO_BOLD);
         statsBar.add(totalLabel);
 
-        topContainer.add(statsBar);
+        statsBarWrapper.add(statsBar, BorderLayout.WEST);
+
+        // Author credit — subtle right-aligned, lights up on hover
+        JLabel creditLabel = new JLabel("github.com/worldtreeboy  ");
+        creditLabel.setForeground(FG_DIM);
+        creditLabel.setFont(MONO_SMALL);
+        creditLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        creditLabel.setToolTipText("OmniStrike by worldtreeboy");
+        creditLabel.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseEntered(java.awt.event.MouseEvent e) {
+                creditLabel.setForeground(NEON_CYAN);
+            }
+            @Override
+            public void mouseExited(java.awt.event.MouseEvent e) {
+                creditLabel.setForeground(FG_DIM);
+            }
+        });
+        statsBarWrapper.add(creditLabel, BorderLayout.EAST);
+
+        topContainer.add(statsBarWrapper);
 
         add(topContainer, BorderLayout.NORTH);
 
