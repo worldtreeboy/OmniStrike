@@ -32,6 +32,9 @@ public class DeserModulePanel extends JPanel {
 
     private final JComboBox<Language> languageCombo;
     private final JComboBox<String> chainCombo;
+    private final JLabel chainLabel;
+    private final JComboBox<String> formatterCombo;
+    private final JLabel formatterLabel;
     private final JComboBox<Encoding> encodingCombo;
     private final JTextField commandField;
     private final JTextArea previewArea;
@@ -57,14 +60,26 @@ public class DeserModulePanel extends JPanel {
         chainCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
         chainCombo.setPreferredSize(new Dimension(280, 28));
 
+        chainLabel = label("Chain:");
+
+        formatterCombo = new JComboBox<>();
+        formatterCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
+        formatterCombo.setPreferredSize(new Dimension(200, 28));
+
+        formatterLabel = label("Formatter:");
+        formatterLabel.setVisible(false);
+        formatterCombo.setVisible(false);
+
         encodingCombo = new JComboBox<>(Encoding.values());
         encodingCombo.setFont(new Font("Segoe UI", Font.PLAIN, 13));
 
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
         row1.add(label("Language:"));
         row1.add(languageCombo);
-        row1.add(label("Chain:"));
+        row1.add(chainLabel);
         row1.add(chainCombo);
+        row1.add(formatterLabel);
+        row1.add(formatterCombo);
         row1.add(label("Encoding:"));
         row1.add(encodingCombo);
 
@@ -245,7 +260,7 @@ public class DeserModulePanel extends JPanel {
         populateChains();
         updateChainDescription();
         languageCombo.addActionListener(e -> { populateChains(); updateChainDescription(); });
-        chainCombo.addActionListener(e -> updateChainDescription());
+        chainCombo.addActionListener(e -> { populateFormatters(); updateChainDescription(); });
 
         generateBtn.addActionListener(e -> generatePayload());
         copyB64Btn.addActionListener(e -> copyBase64());
@@ -271,9 +286,37 @@ public class DeserModulePanel extends JPanel {
         if (lang == null) return;
 
         chainCombo.removeAllItems();
-        Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
-        for (String name : chains.keySet()) {
-            chainCombo.addItem(name);
+
+        if (lang == Language.DOTNET) {
+            chainLabel.setText("Gadget:");
+            Map<String, String> gadgets = DeserPayloadGenerator.getDotNetGadgets();
+            for (String name : gadgets.keySet()) {
+                chainCombo.addItem(name);
+            }
+            formatterLabel.setVisible(true);
+            formatterCombo.setVisible(true);
+            populateFormatters();
+        } else {
+            chainLabel.setText("Chain:");
+            Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
+            for (String name : chains.keySet()) {
+                chainCombo.addItem(name);
+            }
+            formatterLabel.setVisible(false);
+            formatterCombo.setVisible(false);
+        }
+    }
+
+    private void populateFormatters() {
+        Language lang = (Language) languageCombo.getSelectedItem();
+        if (lang != Language.DOTNET) return;
+
+        String gadget = (String) chainCombo.getSelectedItem();
+        formatterCombo.removeAllItems();
+        if (gadget != null) {
+            for (String fmt : DeserPayloadGenerator.getDotNetFormatters(gadget)) {
+                formatterCombo.addItem(fmt);
+            }
         }
     }
 
@@ -284,8 +327,14 @@ public class DeserModulePanel extends JPanel {
             chainDescLabel.setText(" ");
             return;
         }
-        Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
-        String desc = chains.get(chain);
+        String desc;
+        if (lang == Language.DOTNET) {
+            Map<String, String> gadgets = DeserPayloadGenerator.getDotNetGadgets();
+            desc = gadgets.get(chain);
+        } else {
+            Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(lang);
+            desc = chains.get(chain);
+        }
         chainDescLabel.setText(desc != null ? desc : " ");
     }
 
@@ -298,6 +347,7 @@ public class DeserModulePanel extends JPanel {
         String chain = (String) chainCombo.getSelectedItem();
         Encoding enc = (Encoding) encodingCombo.getSelectedItem();
         String command = commandField.getText().trim();
+        String formatter = (String) formatterCombo.getSelectedItem();
 
         if (lang == null || chain == null || command.isEmpty()) {
             JOptionPane.showMessageDialog(this,
@@ -307,7 +357,15 @@ public class DeserModulePanel extends JPanel {
         }
 
         try {
-            byte[] payload = DeserPayloadGenerator.generate(lang, chain, command, enc);
+            byte[] payload;
+            String headerExtra;
+            if (lang == Language.DOTNET && formatter != null && !formatter.isEmpty()) {
+                payload = DeserPayloadGenerator.generate(lang, chain, formatter, command, enc);
+                headerExtra = " | Gadget: " + chain + " | Formatter: " + formatter;
+            } else {
+                payload = DeserPayloadGenerator.generate(lang, chain, command, enc);
+                headerExtra = " | Chain: " + chain;
+            }
             lastGeneratedPayload = payload;
 
             String hexDump = DeserPayloadGenerator.toHexDump(payload, 1024);
@@ -315,7 +373,7 @@ public class DeserModulePanel extends JPanel {
             String decoded = new String(payload, StandardCharsets.UTF_8);
 
             previewArea.setText(
-                    "Language: " + lang + " | Chain: " + chain +
+                    "Language: " + lang + headerExtra +
                     " | Encoding: " + enc + " | Size: " + payload.length + " bytes\n" +
                     "═══════════════════════════════════════════════════════════════\n\n" +
                     "── Base64 (copy-paste ready) ─────────────────────────────────\n" +

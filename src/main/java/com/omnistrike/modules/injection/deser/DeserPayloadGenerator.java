@@ -37,11 +37,30 @@ public final class DeserPayloadGenerator {
         };
     }
 
+    // ── .NET gadget/formatter discovery ──────────────────────────────────────
+
+    public static Map<String, String> getDotNetGadgets() {
+        return DotNetPayloads.getGadgets();
+    }
+
+    public static List<String> getDotNetFormatters(String gadget) {
+        return DotNetPayloads.getFormatters(gadget);
+    }
+
     // ── Payload generation ────────────────────────────────────────────────────
 
     public static byte[] generate(Language language, String chain, String command, Encoding encoding) {
         byte[] raw = generateRaw(language, chain, command);
         return applyEncoding(raw, encoding);
+    }
+
+    /** Overload with formatter parameter — used for .NET gadget+formatter UI. */
+    public static byte[] generate(Language language, String chain, String formatter,
+                                   String command, Encoding encoding) {
+        if (language == Language.DOTNET && formatter != null && !formatter.isEmpty()) {
+            return applyEncoding(DotNetPayloads.generate(chain, formatter, command), encoding);
+        }
+        return generate(language, chain, command, encoding);
     }
 
     private static byte[] generateRaw(Language language, String chain, String command) {
