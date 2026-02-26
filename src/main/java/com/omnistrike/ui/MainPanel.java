@@ -380,20 +380,77 @@ public class MainPanel extends JPanel {
 
         statsBarWrapper.add(statsBar, BorderLayout.WEST);
 
-        // Author credit — subtle right-aligned, lights up on hover
-        JLabel creditLabel = new JLabel("github.com/worldtreeboy  ");
+        // Author credit — neon glow label, right-aligned
+        JLabel creditLabel = new JLabel("github.com/worldtreeboy  ") {
+            private boolean hovered = false;
+            private float glowPhase = 0f;
+            private final Timer pulseTimer = new Timer(50, evt -> {
+                glowPhase += 0.08f;
+                if (glowPhase > (float)(2 * Math.PI)) glowPhase -= (float)(2 * Math.PI);
+                repaint();
+            });
+            {
+                pulseTimer.start();
+            }
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+
+                String text = getText();
+                FontMetrics fm = g2.getFontMetrics(getFont());
+                int x = (getWidth() - fm.stringWidth(text)) / 2;
+                int y = (getHeight() + fm.getAscent() - fm.getDescent()) / 2;
+
+                Color glowColor = hovered ? NEON_CYAN : FG_DIM;
+
+                // Pulsing intensity: brighter on hover, subtle idle pulse
+                float pulse = hovered
+                        ? 0.7f + 0.3f * (float) Math.sin(glowPhase)
+                        : 0.15f + 0.1f * (float) Math.sin(glowPhase);
+
+                // Draw glow layers (outer to inner, decreasing radius, increasing alpha)
+                g2.setFont(getFont());
+                for (int i = 6; i >= 1; i--) {
+                    float alpha = pulse * (0.08f + 0.04f * (6 - i));
+                    g2.setColor(new Color(
+                            glowColor.getRed(), glowColor.getGreen(), glowColor.getBlue(),
+                            Math.min(255, (int)(alpha * 255))));
+                    g2.drawString(text, x - i, y);
+                    g2.drawString(text, x + i, y);
+                    g2.drawString(text, x, y - i);
+                    g2.drawString(text, x, y + i);
+                }
+
+                // Draw the crisp foreground text
+                g2.setColor(hovered ? NEON_CYAN : FG_DIM);
+                g2.drawString(text, x, y);
+                g2.dispose();
+            }
+            public void setHovered(boolean h) { this.hovered = h; }
+        };
         creditLabel.setForeground(FG_DIM);
-        creditLabel.setFont(MONO_SMALL);
+        Font creditFont = MONO_SMALL.deriveFont(MONO_SMALL.getSize() * 1.2f);
+        creditLabel.setFont(creditFont);
+        creditLabel.setOpaque(false);
         creditLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         creditLabel.setToolTipText("OmniStrike by worldtreeboy");
+        creditLabel.setPreferredSize(new Dimension(
+                creditLabel.getFontMetrics(creditFont).stringWidth("github.com/worldtreeboy  ") + 20,
+                28));
         creditLabel.addMouseListener(new java.awt.event.MouseAdapter() {
             @Override
             public void mouseEntered(java.awt.event.MouseEvent e) {
-                creditLabel.setForeground(NEON_CYAN);
+                try { var m = creditLabel.getClass().getMethod("setHovered", boolean.class);
+                    m.invoke(creditLabel, true);
+                } catch (Exception ignored) {}
             }
             @Override
             public void mouseExited(java.awt.event.MouseEvent e) {
-                creditLabel.setForeground(FG_DIM);
+                try { var m = creditLabel.getClass().getMethod("setHovered", boolean.class);
+                    m.invoke(creditLabel, false);
+                } catch (Exception ignored) {}
             }
         });
         statsBarWrapper.add(creditLabel, BorderLayout.EAST);
