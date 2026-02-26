@@ -411,17 +411,20 @@ public class MainPanel extends JPanel {
                         ? 0.85f + 0.15f * breathe   // hover: always bright
                         : 0.08f + 0.92f * breathe;  // idle: faint → full bright
 
-                // Draw glow layers (outer to inner, decreasing radius, increasing alpha)
+                // Draw glow layers — full circle offsets for smooth halo
                 g2.setFont(getFont());
                 for (int i = 6; i >= 1; i--) {
-                    float alpha = pulse * (0.10f + 0.06f * (6 - i));
+                    float alpha = pulse * (0.06f + 0.04f * (6 - i));
                     g2.setColor(new Color(
                             glowColor.getRed(), glowColor.getGreen(), glowColor.getBlue(),
                             Math.min(255, (int)(alpha * 255))));
-                    g2.drawString(text, x - i, y);
-                    g2.drawString(text, x + i, y);
-                    g2.drawString(text, x, y - i);
-                    g2.drawString(text, x, y + i);
+                    // 8 directions: N, NE, E, SE, S, SW, W, NW
+                    for (int dx = -1; dx <= 1; dx++) {
+                        for (int dy = -1; dy <= 1; dy++) {
+                            if (dx == 0 && dy == 0) continue;
+                            g2.drawString(text, x + dx * i, y + dy * i);
+                        }
+                    }
                 }
 
                 // Draw the crisp foreground text — fades with the breathing
