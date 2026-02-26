@@ -7,6 +7,7 @@ import com.omnistrike.model.ScanModule;
 import com.omnistrike.model.Severity;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.ui.modules.AiModulePanel;
+import com.omnistrike.ui.modules.DeserModulePanel;
 import com.omnistrike.ui.modules.GenericModulePanel;
 
 import javax.swing.*;
@@ -50,6 +51,9 @@ public class MainPanel extends JPanel {
     private final FindingsOverviewPanel activeFindingsPanel;
     private final FindingsOverviewPanel passiveFindingsPanel;
     private final RequestResponsePanel requestResponsePanel;
+
+    // Custom module panel for deserializer (exposed for context menu "Send to Deserializer")
+    private DeserModulePanel deserModulePanel;
 
     // Stats bar severity count labels
     private final JLabel critLabel;
@@ -327,6 +331,9 @@ public class MainPanel extends JPanel {
             JPanel panel;
             if ("ai-vuln-analyzer".equals(module.getId()) && module instanceof AiVulnAnalyzer aiModule) {
                 panel = new AiModulePanel(aiModule, findingsStore, registry, api, scopeManager);
+            } else if ("deser-scanner".equals(module.getId())) {
+                deserModulePanel = new DeserModulePanel(api, findingsStore);
+                panel = deserModulePanel;
             } else {
                 panel = new GenericModulePanel(module.getId(), module.getName(), findingsStore, api);
             }
@@ -559,6 +566,8 @@ public class MainPanel extends JPanel {
                 ((GenericModulePanel) panel).stopTimers();
             } else if (panel instanceof AiModulePanel) {
                 ((AiModulePanel) panel).stopTimers();
+            } else if (panel instanceof DeserModulePanel) {
+                ((DeserModulePanel) panel).stopTimers();
             }
         }
     }
@@ -597,5 +606,18 @@ public class MainPanel extends JPanel {
 
     public LogPanel getLogPanel() {
         return logPanel;
+    }
+
+    /** Returns the custom DeserModulePanel, or null if not yet created. */
+    public DeserModulePanel getDeserModulePanel() {
+        return deserModulePanel;
+    }
+
+    /** Programmatically switches to the given module's detail panel. */
+    public void selectModule(String moduleId) {
+        SwingUtilities.invokeLater(() -> {
+            cardLayout.show(moduleDetailContainer, moduleId);
+            moduleListPanel.selectModule(moduleId);
+        });
     }
 }

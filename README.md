@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.28-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.29-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -467,7 +467,23 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ---
 
-## What's New in v1.28
+## What's New in v1.29
+
+**Deserialization Payload Generator** &mdash; New standalone payload generation tool for insecure deserialization testing across 6 languages.
+
+- **Universal Payload Generator** &mdash; Generate deserialization exploit payloads for Java, .NET/C#, PHP, Python, Ruby, and Node.js directly from the OmniStrike UI. No external tools (ysoserial, ysoserial.net) required.
+- **25 .NET/C# Gadget Chains** &mdash; Full ysoserial.net coverage: TypeConfuseDelegate, TextFormattingRunProperties, ActivitySurrogateSelectorFromFile, ClaimsPrincipal, SessionSecurityToken, RolePrincipal, GenericPrincipal, WindowsClaimsIdentity, PSObject, DataSet, DataSetTypeSpoofing, LosFormatter, ViewState, JsonNet, JavaScriptSerializer, XmlSerializer, NetDataContractSerializer, DataContractSerializer, ObjectDataProvider, AxHostState, ResourceSet, SoapFormatter, WindowsIdentity, ObjectStateFormatter, ActivitySurrogateSelector.
+- **Java Chains** &mdash; URLDNS (fully native, zero external deps), CommonsCollections1/5/6, CommonsBeanutils1, JNDIExploit, DNSCallback.
+- **PHP Chains** &mdash; LaravelPOP, MonologRCE, GuzzleFnStream, WordPressPHPObject, GenericDestruct, GenericPHPGGC.
+- **Python Chains** &mdash; Pickle (os.system, subprocess, eval, exec), PyYAML exploits.
+- **Ruby Chains** &mdash; ERBTemplate, GemRequirement, GemInstaller, UniversalRCE.
+- **Node.js Chains** &mdash; node-serialize IIFE, js-yaml, cryo RCE.
+- **Multiple Encodings** &mdash; Raw, Base64, URL-encoded, Base64+URL-encoded output.
+- **Customizable Preview** &mdash; Terminal-style dark payload preview with selectable text color (Green, Red, Blue, White) via radio buttons.
+- **One-Click Copy** &mdash; Copy payload as Base64 or raw bytes to clipboard.
+- **Context Menu Integration** &mdash; Right-click in Proxy/Repeater to open the Deserializer directly.
+
+### Previous (v1.28)
 
 **Bug Fixes & UI Improvements**
 

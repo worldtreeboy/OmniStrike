@@ -15,7 +15,7 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.28 — Entry Point
+ * OmniStrike v1.29 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 19 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -41,7 +41,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.28 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.29 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -184,8 +184,10 @@ public class OmniStrikeExtension implements BurpExtension {
         }
 
         // ==================== CONTEXT MENU ====================
-        api.userInterface().registerContextMenuItemsProvider(
-                new OmniStrikeContextMenu(api, registry, interceptor, scanCheck, sessionKeepAlive));
+        OmniStrikeContextMenu contextMenu = new OmniStrikeContextMenu(
+                api, registry, interceptor, scanCheck, sessionKeepAlive);
+        contextMenu.setMainPanelSupplier(() -> mainPanel);
+        api.userInterface().registerContextMenuItemsProvider(contextMenu);
         api.logging().logToOutput("Context menu registered (right-click > Send to OmniStrike).");
 
         // ==================== UI ====================
@@ -228,7 +230,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.28 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.29 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");

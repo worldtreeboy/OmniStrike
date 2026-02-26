@@ -11,12 +11,15 @@ import com.omnistrike.model.ScanModule;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.ui.ScanConfigDialog;
 
+import com.omnistrike.ui.MainPanel;
+
 import javax.swing.*;
 import java.awt.*;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * Adds right-click context menu items in Burp's Proxy, Repeater, etc.
@@ -55,7 +58,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
     private final TrafficInterceptor interceptor;
     private final OmniStrikeScanCheck scanCheck;
     private final SessionKeepAlive sessionKeepAlive;
-
+    private volatile Supplier<MainPanel> mainPanelSupplier;
 
     // Static file extensions where active injection testing is pointless
     private static final Set<String> STATIC_EXTENSIONS = Set.of(
@@ -74,6 +77,10 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         this.interceptor = interceptor;
         this.scanCheck = scanCheck;
         this.sessionKeepAlive = sessionKeepAlive;
+    }
+
+    public void setMainPanelSupplier(Supplier<MainPanel> supplier) {
+        this.mainPanelSupplier = supplier;
     }
 
     @Override
@@ -219,6 +226,24 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     showToast("Batch Queue", "Batch queue cleared.");
                 });
                 items.add(clearBatchItem);
+            }
+        }
+
+        // ============ "Open OmniStrike Deserializer" — switch to Deser payload generator panel ============
+        {
+            Supplier<MainPanel> supplier = mainPanelSupplier;
+            if (supplier != null) {
+                MainPanel mp = supplier.get();
+                if (mp != null && mp.getDeserModulePanel() != null) {
+                    JMenuItem deserItem = new JMenuItem("Open OmniStrike Deserializer");
+                    deserItem.setToolTipText("Open the deserialization payload generator panel");
+                    deserItem.addActionListener(e -> {
+                        MainPanel panel = supplier.get();
+                        if (panel == null) return;
+                        panel.selectModule("deser-scanner");
+                    });
+                    items.add(deserItem);
+                }
             }
         }
 
