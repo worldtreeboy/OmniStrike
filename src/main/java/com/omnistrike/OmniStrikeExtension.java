@@ -10,12 +10,13 @@ import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.modules.recon.*;
+import com.omnistrike.ui.GlobalThemeManager;
 import com.omnistrike.ui.MainPanel;
 
 import javax.swing.*;
 
 /**
- * OmniStrike v1.29 — Entry Point
+ * OmniStrike v1.31 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 19 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -41,7 +42,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.29 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.31 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -190,6 +191,11 @@ public class OmniStrikeExtension implements BurpExtension {
         api.userInterface().registerContextMenuItemsProvider(contextMenu);
         api.logging().logToOutput("Context menu registered (right-click > Send to OmniStrike).");
 
+        // ==================== THEME SYSTEM ====================
+        // Snapshot Burp's original UIManager defaults before applying any theme
+        GlobalThemeManager.saveOriginalDefaults();
+        api.logging().logToOutput("Theme system initialized (9 themes available).");
+
         // ==================== UI ====================
         SwingUtilities.invokeLater(() -> {
             mainPanel = new MainPanel(
@@ -200,7 +206,7 @@ public class OmniStrikeExtension implements BurpExtension {
             sessionKeepAlive.setUiLogger((module, message) ->
                     javax.swing.SwingUtilities.invokeLater(() ->
                             mainPanel.getLogPanel().log("INFO", module, message)));
-            api.logging().logToOutput("UI tab registered.");
+            api.logging().logToOutput("UI tab registered. Theme: Default (Burp native).");
         });
 
         // ==================== CLEANUP ON UNLOAD ====================
@@ -226,11 +232,13 @@ public class OmniStrikeExtension implements BurpExtension {
             if (persistentAudit != null) {
                 try { persistentAudit.delete(); } catch (Exception ignored) {}
             }
+            // Restore Burp's original look-and-feel
+            GlobalThemeManager.restoreOriginal();
             try { api.logging().logToOutput("OmniStrike unloaded. Goodbye!"); }
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.29 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.31 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");

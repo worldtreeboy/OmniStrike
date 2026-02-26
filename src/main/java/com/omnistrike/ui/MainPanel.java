@@ -165,6 +165,29 @@ public class MainPanel extends JPanel {
         });
         row1.add(rateLimitField);
 
+        // Theme selector dropdown
+        JLabel themeLabel = new JLabel("Theme:");
+        themeLabel.setForeground(NEON_CYAN);
+        themeLabel.setFont(MONO_LABEL);
+        row1.add(themeLabel);
+
+        JComboBox<String> themeCombo = new JComboBox<>(GlobalThemeManager.THEME_NAMES);
+        themeCombo.setSelectedIndex(0); // Default
+        styleComboBox(themeCombo);
+        themeCombo.setToolTipText("Switch the global theme for the entire Burp Suite application");
+        themeCombo.addActionListener(e -> {
+            int idx = themeCombo.getSelectedIndex();
+            if (idx >= 0 && idx < GlobalThemeManager.ALL_THEMES.length) {
+                ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
+                GlobalThemeManager.applyTheme(palette);
+                // Re-apply OmniStrike-specific styling after palette swap
+                if (palette != null) {
+                    reapplyTheme();
+                }
+            }
+        });
+        row1.add(themeCombo);
+
         topContainer.add(row1);
 
         // --- Row 2: Buttons, Status, Thread Status, Collaborator, Progress Bar ---
@@ -649,6 +672,69 @@ public class MainPanel extends JPanel {
             infoLabel.setText("INFO: " + findingsStore.getCountBySeverity(Severity.INFO));
             totalLabel.setText("Total: " + findingsStore.getCount());
         });
+    }
+
+    /**
+     * Re-applies OmniStrike-specific component styling after a palette swap.
+     * CyberTheme.applyRecursive handles most components; this method fixes
+     * custom-styled elements like severity badges, the start/stop button,
+     * and status labels that have specific color logic.
+     */
+    private void reapplyTheme() {
+        SwingUtilities.invokeLater(() -> {
+            // Re-style entire OmniStrike component tree with new CyberTheme colors
+            CyberTheme.applyRecursive(this);
+
+            // Fix start/stop button colors based on current state
+            if (startStopBtn.isSelected()) {
+                startStopBtn.setBackground(BG_PANEL);
+                startStopBtn.setForeground(NEON_RED);
+                startStopBtn.setFont(MONO_BOLD);
+                startStopBtn.setBorder(BorderFactory.createCompoundBorder(
+                        BorderFactory.createLineBorder(NEON_RED, 1),
+                        BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+                statusLabel.setText("Running");
+                statusLabel.setForeground(NEON_GREEN);
+                statusLabel.setFont(MONO_BOLD);
+            } else {
+                startStopBtn.setBackground(BG_PANEL);
+                startStopBtn.setForeground(NEON_GREEN);
+                startStopBtn.setFont(MONO_BOLD);
+                startStopBtn.setBorder(BorderFactory.createCompoundBorder(
+                        BorderFactory.createLineBorder(NEON_GREEN, 1),
+                        BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+                statusLabel.setText("Stopped");
+                statusLabel.setForeground(NEON_RED);
+                statusLabel.setFont(MONO_BOLD);
+            }
+
+            // Re-style severity badges with new palette colors
+            restyleSeverityBadge(critLabel, SEV_CRITICAL);
+            restyleSeverityBadge(highLabel, SEV_HIGH);
+            restyleSeverityBadge(medLabel, SEV_MEDIUM);
+            restyleSeverityBadge(lowLabel, SEV_LOW);
+            restyleSeverityBadge(infoLabel, SEV_INFO);
+            totalLabel.setForeground(FG_PRIMARY);
+            totalLabel.setFont(MONO_BOLD);
+
+            // Refresh severity badge text counts
+            updateStatsBar();
+
+            // Repaint everything
+            revalidate();
+            repaint();
+        });
+    }
+
+    /** Re-applies neon badge styling to a severity label with the current theme colors. */
+    private void restyleSeverityBadge(JLabel badge, Color neonColor) {
+        badge.setOpaque(true);
+        badge.setBackground(CyberTheme.darken(neonColor, 0.2f));
+        badge.setForeground(neonColor);
+        badge.setFont(MONO_BOLD.deriveFont(11f));
+        badge.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(neonColor, 1),
+                BorderFactory.createEmptyBorder(2, 8, 2, 8)));
     }
 
     public LogPanel getLogPanel() {

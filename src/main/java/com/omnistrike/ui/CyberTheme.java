@@ -18,33 +18,33 @@ public final class CyberTheme {
 
     private CyberTheme() {}
 
-    // ── Core Backgrounds ────────────────────────────────────────────────────
-    public static final Color BG_DARK     = new Color(0x0D, 0x0D, 0x1A);  // near-black with blue tint
-    public static final Color BG_PANEL    = new Color(0x14, 0x14, 0x28);  // dark navy panel backgrounds
-    public static final Color BG_INPUT    = new Color(0x1A, 0x1A, 0x35);  // input fields
-    public static final Color BG_SURFACE  = new Color(0x1E, 0x1E, 0x3A);  // cards, elevated surfaces
-    public static final Color BG_HOVER    = new Color(0x25, 0x25, 0x50);  // hover/selected states
-    public static final Color BORDER      = new Color(0x2A, 0x2A, 0x55);  // subtle borders
+    // ── Core Backgrounds (mutable — updated by GlobalThemeManager) ─────────
+    public static Color BG_DARK     = new Color(0x0D, 0x0D, 0x1A);  // near-black with blue tint
+    public static Color BG_PANEL    = new Color(0x14, 0x14, 0x28);  // dark navy panel backgrounds
+    public static Color BG_INPUT    = new Color(0x1A, 0x1A, 0x35);  // input fields
+    public static Color BG_SURFACE  = new Color(0x1E, 0x1E, 0x3A);  // cards, elevated surfaces
+    public static Color BG_HOVER    = new Color(0x25, 0x25, 0x50);  // hover/selected states
+    public static Color BORDER      = new Color(0x2A, 0x2A, 0x55);  // subtle borders
 
-    // ── Neon Accents ────────────────────────────────────────────────────────
-    public static final Color NEON_CYAN    = new Color(0x00, 0xF0, 0xFF);  // primary accent
-    public static final Color NEON_MAGENTA = new Color(0xFF, 0x00, 0xAA);  // secondary accent
-    public static final Color NEON_GREEN   = new Color(0x00, 0xFF, 0x88);  // success, running
-    public static final Color NEON_ORANGE  = new Color(0xFF, 0x88, 0x00);  // warnings
-    public static final Color NEON_RED     = new Color(0xFF, 0x22, 0x55);  // errors, critical
-    public static final Color NEON_BLUE    = new Color(0x44, 0x88, 0xFF);  // info, links
+    // ── Neon Accents (mutable — updated by GlobalThemeManager) ──────────
+    public static Color NEON_CYAN    = new Color(0x00, 0xF0, 0xFF);  // primary accent
+    public static Color NEON_MAGENTA = new Color(0xFF, 0x00, 0xAA);  // secondary accent
+    public static Color NEON_GREEN   = new Color(0x00, 0xFF, 0x88);  // success, running
+    public static Color NEON_ORANGE  = new Color(0xFF, 0x88, 0x00);  // warnings
+    public static Color NEON_RED     = new Color(0xFF, 0x22, 0x55);  // errors, critical
+    public static Color NEON_BLUE    = new Color(0x44, 0x88, 0xFF);  // info, links
 
-    // ── Text Colors ─────────────────────────────────────────────────────────
-    public static final Color FG_PRIMARY   = new Color(0xE0, 0xE0, 0xFF);  // main text
-    public static final Color FG_SECONDARY = new Color(0x88, 0x88, 0xBB);  // muted text
-    public static final Color FG_DIM       = new Color(0x55, 0x55, 0x88);  // disabled/dim text
+    // ── Text Colors (mutable — updated by GlobalThemeManager) ───────────
+    public static Color FG_PRIMARY   = new Color(0xE0, 0xE0, 0xFF);  // main text
+    public static Color FG_SECONDARY = new Color(0x88, 0x88, 0xBB);  // muted text
+    public static Color FG_DIM       = new Color(0x55, 0x55, 0x88);  // disabled/dim text
 
-    // ── Severity Neon Colors ────────────────────────────────────────────────
-    public static final Color SEV_CRITICAL = new Color(0xFF, 0x00, 0x44);  // neon red
-    public static final Color SEV_HIGH     = new Color(0xFF, 0x66, 0x00);  // neon orange
-    public static final Color SEV_MEDIUM   = new Color(0xFF, 0xCC, 0x00);  // neon yellow
-    public static final Color SEV_LOW      = new Color(0x00, 0xCC, 0xFF);  // neon cyan
-    public static final Color SEV_INFO     = new Color(0x88, 0x88, 0xBB);  // muted purple
+    // ── Severity Neon Colors (mutable — updated by GlobalThemeManager) ──
+    public static Color SEV_CRITICAL = new Color(0xFF, 0x00, 0x44);  // neon red
+    public static Color SEV_HIGH     = new Color(0xFF, 0x66, 0x00);  // neon orange
+    public static Color SEV_MEDIUM   = new Color(0xFF, 0xCC, 0x00);  // neon yellow
+    public static Color SEV_LOW      = new Color(0x00, 0xCC, 0xFF);  // neon cyan
+    public static Color SEV_INFO     = new Color(0x88, 0x88, 0xBB);  // muted purple
 
     // ── Font ────────────────────────────────────────────────────────────────
     /** Monospace font with fallback chain: JetBrains Mono → Consolas → monospaced */
@@ -68,6 +68,41 @@ public final class CyberTheme {
         if (available.contains("JetBrains Mono")) return "JetBrains Mono";
         if (available.contains("Consolas")) return "Consolas";
         return Font.MONOSPACED;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  PALETTE LOADING — called by GlobalThemeManager
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Copies all colors from a ThemePalette into the mutable static fields.
+     * After this call, all helper methods (styleButton, styleTextField, etc.)
+     * automatically use the new theme's colors since they reference these fields.
+     */
+    static void loadPalette(ThemePalette p) {
+        BG_DARK     = p.bgDark;
+        BG_PANEL    = p.bgPanel;
+        BG_INPUT    = p.bgInput;
+        BG_SURFACE  = p.bgSurface;
+        BG_HOVER    = p.bgHover;
+        BORDER      = p.border;
+
+        NEON_CYAN    = p.accentPrimary;
+        NEON_MAGENTA = p.accentSecondary;
+        NEON_GREEN   = p.successGreen;
+        NEON_ORANGE  = p.warningOrange;
+        NEON_RED     = p.errorRed;
+        NEON_BLUE    = p.infoBlue;
+
+        FG_PRIMARY   = p.fgPrimary;
+        FG_SECONDARY = p.fgSecondary;
+        FG_DIM       = p.fgDim;
+
+        SEV_CRITICAL = p.sevCritical;
+        SEV_HIGH     = p.sevHigh;
+        SEV_MEDIUM   = p.sevMedium;
+        SEV_LOW      = p.sevLow;
+        SEV_INFO     = p.sevInfo;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -450,30 +485,50 @@ public final class CyberTheme {
             jc.setForeground(FG_PRIMARY);
         }
         for (Component child : container.getComponents()) {
-            if (child instanceof JPanel p) {
-                stylePanel(p);
-                applyRecursive(p);
-            } else if (child instanceof JLabel l) {
-                l.setForeground(FG_PRIMARY);
-                l.setFont(MONO_FONT);
-            } else if (child instanceof JButton b) {
-                styleButton(b, null);
-            } else if (child instanceof JTextField tf) {
-                styleTextField(tf);
-            } else if (child instanceof JComboBox<?> cb) {
-                styleComboBox(cb);
-            } else if (child instanceof JCheckBox chk) {
+            // Order matters: check subclasses before superclasses
+            if (child instanceof JCheckBox chk) {
                 styleCheckBox(chk);
             } else if (child instanceof JRadioButton rb) {
                 styleRadioButton(rb);
+            } else if (child instanceof JToggleButton tb) {
+                // JToggleButton that isn't JCheckBox/JRadioButton (e.g. start/stop)
+                tb.setBackground(BG_PANEL);
+                tb.setForeground(FG_PRIMARY);
+            } else if (child instanceof JButton b) {
+                styleButton(b, null);
+            } else if (child instanceof JPasswordField pf) {
+                stylePasswordField(pf);
+            } else if (child instanceof JTextField tf) {
+                styleTextField(tf);
+            } else if (child instanceof JTextArea ta) {
+                styleTextArea(ta);
+            } else if (child instanceof JComboBox<?> cb) {
+                styleComboBox(cb);
+            } else if (child instanceof JProgressBar pb) {
+                styleProgressBar(pb);
+            } else if (child instanceof JLabel l) {
+                l.setForeground(FG_PRIMARY);
+                l.setFont(MONO_FONT);
             } else if (child instanceof JScrollPane sp) {
                 styleScrollPane(sp);
-                applyRecursive(sp.getViewport());
+                if (sp.getViewport() != null) {
+                    applyRecursive(sp.getViewport());
+                }
             } else if (child instanceof JTabbedPane tp) {
                 styleTabbedPane(tp);
+                // Recurse into tabbed pane children
+                for (int i = 0; i < tp.getTabCount(); i++) {
+                    Component tabComp = tp.getComponentAt(i);
+                    if (tabComp instanceof Container tc) {
+                        applyRecursive(tc);
+                    }
+                }
             } else if (child instanceof JSplitPane sp) {
                 styleSplitPane(sp);
                 applyRecursive(sp);
+            } else if (child instanceof JPanel p) {
+                stylePanel(p);
+                applyRecursive(p);
             } else if (child instanceof Container c) {
                 applyRecursive(c);
             }
