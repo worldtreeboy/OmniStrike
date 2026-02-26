@@ -188,6 +188,7 @@ public class HiddenEndpointFinder implements ScanModule {
                                     Severity.INFO, Confidence.FIRM)
                             .url(url)
                             .evidence(normalized)
+                            .responseEvidence(normalized)
                             .description("Found endpoint path in " + contentType + " response")
                             .build());
                 }

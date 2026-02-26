@@ -1,7 +1,9 @@
 # Gradle
 .gradle/
-build/
-!build/libs/modular-scanner.jar
+build/*
+!build/libs/
+build/libs/*
+!build/libs/omnistrike.jar
 
 # IDE
 .idea/
@@ -19,4 +21,4 @@ Thumbs.db
 *.class
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
-!build/libs/modular-scanner.jar
+!build/libs/omnistrike.jar

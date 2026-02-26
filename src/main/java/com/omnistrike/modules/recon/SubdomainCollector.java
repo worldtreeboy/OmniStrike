@@ -191,6 +191,7 @@ public class SubdomainCollector implements ScanModule {
                             severity, Confidence.CERTAIN)
                     .url(url)
                     .evidence(subdomain + " (source: " + sourceType + ")")
+                    .responseEvidence(subdomain)
                     .description("Subdomain discovered via " + sourceType)
                     .build());
         }

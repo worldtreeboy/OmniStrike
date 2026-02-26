@@ -7,7 +7,8 @@ package com.omnistrike.modules.ai.llm;
 public enum AiConnectionMode {
 
     NONE("Off"),              // AI disabled — default
-    CLI("CLI Tool");          // CLI-spawned providers (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI)
+    CLI("CLI Tool"),          // CLI-spawned providers (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI)
+    API_KEY("API Key");       // Direct HTTP API with API key (Anthropic, OpenAI, Google Gemini)
 
     private final String displayName;
 

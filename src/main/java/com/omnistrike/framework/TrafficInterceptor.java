@@ -7,7 +7,9 @@ import burp.api.montoya.proxy.http.*;
 import com.omnistrike.model.Finding;
 import com.omnistrike.model.ScanModule;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
 
@@ -25,8 +27,20 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     private volatile boolean running = false;
     private volatile BiConsumer<String, String> uiLogger;
 
+    // Static file extensions — active injection scanners are skipped for these.
+    // Passive analyzers still run (Client-Side Analyzer, Hidden Endpoint Finder, etc.)
+    private static final Set<String> STATIC_EXTENSIONS = Set.of(
+            ".css", ".js", ".mjs", ".jsx", ".ts", ".map",
+            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+            ".woff", ".woff2", ".ttf", ".eot", ".otf",
+            ".mp4", ".mp3", ".webm", ".pdf"
+    );
+
     // Executor for passive modules so they don't block the proxy thread
     private final ExecutorService passiveExecutor;
+
+    // Track futures from manual scans (context menu) so they can be cancelled
+    private final CopyOnWriteArrayList<Future<?>> manualScanFutures = new CopyOnWriteArrayList<>();
 
     public TrafficInterceptor(MontoyaApi api, ModuleRegistry registry,
                               FindingsStore findingsStore, ActiveScanExecutor executor,
@@ -49,10 +63,18 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     }
 
     private void uiLog(String module, String message) {
-        api.logging().logToOutput("[" + module + "] " + message);
+        try {
+            api.logging().logToOutput("[" + module + "] " + message);
+        } catch (NullPointerException ignored) {
+            // Burp API proxy becomes null during extension unload — discard safely
+        }
         BiConsumer<String, String> logger = uiLogger;
         if (logger != null) {
-            logger.accept(module, message);
+            try {
+                logger.accept(module, message);
+            } catch (NullPointerException ignored) {
+                // UI may also be torn down during unload
+            }
         }
     }
 
@@ -93,10 +115,15 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
             // Compute module lists once per request
             List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
-            List<ScanModule> activeModules = registry.getEnabledActiveModules();
             String url = interceptedResponse.initiatingRequest().url();
+            boolean isStatic = isStaticResource(url);
+            // Skip active injection scanners for static files (.js, .css, .png, etc.)
+            // Passive analyzers still run — they find results in JS/HTML response bodies.
+            List<ScanModule> activeModules = isStatic
+                    ? List.of() : registry.getEnabledActiveModules();
             uiLog("Interceptor", "In-scope traffic: " + url
-                    + " | Routing to " + passiveModules.size() + " passive + " + activeModules.size() + " active modules");
+                    + " | Routing to " + passiveModules.size() + " passive + " + activeModules.size() + " active modules"
+                    + (isStatic ? " (static — active skipped)" : ""));
 
             HttpRequestResponse reqResp = HttpRequestResponse.httpRequestResponse(
                     interceptedResponse.initiatingRequest(), interceptedResponse);
@@ -118,13 +145,26 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     /**
      * Manually scan a specific request/response with selected modules.
      * Called from the context menu "Send to OmniStrike" action.
-     * Runs active modules on the executor thread pool, passive modules inline.
+     * Runs active modules on the executor thread pool, passive modules on passive executor.
+     * Tracks futures so scans can be stopped via stopManualScans().
      */
     public void scanRequest(HttpRequestResponse reqResp, List<String> moduleIds) {
+        scanRequest(reqResp, moduleIds, null);
+    }
+
+    /**
+     * Manually scan a specific request/response with selected modules, optionally
+     * targeting a single parameter. When targetParameter is non-null, active modules
+     * use processHttpFlowForParameter() to restrict injection to that parameter only.
+     */
+    public void scanRequest(HttpRequestResponse reqResp, List<String> moduleIds, String targetParameter) {
         if (reqResp == null) return;
 
-        List<ScanModule> passiveModules = new java.util.ArrayList<>();
-        List<ScanModule> activeModules = new java.util.ArrayList<>();
+        // Clean up completed futures before adding new ones
+        manualScanFutures.removeIf(Future::isDone);
+
+        List<ScanModule> passiveModules = new ArrayList<>();
+        List<ScanModule> activeModules = new ArrayList<>();
 
         for (String id : moduleIds) {
             ScanModule m = registry.getModule(id);
@@ -138,8 +178,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         }
 
         String url = reqResp.request().url();
-        uiLog("ManualScan", "Scanning " + url + " with " + moduleIds.size() + " module(s)");
-        processWithModules(reqResp, passiveModules, activeModules);
+        String paramNote = targetParameter != null ? " (parameter: " + targetParameter + ")" : "";
+        uiLog("ManualScan", "Scanning " + url + " with " + moduleIds.size() + " module(s)" + paramNote);
+        processWithModulesTracked(reqResp, passiveModules, activeModules, targetParameter);
     }
 
     /**
@@ -168,6 +209,12 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(findings);
                     }
+                } catch (NullPointerException e) {
+                    // During extension unload Burp's API proxy becomes null — discard safely.
+                    // But if we're still running, this is a real bug — log it.
+                    if (running) {
+                        uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
+                    }
                 } catch (Exception e) {
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
                             + ": " + e.getMessage());
@@ -190,6 +237,102 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 }
             });
         }
+    }
+
+    /**
+     * Like processWithModules but tracks futures for cancellation.
+     * Used by scanRequest() (context menu scans).
+     * When targetParameter is non-null, active modules use processHttpFlowForParameter()
+     * to restrict injection testing to that single parameter.
+     */
+    private void processWithModulesTracked(HttpRequestResponse reqResp,
+                                            List<ScanModule> passiveModules,
+                                            List<ScanModule> activeModules,
+                                            String targetParameter) {
+        for (ScanModule module : passiveModules) {
+            Future<?> f = passiveExecutor.submit(() -> {
+                try {
+                    // Passive modules always run full scan (no parameter targeting)
+                    List<Finding> findings = module.processHttpFlow(reqResp, api);
+                    if (findings != null && !findings.isEmpty()) {
+                        findingsStore.addFindings(findings);
+                    }
+                } catch (NullPointerException e) {
+                    if (running) {
+                        uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
+                    }
+                } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted()) return; // stopped
+                    uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
+                            + ": " + e.getMessage());
+                }
+            });
+            manualScanFutures.add(f);
+        }
+
+        for (ScanModule module : activeModules) {
+            Future<?> f = executor.submitTracked(() -> {
+                try {
+                    uiLog(module.getId(), "Processing: " + reqResp.request().url()
+                            + (targetParameter != null ? " [param: " + targetParameter + "]" : ""));
+                    List<Finding> findings;
+                    if (targetParameter != null) {
+                        findings = module.processHttpFlowForParameter(reqResp, targetParameter, api);
+                    } else {
+                        findings = module.processHttpFlow(reqResp, api);
+                    }
+                    if (findings != null && !findings.isEmpty()) {
+                        findingsStore.addFindings(findings);
+                        uiLog(module.getId(), "Found " + findings.size() + " issue(s)");
+                    }
+                } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted()) return; // stopped
+                    uiLog(module.getId(), "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
+                }
+            });
+            if (f != null) {
+                manualScanFutures.add(f);
+            }
+        }
+    }
+
+    /**
+     * Stops all running manual scans (context menu scans).
+     * Interrupts threads so modules checking Thread.interrupted() will stop.
+     * Returns the number of scans that were cancelled.
+     */
+    public int stopManualScans() {
+        int cancelled = 0;
+        for (Future<?> f : manualScanFutures) {
+            if (!f.isDone() && f.cancel(true)) {
+                cancelled++;
+            }
+        }
+        manualScanFutures.clear();
+        uiLog("ManualScan", "Stopped " + cancelled + " manual scan task(s)");
+        return cancelled;
+    }
+
+    /**
+     * Returns the number of manual scan tasks still running.
+     */
+    public int getManualScanCount() {
+        manualScanFutures.removeIf(Future::isDone);
+        return manualScanFutures.size();
+    }
+
+    /**
+     * Checks if a URL points to a static resource where active injection testing is pointless.
+     */
+    private static boolean isStaticResource(String url) {
+        if (url == null) return false;
+        String lower = url.toLowerCase();
+        int qIdx = lower.indexOf('?');
+        String path = qIdx > 0 ? lower.substring(0, qIdx) : lower;
+        for (String ext : STATIC_EXTENSIONS) {
+            if (path.endsWith(ext)) return true;
+        }
+        return false;
     }
 
     /**

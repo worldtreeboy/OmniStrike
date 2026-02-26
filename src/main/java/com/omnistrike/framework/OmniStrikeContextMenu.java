@@ -1,22 +1,25 @@
 package com.omnistrike.framework;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.Range;
 import burp.api.montoya.http.message.HttpRequestResponse;
-import burp.api.montoya.scanner.AuditConfiguration;
-import burp.api.montoya.scanner.BuiltInAuditConfiguration;
-import burp.api.montoya.scanner.audit.Audit;
+import burp.api.montoya.http.message.params.ParsedHttpParameter;
+import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.omnistrike.model.ScanModule;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.ui.ScanConfigDialog;
 
+import com.omnistrike.ui.MainPanel;
+
 import javax.swing.*;
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Supplier;
 
 /**
  * Adds right-click context menu items in Burp's Proxy, Repeater, etc.
@@ -54,26 +57,30 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
     private final ModuleRegistry registry;
     private final TrafficInterceptor interceptor;
     private final OmniStrikeScanCheck scanCheck;
-
-    // Track active audit tasks so they can be stopped
-    private final CopyOnWriteArrayList<Audit> activeAudits = new CopyOnWriteArrayList<>();
-    private volatile boolean hasStartedScans = false;
+    private final SessionKeepAlive sessionKeepAlive;
+    private volatile Supplier<MainPanel> mainPanelSupplier;
 
     // Static file extensions where active injection testing is pointless
     private static final Set<String> STATIC_EXTENSIONS = Set.of(
-            ".js", ".css", ".html", ".htm", ".svg", ".png", ".jpg", ".jpeg",
-            ".gif", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".otf", ".map",
-            ".webp", ".mp3", ".mp4", ".avi", ".mov", ".pdf", ".zip", ".gz",
-            ".tar", ".xml", ".json", ".txt", ".csv", ".wasm", ".mjs"
+            ".css", ".js", ".mjs", ".jsx", ".ts", ".map",
+            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+            ".woff", ".woff2", ".ttf", ".eot", ".otf",
+            ".mp4", ".mp3", ".webm", ".pdf"
     );
 
     public OmniStrikeContextMenu(MontoyaApi api, ModuleRegistry registry,
                                   TrafficInterceptor interceptor,
-                                  OmniStrikeScanCheck scanCheck) {
+                                  OmniStrikeScanCheck scanCheck,
+                                  SessionKeepAlive sessionKeepAlive) {
         this.api = api;
         this.registry = registry;
         this.interceptor = interceptor;
         this.scanCheck = scanCheck;
+        this.sessionKeepAlive = sessionKeepAlive;
+    }
+
+    public void setMainPanelSupplier(Supplier<MainPanel> supplier) {
+        this.mainPanelSupplier = supplier;
     }
 
     @Override
@@ -118,15 +125,12 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             }
             int total = passive + active;
 
-            scanCheck.queueForScan(reqResp.request().url(), moduleIds);
-
-            // Use passive audit for static resources to prevent Burp's built-in active scanner
-            // from sending injection payloads against static file URLs
-            if (staticResource) {
-                startPassiveAuditSafe(reqResp);
-            } else {
-                startAuditSafe(reqResp);
-            }
+            // Run modules directly via the interceptor's thread pool.
+            // Previously this used scanCheck.queueForScan() + startAuditSafe(), which
+            // relied on Burp's scanner calling passiveAudit() — but Burp's scanner queue
+            // is unreliable and the URL matching is fragile. Direct execution is instant.
+            // Findings still appear in Dashboard via DashboardReporter.
+            interceptor.scanRequest(reqResp, moduleIds);
 
             String staticNote = staticResource
                     ? "\n(Static resource — active scanners skipped)" : "";
@@ -160,21 +164,9 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 boolean aiSelected = selectedIds.remove(ModuleRegistry.AI_MODULE_ID);
                 List<String> nonAiIds = selectedIds;
 
-                // Queue non-AI modules through the normal ScanCheck pipeline
+                // Run non-AI modules directly via interceptor thread pool
                 if (!nonAiIds.isEmpty()) {
-                    scanCheck.queueForScan(reqResp.request().url(), nonAiIds);
-
-                    boolean hasActive = false;
-                    for (String id : nonAiIds) {
-                        ScanModule m = registry.getModule(id);
-                        if (m != null && !m.isPassive()) { hasActive = true; break; }
-                    }
-
-                    if (hasActive && !staticResource) {
-                        startAuditSafe(reqResp);
-                    } else {
-                        startPassiveAuditSafe(reqResp);
-                    }
+                    interceptor.scanRequest(reqResp, nonAiIds);
                 }
 
                 // Run AI analysis via manualScan() if AI was selected
@@ -237,21 +229,177 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             }
         }
 
-        // ============ "Send to OmniStrike >" submenu — per-module with Normal/AI options ============
-        JMenu subMenu = new JMenu("Send to OmniStrike");
+        // ============ "Open OmniStrike Deserializer" — switch to Deser payload generator panel ============
+        {
+            Supplier<MainPanel> supplier = mainPanelSupplier;
+            if (supplier != null) {
+                MainPanel mp = supplier.get();
+                if (mp != null && mp.getDeserModulePanel() != null) {
+                    JMenuItem deserItem = new JMenuItem("Open OmniStrike Deserializer");
+                    deserItem.setToolTipText("Open the deserialization payload generator panel");
+                    deserItem.addActionListener(e -> {
+                        MainPanel panel = supplier.get();
+                        if (panel == null) return;
+                        panel.selectModule("deser-scanner");
+                    });
+                    items.add(deserItem);
+                }
+            }
+        }
 
+        // ============ "Scan This Parameter" — targeted parameter scanning ============
+        // Build module lists early (needed for both parameter menu and per-module submenu)
         List<ScanModule> activeModules = new ArrayList<>();
         List<ScanModule> passiveModules = new ArrayList<>();
-        for (ScanModule m : registry.getAllModules()) {
-            // Skip AI module — it's embedded inside each module's submenu
-            if (ModuleRegistry.AI_MODULE_ID.equals(m.getId())) continue;
-
+        for (ScanModule m : registry.getEnabledNonAiModules()) {
             if (m.isPassive()) {
                 passiveModules.add(m);
             } else {
                 activeModules.add(m);
             }
         }
+
+        String selectedParam = detectSelectedParameter(event);
+        if (selectedParam != null && !staticResource) {
+            // "Scan This Parameter (ip) — All Modules"
+            JMenuItem scanParamAll = new JMenuItem("Scan This Parameter (" + selectedParam + ") \u2014 All Modules");
+            scanParamAll.addActionListener(e -> {
+                List<String> moduleIds = new ArrayList<>();
+                for (ScanModule m : activeModules) {
+                    moduleIds.add(m.getId());
+                }
+                interceptor.scanRequest(reqResp, moduleIds, selectedParam);
+                showToast("Parameter Scan",
+                        "Scanning parameter '" + selectedParam + "' with " + moduleIds.size() + " active module(s)\n"
+                        + url
+                        + "\n\nResults will appear in Dashboard and OmniStrike tab.");
+            });
+            items.add(scanParamAll);
+
+            // "Scan This Parameter (ip) >" — per-module submenu (active modules only)
+            JMenu paramSubMenu = new JMenu("Scan This Parameter (" + selectedParam + ")");
+            for (ScanModule module : activeModules) {
+                JMenu moduleParamMenu = new JMenu(module.getName());
+                moduleParamMenu.setToolTipText(module.getDescription());
+
+                // Normal Scan (parameter-targeted)
+                JMenuItem normalItem = new JMenuItem("Normal Scan");
+                normalItem.addActionListener(e -> {
+                    interceptor.scanRequest(reqResp, List.of(module.getId()), selectedParam);
+                    showToast(module.getName(),
+                            "Scanning parameter '" + selectedParam + "'\n" + url);
+                });
+                moduleParamMenu.add(normalItem);
+
+                // AI Scan options (parameter-targeted)
+                if (aiAvailable) {
+                    JMenu aiMenu = new JMenu("AI Scan");
+
+                    JMenuItem fuzzItem = new JMenuItem("Smart Fuzzing");
+                    fuzzItem.addActionListener(e -> {
+                        aiAnalyzer.manualScan(reqResp, true, true, false, false, module.getId(), selectedParam);
+                        showToast(module.getName() + " + AI",
+                                "AI smart fuzzing parameter '" + selectedParam + "'\n" + url);
+                    });
+                    aiMenu.add(fuzzItem);
+
+                    JMenuItem wafItem = new JMenuItem("Smart Fuzzing + WAF Bypass");
+                    wafItem.addActionListener(e -> {
+                        aiAnalyzer.manualScan(reqResp, true, true, true, false, module.getId(), selectedParam);
+                        showToast(module.getName() + " + AI + WAF Bypass",
+                                "AI fuzzing parameter '" + selectedParam + "' with WAF bypass\n" + url);
+                    });
+                    aiMenu.add(wafItem);
+
+                    JMenuItem adaptiveItem = new JMenuItem("Smart Fuzzing + Adaptive");
+                    adaptiveItem.addActionListener(e -> {
+                        aiAnalyzer.manualScan(reqResp, true, true, false, true, module.getId(), selectedParam);
+                        showToast(module.getName() + " + AI + Adaptive",
+                                "AI adaptive fuzzing parameter '" + selectedParam + "'\n" + url);
+                    });
+                    aiMenu.add(adaptiveItem);
+
+                    aiMenu.addSeparator();
+
+                    JMenuItem fullItem = new JMenuItem("Full AI Scan");
+                    fullItem.addActionListener(e -> {
+                        aiAnalyzer.manualScan(reqResp, true, true, true, true, module.getId(), selectedParam);
+                        showToast(module.getName() + " + Full AI",
+                                "Full AI scan on parameter '" + selectedParam + "'\n" + url);
+                    });
+                    aiMenu.add(fullItem);
+
+                    moduleParamMenu.add(aiMenu);
+                }
+
+                paramSubMenu.add(moduleParamMenu);
+            }
+            items.add(paramSubMenu);
+        }
+
+        // ============ "Scan Parameter >" — always-visible parameter picker (no selection needed) ============
+        if (!staticResource) {
+            // Collect all scannable parameter names (preserving order, no dupes)
+            LinkedHashSet<String> allParams = new LinkedHashSet<>();
+            for (ParsedHttpParameter param : reqResp.request().parameters()) {
+                allParams.add(param.name());
+            }
+
+            // Extract params embedded in header values (e.g., Referer URL: ?id=q22&Submit=Submit)
+            for (var header : reqResp.request().headers()) {
+                String hName = header.name().toLowerCase();
+                if (hName.equals("referer") || hName.equals("origin")) {
+                    String hVal = header.value();
+                    int qMark = hVal.indexOf('?');
+                    if (qMark >= 0) {
+                        String query = hVal.substring(qMark + 1);
+                        int hashIdx = query.indexOf('#');
+                        if (hashIdx >= 0) query = query.substring(0, hashIdx);
+                        for (String pair : query.split("&")) {
+                            int eq = pair.indexOf('=');
+                            String key = eq > 0 ? pair.substring(0, eq) : pair;
+                            key = key.trim();
+                            if (!key.isEmpty()) allParams.add(key);
+                        }
+                    }
+                }
+            }
+
+            // Collect injectable header names (for header injection testing)
+            Set<String> injectableHeaderNames = Set.of("referer", "user-agent", "x-forwarded-for",
+                    "x-forwarded-host", "origin", "host", "x-real-ip", "x-custom-ip-authorization");
+            LinkedHashSet<String> headerTargets = new LinkedHashSet<>();
+            for (var header : reqResp.request().headers()) {
+                if (injectableHeaderNames.contains(header.name().toLowerCase())) {
+                    headerTargets.add(header.name());
+                }
+            }
+
+            if (!allParams.isEmpty() || !headerTargets.isEmpty()) {
+                JMenu scanParamMenu = new JMenu("Scan Parameter");
+
+                // Regular parameters (URL, body, cookie, + those from Referer/Origin)
+                for (String paramName : allParams) {
+                    scanParamMenu.add(buildParameterTargetMenu(
+                            paramName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
+                }
+
+                // Injectable header names as separate section
+                if (!headerTargets.isEmpty()) {
+                    scanParamMenu.addSeparator();
+                    scanParamMenu.add(createSectionLabel("Headers"));
+                    for (String headerName : headerTargets) {
+                        scanParamMenu.add(buildParameterTargetMenu(
+                                headerName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
+                    }
+                }
+
+                items.add(scanParamMenu);
+            }
+        }
+
+        // ============ "Send to OmniStrike >" submenu — per-module with Normal/AI options ============
+        JMenu subMenu = new JMenu("Send to OmniStrike");
 
         // Group: Active Scanners
         if (!activeModules.isEmpty()) {
@@ -274,72 +422,193 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             items.add(subMenu);
         }
 
+        // ============ Session Keep-Alive ============
+        items.add(new JSeparator());
+
+        // "Set as Session Login Request" — saves the selected request for periodic replay
+        JMenuItem setLoginItem = new JMenuItem("Set as Session Login Request");
+        setLoginItem.setToolTipText("Save this request for periodic replay to keep session cookies fresh");
+        setLoginItem.addActionListener(e -> {
+            sessionKeepAlive.setLoginRequest(reqResp);
+            showToast("Session Keep-Alive",
+                    "Login request saved:\n" + url
+                    + "\n\nEnable 'Session Keep-Alive' in the OmniStrike tab to start.");
+        });
+        items.add(setLoginItem);
+
+        // "Clear Session Login Request" — only shown when a login request is set
+        if (sessionKeepAlive.hasLoginRequest()) {
+            JMenuItem clearLoginItem = new JMenuItem("Clear Session Login Request");
+            clearLoginItem.setToolTipText("Remove the saved login request and stop session refresh");
+            clearLoginItem.addActionListener(e -> {
+                sessionKeepAlive.clearLoginRequest();
+                showToast("Session Keep-Alive", "Login request cleared. Session refresh stopped.");
+            });
+            items.add(clearLoginItem);
+        }
+
         // ============ "Stop OmniStrike Scans" ============
-        cleanupCompletedAudits();
-        if (hasStartedScans) {
+        int running = interceptor.getManualScanCount();
+        if (running > 0) {
             items.add(new JSeparator());
-            int running = activeAudits.size();
-
-            if (running == 0) {
-                JMenuItem stopItem = new JMenuItem("Stop OmniStrike Scans (none running)");
-                stopItem.setEnabled(false);
-                items.add(stopItem);
-            } else if (running == 1) {
-                JMenuItem stopItem = new JMenuItem("Stop OmniStrike Scan");
-                stopItem.addActionListener(e -> {
-                    for (Audit audit : activeAudits) {
-                        try { audit.delete(); } catch (Exception ex) {
-                            api.logging().logToError("[OmniStrike] Error stopping audit: " + ex.getMessage());
-                        }
-                    }
-                    activeAudits.clear();
-                    showToast("Scan Stopped", "Stopped OmniStrike audit task.");
-                });
-                items.add(stopItem);
-            } else {
-                JMenu stopMenu = new JMenu("Stop OmniStrike Scans (" + running + " running)");
-
-                JMenuItem stopAll = new JMenuItem("Stop All (" + running + ")");
-                stopAll.addActionListener(e -> {
-                    int count = activeAudits.size();
-                    for (Audit audit : activeAudits) {
-                        try { audit.delete(); } catch (Exception ex) {
-                            api.logging().logToError("[OmniStrike] Error stopping audit: " + ex.getMessage());
-                        }
-                    }
-                    activeAudits.clear();
-                    showToast("Scans Stopped", "Stopped " + count + " OmniStrike audit task(s).");
-                });
-                stopMenu.add(stopAll);
-                stopMenu.addSeparator();
-
-                for (int i = 0; i < activeAudits.size(); i++) {
-                    Audit audit = activeAudits.get(i);
-                    String status = "running";
-                    try {
-                        String msg = audit.statusMessage();
-                        if (msg != null && !msg.isEmpty()) status = msg;
-                    } catch (Exception ignored) {}
-
-                    JMenuItem item = new JMenuItem("Scan #" + (i + 1) + " — " + truncate(status, 40));
-                    final int idx = i;
-                    item.addActionListener(e -> {
-                        try {
-                            audit.delete();
-                            activeAudits.remove(audit);
-                            showToast("Scan Stopped", "Stopped scan #" + (idx + 1) + ".");
-                        } catch (Exception ex) {
-                            api.logging().logToError("[OmniStrike] Error stopping audit: " + ex.getMessage());
-                        }
-                    });
-                    stopMenu.add(item);
-                }
-
-                items.add(stopMenu);
-            }
+            JMenuItem stopItem = new JMenuItem("Stop OmniStrike Scans (" + running + " running)");
+            stopItem.addActionListener(e -> {
+                int stopped = interceptor.stopManualScans();
+                showToast("Scans Stopped", "Stopped " + stopped + " scan task(s).");
+            });
+            items.add(stopItem);
         }
 
         return items;
+    }
+
+    // ==================== Selected Parameter Detection ====================
+
+    /**
+     * Detects which HTTP parameter the user has selected in the message editor.
+     * <p>
+     * Strategy 1: Match selection byte offsets against parsed parameter offsets.
+     * This works when the user selects a parameter in the URL query string or body.
+     * <p>
+     * Strategy 2 (fallback): Extract the selected text and match it against known
+     * parameter names/values. This handles selections inside headers (e.g., Referer,
+     * Origin) where the same parameters appear at different byte positions.
+     */
+    private String detectSelectedParameter(ContextMenuEvent event) {
+        var editorOpt = event.messageEditorRequestResponse();
+        if (editorOpt.isEmpty()) return null;
+
+        var editor = editorOpt.get();
+        var rangeOpt = editor.selectionOffsets();
+        if (rangeOpt.isEmpty()) return null;
+
+        Range selection = rangeOpt.get();
+        HttpRequest request = editor.requestResponse().request();
+        List<ParsedHttpParameter> params = request.parameters();
+
+        // Strategy 1: Byte-offset overlap against parsed parameter ranges
+        for (ParsedHttpParameter param : params) {
+            Range nameRange = param.nameOffsets();
+            Range valueRange = param.valueOffsets();
+
+            boolean overlapsName = selection.startIndexInclusive() < nameRange.endIndexExclusive()
+                    && selection.endIndexExclusive() > nameRange.startIndexInclusive();
+            boolean overlapsValue = selection.startIndexInclusive() < valueRange.endIndexExclusive()
+                    && selection.endIndexExclusive() > valueRange.startIndexInclusive();
+
+            if (overlapsName || overlapsValue) {
+                return param.name();
+            }
+        }
+
+        // Strategy 2: Text-based fallback — handles selections inside headers
+        // (e.g., Referer: https://...?id=test&Submit=Submit)
+        String selectedText = extractSelectedText(request, selection);
+        if (selectedText == null || selectedText.isEmpty()) return null;
+
+        // 2a: Selected text exactly matches a parameter name (e.g., user selected "id")
+        for (ParsedHttpParameter param : params) {
+            if (param.name().equalsIgnoreCase(selectedText)) {
+                return param.name();
+            }
+        }
+
+        // 2b: Selected text exactly matches a parameter value → return that param's name
+        for (ParsedHttpParameter param : params) {
+            if (param.value() != null && param.value().equals(selectedText)) {
+                return param.name();
+            }
+        }
+
+        // 2c: Selected text contains key=value pairs (e.g., "id=q22" or "id=q22&Submit=Submit")
+        //     Parse and return the first key that matches a known parameter
+        String[] pairs = selectedText.split("[&?]");
+        for (String pair : pairs) {
+            int eq = pair.indexOf('=');
+            String key = eq > 0 ? pair.substring(0, eq).trim() : pair.trim();
+            if (key.isEmpty()) continue;
+            for (ParsedHttpParameter param : params) {
+                if (param.name().equalsIgnoreCase(key)) {
+                    return param.name();
+                }
+            }
+        }
+
+        // 2d: Expand selection to surrounding key=value context within the line.
+        //     If user selected just a value like "q22", find it within the raw request
+        //     line and walk backwards to find the "key=" prefix.
+        String contextParam = findParamFromContext(request, selection, params);
+        if (contextParam != null) return contextParam;
+
+        // 2e: Selected text matches a request header name (e.g., "Referer", "User-Agent").
+        //     Scanners extract these as header injection targets with the header name.
+        for (var header : request.headers()) {
+            if (header.name().equalsIgnoreCase(selectedText)) {
+                return header.name();
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Extracts the selected text from the raw request bytes.
+     */
+    private String extractSelectedText(HttpRequest request, Range selection) {
+        try {
+            byte[] raw = request.toByteArray().getBytes();
+            int start = selection.startIndexInclusive();
+            int end = selection.endIndexExclusive();
+            if (start < 0 || end > raw.length || start >= end) return null;
+            return new String(raw, start, end - start, java.nio.charset.StandardCharsets.UTF_8).trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * When the user selects a value (e.g., "q22") inside a header like Referer,
+     * expand to the surrounding context to find the "key=" prefix.
+     * Walks backwards from the selection start to find "key=" and checks if that
+     * key matches a known request parameter.
+     */
+    private String findParamFromContext(HttpRequest request, Range selection,
+                                        List<ParsedHttpParameter> params) {
+        try {
+            byte[] raw = request.toByteArray().getBytes();
+            int start = selection.startIndexInclusive();
+
+            // Walk backwards from selection start, looking for '=' preceded by a param name
+            // Stop at line boundary, '&', '?', or beginning of raw bytes
+            int eqPos = -1;
+            for (int i = start - 1; i >= 0 && i >= start - 200; i--) {
+                char c = (char) (raw[i] & 0xFF);
+                if (c == '=') { eqPos = i; break; }
+                if (c == '&' || c == '?' || c == '\n' || c == '\r' || c == ' ') break;
+            }
+            if (eqPos < 1) return null;
+
+            // Extract the key before '='
+            int keyStart = eqPos - 1;
+            for (; keyStart >= 0; keyStart--) {
+                char c = (char) (raw[keyStart] & 0xFF);
+                if (c == '&' || c == '?' || c == '\n' || c == '\r' || c == ' ' || c == ';') {
+                    keyStart++;
+                    break;
+                }
+            }
+            if (keyStart < 0) keyStart = 0;
+
+            String key = new String(raw, keyStart, eqPos - keyStart, java.nio.charset.StandardCharsets.UTF_8).trim();
+            if (key.isEmpty()) return null;
+
+            for (ParsedHttpParameter param : params) {
+                if (param.name().equalsIgnoreCase(key)) {
+                    return param.name();
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     // ==================== Per-Module Submenu Builder ====================
@@ -374,14 +643,8 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         JMenuItem normalItem = new JMenuItem("Normal Scan");
         normalItem.setToolTipText("Run " + moduleName + " (no AI)");
         normalItem.addActionListener(e -> {
-            scanCheck.queueForScan(reqResp.request().url(), List.of(moduleId));
-            // Always use passive audit for static resources to prevent Burp's built-in
-            // active scanner from injection-testing static file URLs (e.g., /app.js)
-            if (module.isPassive() || isStatic) {
-                startPassiveAuditSafe(reqResp);
-            } else {
-                startAuditSafe(reqResp);
-            }
+            // Run module directly via interceptor thread pool
+            interceptor.scanRequest(reqResp, List.of(moduleId));
             showToast(moduleName,
                     "Normal scan started\n" + url);
         });
@@ -454,6 +717,97 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         return moduleMenu;
     }
 
+    // ==================== Parameter Target Submenu ====================
+
+    /**
+     * Builds a submenu for scanning a specific parameter:
+     *
+     *   paramName >
+     *     All Modules
+     *     ─────
+     *     SQLi Detector >
+     *       Normal Scan
+     *       AI Scan > ...
+     *     XSS Scanner >
+     *       Normal Scan
+     *       AI Scan > ...
+     */
+    private JMenu buildParameterTargetMenu(String paramName, HttpRequestResponse reqResp,
+                                            String url, List<ScanModule> activeModules,
+                                            AiVulnAnalyzer aiAnalyzer, boolean aiAvailable) {
+        JMenu paramMenu = new JMenu(paramName);
+
+        // "All Modules" — runs all active scanners on this parameter
+        JMenuItem allItem = new JMenuItem("All Modules");
+        allItem.addActionListener(e -> {
+            List<String> moduleIds = new ArrayList<>();
+            for (ScanModule m : activeModules) moduleIds.add(m.getId());
+            interceptor.scanRequest(reqResp, moduleIds, paramName);
+            showToast("Parameter Scan",
+                    "Scanning '" + paramName + "' with " + moduleIds.size() + " active module(s)\n" + url);
+        });
+        paramMenu.add(allItem);
+        paramMenu.addSeparator();
+
+        // Per-module submenus with Normal + AI scan options
+        for (ScanModule module : activeModules) {
+            JMenu moduleMenu = new JMenu(module.getName());
+            moduleMenu.setToolTipText(module.getDescription());
+
+            JMenuItem normalItem = new JMenuItem("Normal Scan");
+            normalItem.addActionListener(e -> {
+                interceptor.scanRequest(reqResp, List.of(module.getId()), paramName);
+                showToast(module.getName(),
+                        "Scanning parameter '" + paramName + "'\n" + url);
+            });
+            moduleMenu.add(normalItem);
+
+            if (aiAvailable) {
+                JMenu aiMenu = new JMenu("AI Scan");
+
+                JMenuItem fuzzItem = new JMenuItem("Smart Fuzzing");
+                fuzzItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, true, true, false, false, module.getId(), paramName);
+                    showToast(module.getName() + " + AI",
+                            "AI fuzzing parameter '" + paramName + "'\n" + url);
+                });
+                aiMenu.add(fuzzItem);
+
+                JMenuItem wafItem = new JMenuItem("Smart Fuzzing + WAF Bypass");
+                wafItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, true, true, true, false, module.getId(), paramName);
+                    showToast(module.getName() + " + AI + WAF Bypass",
+                            "AI fuzzing parameter '" + paramName + "' with WAF bypass\n" + url);
+                });
+                aiMenu.add(wafItem);
+
+                JMenuItem adaptiveItem = new JMenuItem("Smart Fuzzing + Adaptive");
+                adaptiveItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, true, true, false, true, module.getId(), paramName);
+                    showToast(module.getName() + " + AI + Adaptive",
+                            "AI adaptive fuzzing parameter '" + paramName + "'\n" + url);
+                });
+                aiMenu.add(adaptiveItem);
+
+                aiMenu.addSeparator();
+
+                JMenuItem fullItem = new JMenuItem("Full AI Scan");
+                fullItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, true, true, true, true, module.getId(), paramName);
+                    showToast(module.getName() + " + Full AI",
+                            "Full AI scan on parameter '" + paramName + "'\n" + url);
+                });
+                aiMenu.add(fullItem);
+
+                moduleMenu.add(aiMenu);
+            }
+
+            paramMenu.add(moduleMenu);
+        }
+
+        return paramMenu;
+    }
+
     // ==================== Helpers ====================
 
     /**
@@ -467,56 +821,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         return null;
     }
 
-    /**
-     * Starts a passive-only Dashboard audit (no active requests sent to target).
-     * Used for passive modules like Client-Side Analyzer.
-     */
-    private void startPassiveAuditSafe(HttpRequestResponse reqResp) {
-        try {
-            Audit audit = api.scanner().startAudit(
-                    AuditConfiguration.auditConfiguration(
-                            BuiltInAuditConfiguration.LEGACY_PASSIVE_AUDIT_CHECKS));
-            audit.addRequestResponse(reqResp);
-            activeAudits.add(audit);
-            hasStartedScans = true;
-            api.logging().logToOutput("[OmniStrike] Passive audit started: " + reqResp.request().url());
-        } catch (Exception ex) {
-            api.logging().logToError("[OmniStrike] Could not start passive audit: " + ex.getMessage());
-        }
-    }
-
-    /**
-     * Starts an active Dashboard audit task and tracks it for stop capability.
-     */
-    private void startAuditSafe(HttpRequestResponse reqResp) {
-        try {
-            Audit audit = api.scanner().startAudit(
-                    AuditConfiguration.auditConfiguration(
-                            BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS));
-            audit.addRequestResponse(reqResp);
-            activeAudits.add(audit);
-            hasStartedScans = true;
-            api.logging().logToOutput("[OmniStrike] Dashboard audit started: " + reqResp.request().url());
-        } catch (Exception ex) {
-            api.logging().logToError("[OmniStrike] Could not start audit task: " + ex.getMessage());
-        }
-    }
-
-    /**
-     * Removes completed or errored audit tasks from the tracking list.
-     */
-    private void cleanupCompletedAudits() {
-        activeAudits.removeIf(audit -> {
-            try {
-                String status = audit.statusMessage();
-                return status != null && (status.contains("finished")
-                        || status.contains("complete")
-                        || status.contains("cancelled"));
-            } catch (Exception e) {
-                return true;
-            }
-        });
-    }
 
     /**
      * Shows a brief auto-dismissing toast notification.

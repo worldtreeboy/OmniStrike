@@ -17,9 +17,11 @@ public class ModuleRegistry {
     /** Well-known module ID for the AI Vulnerability Analyzer. */
     public static final String AI_MODULE_ID = "ai-vuln-analyzer";
 
-    // LinkedHashMap preserves registration order. Only written at startup before
-    // concurrent access; all read methods return new ArrayList copies.
-    private final LinkedHashMap<String, ScanModule> modules = new LinkedHashMap<>();
+    // ConcurrentLinkedHashMap preserves insertion order and is safe for concurrent reads.
+    // Written at startup during registerModule(), read from proxy threads during scanning.
+    // Using Collections.synchronizedMap wrapping LinkedHashMap ensures happens-before
+    // between startup writes and later concurrent reads.
+    private final Map<String, ScanModule> modules = Collections.synchronizedMap(new LinkedHashMap<>());
     private final ConcurrentHashMap<String, Boolean> enabledMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ModuleConfig> configMap = new ConcurrentHashMap<>();
     private volatile MontoyaApi api;
@@ -78,7 +80,9 @@ public class ModuleRegistry {
     }
 
     public List<ScanModule> getAllModules() {
-        return new ArrayList<>(modules.values());
+        synchronized (modules) {
+            return new ArrayList<>(modules.values());
+        }
     }
 
     public List<ScanModule> getEnabledModules() {
@@ -100,9 +104,11 @@ public class ModuleRegistry {
 
     private List<ScanModule> filterModules(Predicate<ScanModule> filter) {
         List<ScanModule> result = new ArrayList<>();
-        for (ScanModule module : modules.values()) {
-            if (isEnabled(module.getId()) && filter.test(module)) {
-                result.add(module);
+        synchronized (modules) {
+            for (ScanModule module : modules.values()) {
+                if (isEnabled(module.getId()) && filter.test(module)) {
+                    result.add(module);
+                }
             }
         }
         return result;

@@ -16,6 +16,7 @@ import com.omnistrike.model.Severity;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -40,7 +41,7 @@ public class OmniStrikeScanCheck implements ScanCheck {
     // Maps URL → module IDs to run. Empty list = all modules.
     private final ConcurrentHashMap<String, List<String>> pendingScans = new ConcurrentHashMap<>();
 
-    // Deferred findings queue — async AI findings land here and get drained
+    // Deferred findings queue — async findings (Collaborator callbacks, etc.) land here and get drained
     // the next time Burp calls passiveAudit(), so they appear in Dashboard.
     private final ConcurrentLinkedQueue<Finding> deferredFindings = new ConcurrentLinkedQueue<>();
 
@@ -73,7 +74,7 @@ public class OmniStrikeScanCheck implements ScanCheck {
     }
 
     /**
-     * Add a finding to the deferred queue. Used to bridge async AI findings
+     * Add a finding to the deferred queue. Used to bridge async findings
      * into Burp's Dashboard via the ScanCheck pipeline.
      */
     public void addDeferredFinding(Finding finding) {
@@ -90,13 +91,15 @@ public class OmniStrikeScanCheck implements ScanCheck {
         // Only scan if explicitly queued via context menu
         List<String> requestedModules = pendingScans.remove(urlBase);
 
-        // If not queued for normal scan, check if we have deferred AI findings to drain
+        // If not queued for normal scan, check if we have deferred findings to drain.
+        // Deferred findings carry their own request/response — we use that, NOT the
+        // unrelated baseRequestResponse that Burp happened to pass for this URL.
         if (requestedModules == null) {
             if (!deferredFindings.isEmpty()) {
-                List<AuditIssue> deferredIssues = drainDeferredFindings(baseRequestResponse);
+                List<AuditIssue> deferredIssues = drainDeferredFindings();
                 if (!deferredIssues.isEmpty()) {
                     api.logging().logToOutput("[OmniStrikeScanCheck] Drained " + deferredIssues.size()
-                            + " deferred AI finding(s) into Dashboard");
+                            + " deferred finding(s) into Dashboard");
                     return AuditResult.auditResult(deferredIssues);
                 }
             }
@@ -108,8 +111,9 @@ public class OmniStrikeScanCheck implements ScanCheck {
 
         List<AuditIssue> issues = new ArrayList<>();
 
-        // Snapshot FindingsStore before running modules
-        int countBefore = findingsStore.getCount();
+        // Snapshot FindingsStore BEFORE running modules — take an immutable snapshot of
+        // all findings so we can diff after modules run without stale-index races.
+        Set<Finding> findingsBefore = new HashSet<>(findingsStore.getAllFindings());
 
         // Determine which modules to run
         List<ScanModule> modulesToRun;
@@ -147,34 +151,27 @@ public class OmniStrikeScanCheck implements ScanCheck {
             }
         }
 
-        // Check if modules added findings directly to FindingsStore
-        int countAfter = findingsStore.getCount();
-        if (countAfter > countBefore && issues.isEmpty()) {
-            api.logging().logToOutput("[OmniStrikeScanCheck] Modules added " + (countAfter - countBefore)
-                    + " finding(s) directly to FindingsStore");
-            List<Finding> allFindings = findingsStore.getAllFindings();
-            for (int i = countBefore; i < allFindings.size(); i++) {
-                AuditIssue issue = toAuditIssue(allFindings.get(i), baseRequestResponse);
-                if (issue != null) issues.add(issue);
-            }
-        }
-
-        // Last resort: collect existing findings for this URL
+        // Check if modules added findings directly to FindingsStore (not via return value).
+        // Use set-diff instead of index arithmetic to avoid stale-index races from
+        // concurrent scans or clearModule() calls shifting indices.
         if (issues.isEmpty()) {
-            for (Finding f : findingsStore.getAllFindings()) {
-                if (f.getUrl() != null && stripQueryParams(f.getUrl()).equals(urlBase)) {
+            List<Finding> findingsAfter = findingsStore.getAllFindings();
+            int newCount = 0;
+            for (Finding f : findingsAfter) {
+                if (!findingsBefore.contains(f)) {
                     AuditIssue issue = toAuditIssue(f, baseRequestResponse);
                     if (issue != null) issues.add(issue);
+                    newCount++;
                 }
             }
-            if (!issues.isEmpty()) {
-                api.logging().logToOutput("[OmniStrikeScanCheck] Collected " + issues.size()
-                        + " existing finding(s) from FindingsStore");
+            if (newCount > 0) {
+                api.logging().logToOutput("[OmniStrikeScanCheck] Modules added " + newCount
+                        + " finding(s) directly to FindingsStore");
             }
         }
 
-        // Also drain any deferred AI findings that arrived while scanning
-        issues.addAll(drainDeferredFindings(baseRequestResponse));
+        // Also drain any deferred findings that arrived while scanning
+        issues.addAll(drainDeferredFindings());
 
         api.logging().logToOutput("[OmniStrikeScanCheck] === DONE: " + issues.size() + " AuditIssue(s) ===");
         return AuditResult.auditResult(issues);
@@ -182,12 +179,21 @@ public class OmniStrikeScanCheck implements ScanCheck {
 
     /**
      * Drains all deferred findings from the queue and converts them to AuditIssues.
+     * Each deferred finding uses its OWN request/response evidence — we never substitute
+     * an unrelated request/response, as that would attribute findings to the wrong URL.
+     * Findings without their own request/response are skipped (they'll be visible in
+     * the OmniStrike findings panel even if they can't appear in Burp's Dashboard).
      */
-    private List<AuditIssue> drainDeferredFindings(HttpRequestResponse fallbackReqResp) {
+    private List<AuditIssue> drainDeferredFindings() {
         List<AuditIssue> issues = new ArrayList<>();
         Finding deferred;
         while ((deferred = deferredFindings.poll()) != null) {
-            AuditIssue issue = toAuditIssue(deferred, fallbackReqResp);
+            if (deferred.getRequestResponse() == null) {
+                api.logging().logToOutput("[OmniStrikeScanCheck] Skipping deferred finding without "
+                        + "request/response evidence: " + deferred.getTitle());
+                continue;
+            }
+            AuditIssue issue = toAuditIssue(deferred, deferred.getRequestResponse());
             if (issue != null) {
                 issues.add(issue);
             }
@@ -214,7 +220,7 @@ public class OmniStrikeScanCheck implements ScanCheck {
     private String stripQueryParams(String url) {
         if (url == null) return "";
         int qIdx = url.indexOf('?');
-        return qIdx > 0 ? url.substring(0, qIdx) : url;
+        return qIdx >= 0 ? url.substring(0, qIdx) : url;
     }
 
     private AuditIssue toAuditIssue(Finding f, HttpRequestResponse fallbackReqResp) {
@@ -222,6 +228,9 @@ public class OmniStrikeScanCheck implements ScanCheck {
             HttpRequestResponse rr = f.getRequestResponse() != null
                     ? f.getRequestResponse() : fallbackReqResp;
             if (rr == null || rr.request() == null) return null;
+
+            // Apply highlighting markers (payload in request, evidence in response)
+            rr = MarkerUtil.addMarkers(rr, f.getPayload(), f.getResponseEvidence());
 
             String baseUrl = extractBaseUrl(rr.request().url());
             if (baseUrl.isEmpty()) baseUrl = extractBaseUrl(f.getUrl());

@@ -15,9 +15,10 @@ public class DeduplicationStore {
     /**
      * Mark this combination as seen. Returns true if this is the FIRST time
      * (not yet tested), false if already seen.
+     * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
      */
-    public boolean markIfNew(String moduleId, String urlPath, String parameterName) {
-        if (seen.size() >= MAX_ENTRIES) return false; // reject when full to prevent scan amplification
+    public synchronized boolean markIfNew(String moduleId, String urlPath, String parameterName) {
+        if (seen.size() >= MAX_ENTRIES) return false;
         String normalizedPath = normalizePath(urlPath);
         String key = moduleId + ":" + normalizedPath + ":" + (parameterName != null ? parameterName : "");
         return seen.putIfAbsent(key, Boolean.TRUE) == null;
@@ -26,8 +27,9 @@ public class DeduplicationStore {
     /**
      * Mark this combination as seen, including HTTP method in the key.
      * Use this when GET and POST to the same path should be tested separately.
+     * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
      */
-    public boolean markIfNew(String moduleId, String method, String urlPath, String parameterName) {
+    public synchronized boolean markIfNew(String moduleId, String method, String urlPath, String parameterName) {
         if (seen.size() >= MAX_ENTRIES) return false;
         String normalizedPath = normalizePath(urlPath);
         String m = method != null ? method.toUpperCase() : "GET";
@@ -43,9 +45,10 @@ public class DeduplicationStore {
 
     /**
      * Mark a raw key as seen. Returns true if first time.
+     * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
      */
-    public boolean markIfNewRaw(String rawKey) {
-        if (seen.size() >= MAX_ENTRIES) return false; // reject when full
+    public synchronized boolean markIfNewRaw(String rawKey) {
+        if (seen.size() >= MAX_ENTRIES) return false;
         return seen.putIfAbsent(rawKey, Boolean.TRUE) == null;
     }
 
@@ -61,11 +64,11 @@ public class DeduplicationStore {
         return seen.containsKey(key);
     }
 
-    public void clear() {
+    public synchronized void clear() {
         seen.clear();
     }
 
-    public void clearModule(String moduleId) {
+    public synchronized void clearModule(String moduleId) {
         seen.keySet().removeIf(k -> k.startsWith(moduleId + ":"));
     }
 

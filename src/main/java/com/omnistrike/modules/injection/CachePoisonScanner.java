@@ -6,6 +6,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -190,6 +191,8 @@ public class CachePoisonScanner implements ScanModule {
                         .remediation("Include the header in the cache key (Vary header), or strip/ignore "
                                 + "unkeyed headers before processing. Review CDN/cache configuration.")
                         .requestResponse(result)
+                        .payload(canary)
+                        .responseEvidence(canary)
                         .build());
                 perHostDelay();
                 return;
@@ -210,6 +213,8 @@ public class CachePoisonScanner implements ScanModule {
                     .remediation("Include the header in the cache key (Vary header), or strip/ignore "
                             + "unkeyed headers. Test with cache.confirmPoison=true for confirmation.")
                     .requestResponse(result)
+                    .payload(canary)
+                    .responseEvidence(canary)
                     .build());
         } else {
             findingsStore.addFinding(Finding.builder("cache-poison",
@@ -222,6 +227,8 @@ public class CachePoisonScanner implements ScanModule {
                             + "but the response does not appear cacheable. This may still be exploitable "
                             + "depending on intermediary cache configurations.")
                     .requestResponse(result)
+                    .payload(canary)
+                    .responseEvidence(canary)
                     .build());
         }
         perHostDelay();
@@ -257,6 +264,23 @@ public class CachePoisonScanner implements ScanModule {
                     .remediation("Include all reflected query parameters in the cache key, or strip "
                             + "unknown parameters before caching.")
                     .requestResponse(result)
+                    .payload(canary)
+                    .responseEvidence(canary)
+                    .build());
+        } else {
+            findingsStore.addFinding(Finding.builder("cache-poison",
+                            "Unkeyed Parameter Reflected (Not Cacheable): " + paramName,
+                            Severity.INFO, Confidence.TENTATIVE)
+                    .url(url).parameter(paramName)
+                    .evidence("Canary: " + canary + " | Param: " + paramName
+                            + " | Reflected: yes | Cache indicators: " + cacheInfo.headerSummary
+                            + " | Parameter reflection confirmed but response does not appear to be cached")
+                    .description("The query parameter '" + paramName + "' is reflected in the response "
+                            + "but the response does not appear cacheable. This may still be exploitable "
+                            + "depending on intermediary cache configurations.")
+                    .requestResponse(result)
+                    .payload(canary)
+                    .responseEvidence(canary)
                     .build());
         }
         perHostDelay();
@@ -293,6 +317,7 @@ public class CachePoisonScanner implements ScanModule {
 
     private CacheInfo analyzeCacheability(HttpRequestResponse response) {
         boolean cacheable = false;
+        boolean explicitlyNotCacheable = false; // no-store/private is authoritative
         List<String> indicators = new ArrayList<>();
 
         for (var h : response.response().headers()) {
@@ -302,10 +327,12 @@ public class CachePoisonScanner implements ScanModule {
             switch (name) {
                 case "cache-control":
                     if (value.contains("no-store") || value.contains("private")) {
+                        explicitlyNotCacheable = true;
+                        cacheable = false;
                         indicators.add("Cache-Control: " + h.value() + " (not cacheable)");
                     } else if (value.contains("public") || value.contains("max-age")
                             || value.contains("s-maxage")) {
-                        cacheable = true;
+                        if (!explicitlyNotCacheable) cacheable = true;
                         indicators.add("Cache-Control: " + h.value() + " (cacheable)");
                     }
                     break;
@@ -315,31 +342,49 @@ public class CachePoisonScanner implements ScanModule {
                     }
                     break;
                 case "age":
-                    cacheable = true;
-                    indicators.add("Age: " + h.value() + " (served from cache)");
+                    try {
+                        int age = Integer.parseInt(value.trim());
+                        if (age > 0) {
+                            // Age > 0 means a cache served this, but respect no-store/private
+                            if (!explicitlyNotCacheable) cacheable = true;
+                            indicators.add("Age: " + h.value() + " (served from cache)");
+                        } else {
+                            indicators.add("Age: 0 (freshly fetched from origin)");
+                        }
+                    } catch (NumberFormatException nfe) {
+                        indicators.add("Age: " + h.value() + " (non-numeric)");
+                    }
                     break;
                 case "x-cache":
-                    if (value.contains("hit") || value.contains("miss")) {
-                        cacheable = true;
-                        indicators.add("X-Cache: " + h.value());
+                    if (value.contains("hit")) {
+                        if (!explicitlyNotCacheable) cacheable = true;
+                        indicators.add("X-Cache: " + h.value() + " (cached)");
+                    } else if (value.contains("miss")) {
+                        indicators.add("X-Cache: " + h.value() + " (not cached)");
                     }
                     break;
                 case "cf-cache-status":
-                    if (value.contains("hit") || value.contains("miss") || value.contains("dynamic")) {
-                        cacheable = true;
-                        indicators.add("CF-Cache-Status: " + h.value());
+                    if (value.contains("hit")) {
+                        if (!explicitlyNotCacheable) cacheable = true;
+                        indicators.add("CF-Cache-Status: " + h.value() + " (cached)");
+                    } else if (value.contains("miss") || value.contains("dynamic") || value.contains("bypass")) {
+                        indicators.add("CF-Cache-Status: " + h.value() + " (not cached)");
                     }
                     break;
                 case "x-cache-status":
-                    cacheable = true;
-                    indicators.add("X-Cache-Status: " + h.value());
+                    if (value.contains("hit")) {
+                        if (!explicitlyNotCacheable) cacheable = true;
+                        indicators.add("X-Cache-Status: " + h.value() + " (cached)");
+                    } else {
+                        indicators.add("X-Cache-Status: " + h.value());
+                    }
                     break;
                 case "vary":
                     indicators.add("Vary: " + h.value());
                     break;
                 case "expires":
                     if (!value.equals("0") && !value.equals("-1")) {
-                        cacheable = true;
+                        if (!explicitlyNotCacheable) cacheable = true;
                         indicators.add("Expires: " + h.value());
                     }
                     break;
@@ -370,7 +415,7 @@ public class CachePoisonScanner implements ScanModule {
         try {
             HttpRequest modified = original.request()
                     .withUpdatedParameters(
-                            burp.api.montoya.http.message.params.HttpParameter.urlParameter(paramName, value));
+                            burp.api.montoya.http.message.params.HttpParameter.urlParameter(paramName, PayloadEncoder.encode(value)));
             return api.http().sendRequest(modified);
         } catch (Exception e) {
             return null;
@@ -378,6 +423,10 @@ public class CachePoisonScanner implements ScanModule {
     }
 
     private boolean isCanaryReflected(HttpRequestResponse response, String canary) {
+        // Skip error responses — servers often echo input in error pages
+        int statusCode = response.response().statusCode();
+        if (statusCode >= 400) return false;
+
         // Check response body
         String body = response.response().bodyToString();
         if (body != null && body.contains(canary)) return true;

@@ -1,13 +1,18 @@
 package com.omnistrike.ui;
 
+import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.model.Finding;
 
 import javax.swing.*;
+import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import java.awt.*;
+import java.awt.datatransfer.StringSelection;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -21,6 +26,7 @@ import java.util.List;
 public class RequestResponsePanel extends JPanel {
 
     private final FindingsStore findingsStore;
+    private MontoyaApi api;
     private final DefaultTableModel tableModel;
     private final JTable table;
     private final JTextArea requestArea;
@@ -70,6 +76,46 @@ public class RequestResponsePanel extends JPanel {
         table.getColumnModel().getColumn(4).setPreferredWidth(220);
         table.getColumnModel().getColumn(5).setPreferredWidth(80);
         table.getColumnModel().getColumn(6).setPreferredWidth(70);
+        table.getColumnModel().getColumn(0).setCellRenderer(createSeverityRenderer());
+
+        // Right-click context menu
+        JPopupMenu popupMenu = new JPopupMenu();
+
+        JMenuItem sendToRepeaterItem = new JMenuItem("Send to Repeater");
+        sendToRepeaterItem.addActionListener(e -> sendSelectedToRepeater());
+        popupMenu.add(sendToRepeaterItem);
+
+        popupMenu.addSeparator();
+
+        JMenuItem copyUrlItem = new JMenuItem("Copy URL");
+        copyUrlItem.addActionListener(e -> copySelectedUrl());
+        popupMenu.add(copyUrlItem);
+
+        JMenuItem copyFindingItem = new JMenuItem("Copy Finding as Text");
+        copyFindingItem.addActionListener(e -> copySelectedFindingAsText());
+        popupMenu.add(copyFindingItem);
+
+        table.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                handlePopup(e);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                handlePopup(e);
+            }
+
+            private void handlePopup(MouseEvent e) {
+                if (e.isPopupTrigger()) {
+                    int row = table.rowAtPoint(e.getPoint());
+                    if (row >= 0) {
+                        table.setRowSelectionInterval(row, row);
+                    }
+                    popupMenu.show(e.getComponent(), e.getX(), e.getY());
+                }
+            }
+        });
 
         // Request area (left)
         requestArea = new JTextArea();
@@ -301,6 +347,106 @@ public class RequestResponsePanel extends JPanel {
             sb.append("[Error formatting response: ").append(e.getMessage()).append("]");
         }
         return sb.toString();
+    }
+
+    private DefaultTableCellRenderer createSeverityRenderer() {
+        return new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value,
+                    boolean isSelected, boolean hasFocus, int row, int column) {
+                Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                if (!isSelected && value != null) {
+                    String sev = value.toString();
+                    switch (sev) {
+                        case "CRITICAL" -> { c.setBackground(new Color(180, 30, 30)); c.setForeground(Color.WHITE); }
+                        case "HIGH" -> { c.setBackground(new Color(220, 80, 40)); c.setForeground(Color.WHITE); }
+                        case "MEDIUM" -> { c.setBackground(new Color(230, 160, 30)); c.setForeground(Color.BLACK); }
+                        case "LOW" -> { c.setBackground(new Color(70, 140, 200)); c.setForeground(Color.WHITE); }
+                        case "INFO" -> { c.setBackground(new Color(130, 130, 130)); c.setForeground(Color.WHITE); }
+                        default -> { c.setBackground(table.getBackground()); c.setForeground(table.getForeground()); }
+                    }
+                } else if (!isSelected) {
+                    c.setBackground(table.getBackground());
+                    c.setForeground(table.getForeground());
+                }
+                setHorizontalAlignment(SwingConstants.CENTER);
+                return c;
+            }
+        };
+    }
+
+    /** Sets the Montoya API reference for Send to Repeater integration. */
+    public void setApi(MontoyaApi api) {
+        this.api = api;
+    }
+
+    /**
+     * Returns the Finding corresponding to the currently selected table row, or null.
+     */
+    private Finding getSelectedFinding() {
+        int viewRow = table.getSelectedRow();
+        if (viewRow < 0) return null;
+        int modelRow = table.convertRowIndexToModel(viewRow);
+        if (modelRow < 0 || modelRow >= findingsList.size()) return null;
+        return findingsList.get(modelRow);
+    }
+
+    /**
+     * Sends the selected finding's request to Burp Repeater.
+     */
+    private void sendSelectedToRepeater() {
+        Finding f = getSelectedFinding();
+        if (f == null) return;
+        if (f.getRequestResponse() == null || f.getRequestResponse().request() == null) {
+            JOptionPane.showMessageDialog(this, "No request data available for this finding.",
+                    "Cannot Send", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (api != null) {
+            String tabName = f.getModuleId() + ": " + truncateStr(f.getTitle(), 30);
+            api.repeater().sendToRepeater(f.getRequestResponse().request(), tabName);
+        } else {
+            JOptionPane.showMessageDialog(this, "Repeater integration not available.",
+                    "Unavailable", JOptionPane.WARNING_MESSAGE);
+        }
+    }
+
+    /**
+     * Copies the URL of the selected finding to the system clipboard.
+     */
+    private void copySelectedUrl() {
+        Finding f = getSelectedFinding();
+        if (f != null && f.getUrl() != null) {
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
+                    new StringSelection(f.getUrl()), null);
+        }
+    }
+
+    /**
+     * Copies the selected finding as a text summary to the system clipboard.
+     */
+    private void copySelectedFindingAsText() {
+        Finding f = getSelectedFinding();
+        if (f == null) return;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Title: ").append(f.getTitle() != null ? f.getTitle() : "N/A").append("\n");
+        sb.append("Module: ").append(f.getModuleId() != null ? f.getModuleId() : "N/A").append("\n");
+        sb.append("Severity: ").append(f.getSeverity()).append("\n");
+        sb.append("Confidence: ").append(f.getConfidence()).append("\n");
+        sb.append("URL: ").append(f.getUrl() != null ? f.getUrl() : "N/A").append("\n");
+        sb.append("Parameter: ").append(f.getParameter() != null && !f.getParameter().isEmpty() ? f.getParameter() : "N/A").append("\n");
+        sb.append("Description: ").append(f.getDescription() != null ? f.getDescription() : "(none)").append("\n");
+        sb.append("Evidence: ").append(f.getEvidence() != null ? f.getEvidence() : "(none)").append("\n");
+        sb.append("Remediation: ").append(f.getRemediation() != null ? f.getRemediation() : "(none)").append("\n");
+
+        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
+                new StringSelection(sb.toString()), null);
+    }
+
+    private static String truncateStr(String s, int max) {
+        if (s == null) return "";
+        return s.length() > max ? s.substring(0, max) + "..." : s;
     }
 
     /**

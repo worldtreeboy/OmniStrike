@@ -50,31 +50,41 @@ public class FindingsStore {
         listeners.remove(listener);
     }
 
+    /**
+     * Adds a finding with deduplication. Synchronized to prevent races with clearModule().
+     * Listener notifications fire outside the critical section to avoid deadlocks.
+     */
     public void addFinding(Finding finding) {
-        if (findings.size() >= MAX_FINDINGS) return; // cap check FIRST
-        String param = finding.getParameter() != null ? finding.getParameter() : "";
-        String normalizedUrl = normalizeUrlForDedup(finding.getUrl());
-        // Primary key: module + title + normalized URL (no query params) + parameter
-        String key = finding.getModuleId() + "|" + finding.getTitle() + "|" + normalizedUrl + "|" + param;
-        if (seenKeys.putIfAbsent(key, Boolean.TRUE) != null) return; // duplicate
+        boolean added;
+        synchronized (this) {
+            if (findings.size() >= MAX_FINDINGS) return; // cap check FIRST
+            String param = finding.getParameter() != null ? finding.getParameter() : "";
+            String normalizedUrl = normalizeUrlForDedup(finding.getUrl());
+            // Primary key: module + title + normalized URL (no query params) + parameter
+            String key = finding.getModuleId() + "|" + finding.getTitle() + "|" + normalizedUrl + "|" + param;
+            if (seenKeys.putIfAbsent(key, Boolean.TRUE) != null) return; // duplicate
 
-        // Cross-module dedup: same vulnerability type at the same URL+param reported by different modules
-        // Normalize title to a category (e.g., "CORS misconfiguration" from both header-analyzer and cors-scanner)
-        String crossModuleKey = normalizeFindingCategory(finding.getTitle()) + "|" + normalizedUrl + "|" + param;
-        if (!crossModuleKey.startsWith("|") && seenKeys.putIfAbsent("xmod:" + crossModuleKey, Boolean.TRUE) != null) {
-            return; // same vulnerability type already reported by another module
+            // Cross-module dedup
+            String crossModuleKey = normalizeFindingCategory(finding.getTitle()) + "|" + normalizedUrl + "|" + param;
+            if (!crossModuleKey.startsWith("|") && seenKeys.putIfAbsent("xmod:" + crossModuleKey, Boolean.TRUE) != null) {
+                return;
+            }
+
+            findings.add(finding);
+            added = true;
         }
 
-        findings.add(finding);
-        for (FindingsListener l : listeners) {
-            try {
-                l.onFindingAdded(finding);
-            } catch (Throwable t) {
-                // Log but don't let a broken listener kill the pipeline
-                String msg = "[FindingsStore] Listener error: " + t.getClass().getName() + ": " + t.getMessage();
-                java.util.function.Consumer<String> logger = errorLogger;
-                if (logger != null) {
-                    logger.accept(msg);
+        // Notify listeners outside synchronized block to avoid deadlocks
+        if (added) {
+            for (FindingsListener l : listeners) {
+                try {
+                    l.onFindingAdded(finding);
+                } catch (Throwable t) {
+                    String msg = "[FindingsStore] Listener error: " + t.getClass().getName() + ": " + t.getMessage();
+                    java.util.function.Consumer<String> logger = errorLogger;
+                    if (logger != null) {
+                        logger.accept(msg);
+                    }
                 }
             }
         }
@@ -110,14 +120,37 @@ public class FindingsStore {
         return (int) findings.stream().filter(f -> f.getModuleId().equals(moduleId)).count();
     }
 
-    public void clear() {
+    public int getCountBySeverity(Severity severity) {
+        return (int) findings.stream().filter(f -> f.getSeverity() == severity).count();
+    }
+
+    /**
+     * Clears all findings and dedup keys. Synchronized to prevent races with addFinding().
+     */
+    public synchronized void clear() {
         findings.clear();
         seenKeys.clear();
     }
 
-    public void clearModule(String moduleId) {
+    /**
+     * Clears all findings for a specific module and rebuilds cross-module dedup keys.
+     * Synchronized to prevent race window between wipe and rebuild where concurrent
+     * addFinding() calls could bypass cross-module dedup.
+     */
+    public synchronized void clearModule(String moduleId) {
         findings.removeIf(f -> f.getModuleId().equals(moduleId));
         seenKeys.entrySet().removeIf(e -> e.getKey().startsWith(moduleId + "|"));
+
+        // Rebuild cross-module dedup keys from surviving findings.
+        seenKeys.entrySet().removeIf(e -> e.getKey().startsWith("xmod:"));
+        for (Finding f : findings) {
+            String param = f.getParameter() != null ? f.getParameter() : "";
+            String normalizedUrl = normalizeUrlForDedup(f.getUrl());
+            String crossModuleKey = normalizeFindingCategory(f.getTitle()) + "|" + normalizedUrl + "|" + param;
+            if (!crossModuleKey.startsWith("|")) {
+                seenKeys.putIfAbsent("xmod:" + crossModuleKey, Boolean.TRUE);
+            }
+        }
     }
 
     /**

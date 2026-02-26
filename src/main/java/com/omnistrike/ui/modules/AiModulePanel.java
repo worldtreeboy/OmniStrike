@@ -8,6 +8,7 @@ import com.omnistrike.framework.ScopeManager;
 import com.omnistrike.model.Finding;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.modules.ai.llm.AiConnectionMode;
+import com.omnistrike.modules.ai.llm.ApiKeyProvider;
 import com.omnistrike.modules.ai.llm.LlmProvider;
 
 import javax.swing.*;
@@ -23,9 +24,10 @@ import java.util.List;
 
 /**
  * Custom Swing panel for the AI Vulnerability Analyzer module.
- * Supports two connection modes via radio buttons:
+ * Supports three connection modes via radio buttons (mutually exclusive):
  *   - Off: AI analysis disabled
  *   - CLI Tool: Local CLI providers (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI)
+ *   - API Key: Direct HTTP API (Anthropic, OpenAI, Google Gemini)
  */
 public class AiModulePanel extends JPanel {
 
@@ -38,6 +40,7 @@ public class AiModulePanel extends JPanel {
     // Connection mode radio buttons
     private JRadioButton offRadio;
     private JRadioButton cliRadio;
+    private JRadioButton apiKeyRadio;
 
     // CardLayout for switching between mode panels
     private JPanel modeCards;
@@ -48,6 +51,13 @@ public class AiModulePanel extends JPanel {
     private JTextField cliBinaryField;
     private JButton cliTestBtn;
     private JLabel cliTestStatusLabel;
+
+    // API Key mode fields
+    private JComboBox<ApiKeyProvider> apiProviderCombo;
+    private JComboBox<String> apiModelCombo;
+    private JPasswordField apiKeyField;
+    private JButton apiKeyTestBtn;
+    private JLabel apiKeyTestStatusLabel;
 
     // Settings
     private JTextField maxPayloadsField;
@@ -93,6 +103,7 @@ public class AiModulePanel extends JPanel {
     // Mode card names
     private static final String CARD_OFF = "off";
     private static final String CARD_CLI = "cli";
+    private static final String CARD_API_KEY = "apikey";
 
     public AiModulePanel(AiVulnAnalyzer analyzer, FindingsStore findingsStore,
                          ModuleRegistry registry, MontoyaApi api, ScopeManager scopeManager) {
@@ -122,6 +133,7 @@ public class AiModulePanel extends JPanel {
         modeCards.setAlignmentX(LEFT_ALIGNMENT);
         modeCards.add(createOffCard(), CARD_OFF);
         modeCards.add(createCliCard(), CARD_CLI);
+        modeCards.add(createApiKeyCard(), CARD_API_KEY);
         modeCardLayout.show(modeCards, CARD_OFF);
         topSection.add(modeCards);
         topSection.add(Box.createVerticalStrut(6));
@@ -157,8 +169,6 @@ public class AiModulePanel extends JPanel {
         statsBar.add(cancelScansBtn, BorderLayout.EAST);
 
         topSection.add(statsBar);
-
-        add(topSection, BorderLayout.NORTH);
 
         // ============ CENTER: Findings Table + Detail ============
         tableModel = new DefaultTableModel(COLUMNS, 0) {
@@ -199,12 +209,26 @@ public class AiModulePanel extends JPanel {
         JScrollPane detailScroll = new JScrollPane(detailArea);
         detailScroll.setBorder(BorderFactory.createTitledBorder("Finding Details"));
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+        JSplitPane findingsSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 tableScroll, detailScroll);
-        splitPane.setDividerLocation(280);
-        splitPane.setResizeWeight(0.6);
+        findingsSplit.setDividerLocation(280);
+        findingsSplit.setResizeWeight(0.6);
 
-        add(splitPane, BorderLayout.CENTER);
+        // Wrap top config section in a scroll pane so it doesn't crush findings
+        JScrollPane topScroll = new JScrollPane(topSection);
+        topScroll.setBorder(null);
+        topScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        topScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        topScroll.setMinimumSize(new Dimension(200, 100));
+
+        // Main split: config on top, findings on bottom — user can drag the divider
+        JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+                topScroll, findingsSplit);
+        mainSplit.setDividerLocation(320);
+        mainSplit.setResizeWeight(0.0); // give all extra space to findings
+        mainSplit.setOneTouchExpandable(true); // the "arrow" buttons on the divider
+
+        add(mainSplit, BorderLayout.CENTER);
 
         // ============ BOTTOM: Controls ============
         JPanel controls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 4));
@@ -262,15 +286,28 @@ public class AiModulePanel extends JPanel {
         group.add(cliRadio);
         radioPanel.add(cliRadio);
 
+        apiKeyRadio = new JRadioButton("API Key");
+        apiKeyRadio.setToolTipText("Use API keys to call Anthropic, OpenAI, or Google Gemini APIs directly over HTTP");
+        group.add(apiKeyRadio);
+        radioPanel.add(apiKeyRadio);
+
         offRadio.addActionListener(e -> switchMode(CARD_OFF));
         cliRadio.addActionListener(e -> switchMode(CARD_CLI));
+        apiKeyRadio.addActionListener(e -> switchMode(CARD_API_KEY));
 
         outer.add(radioPanel, BorderLayout.CENTER);
         return outer;
     }
 
     private void switchMode(String card) {
-        AiConnectionMode mode = CARD_CLI.equals(card) ? AiConnectionMode.CLI : AiConnectionMode.NONE;
+        AiConnectionMode mode;
+        if (CARD_CLI.equals(card)) {
+            mode = AiConnectionMode.CLI;
+        } else if (CARD_API_KEY.equals(card)) {
+            mode = AiConnectionMode.API_KEY;
+        } else {
+            mode = AiConnectionMode.NONE;
+        }
         analyzer.setConnectionMode(mode);
         modeCardLayout.show(modeCards, card);
     }
@@ -280,7 +317,7 @@ public class AiModulePanel extends JPanel {
     private JPanel createOffCard() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 16));
         panel.setAlignmentX(LEFT_ALIGNMENT);
-        JLabel label = new JLabel("AI analysis is disabled. Select CLI Tool above to enable it.");
+        JLabel label = new JLabel("AI analysis is disabled. Select CLI Tool or API Key above to enable it.");
         label.setForeground(MUTED);
         label.setFont(label.getFont().deriveFont(Font.ITALIC, 12f));
         panel.add(label);
@@ -352,6 +389,91 @@ public class AiModulePanel extends JPanel {
         return outer;
     }
 
+    private JPanel createApiKeyCard() {
+        JPanel outer = new JPanel(new BorderLayout());
+        outer.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createTitledBorder("API Key Configuration"),
+                new EmptyBorder(6, 8, 6, 8)));
+        outer.setAlignmentX(LEFT_ALIGNMENT);
+        outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, 170));
+
+        JPanel form = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(3, 6, 3, 6);
+        gbc.anchor = GridBagConstraints.WEST;
+
+        // Row 0: Provider + Model
+        gbc.gridx = 0; gbc.gridy = 0; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        form.add(createFieldLabel("Provider:"), gbc);
+
+        apiProviderCombo = new JComboBox<>(ApiKeyProvider.values());
+        apiProviderCombo.setPreferredSize(new Dimension(180, 28));
+        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 0.4;
+        form.add(apiProviderCombo, gbc);
+
+        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        form.add(createFieldLabel("Model:"), gbc);
+
+        apiModelCombo = new JComboBox<>();
+        apiModelCombo.setPreferredSize(new Dimension(220, 28));
+        gbc.gridx = 3; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 0.6;
+        form.add(apiModelCombo, gbc);
+
+        // Row 1: API Key
+        gbc.gridx = 0; gbc.gridy = 1; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        form.add(createFieldLabel("API Key:"), gbc);
+
+        apiKeyField = new JPasswordField(40);
+        apiKeyField.setToolTipText("Paste your API key (stored in memory only, not persisted to disk)");
+        gbc.gridx = 1; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1.0;
+        form.add(apiKeyField, gbc);
+        gbc.gridwidth = 1;
+
+        // Row 2: Buttons + Status
+        gbc.gridx = 0; gbc.gridy = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        form.add(Box.createHorizontalStrut(1), gbc);
+
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+        JButton applyBtn = createStyledButton("Apply Settings", ACCENT);
+        applyBtn.addActionListener(e -> applyApiKeyConfig());
+        btnPanel.add(applyBtn);
+
+        apiKeyTestBtn = createStyledButton("Test Connection", null);
+        apiKeyTestBtn.addActionListener(e -> testApiKeyConnection());
+        btnPanel.add(apiKeyTestBtn);
+
+        apiKeyTestStatusLabel = new JLabel("");
+        apiKeyTestStatusLabel.setFont(apiKeyTestStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        btnPanel.add(apiKeyTestStatusLabel);
+
+        gbc.gridx = 1; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.HORIZONTAL;
+        form.add(btnPanel, gbc);
+        gbc.gridwidth = 1;
+
+        outer.add(form, BorderLayout.CENTER);
+
+        // Populate model combo when provider changes
+        apiProviderCombo.addActionListener(e -> {
+            ApiKeyProvider sel = (ApiKeyProvider) apiProviderCombo.getSelectedItem();
+            if (sel != null) {
+                apiModelCombo.removeAllItems();
+                for (String m : sel.getModels()) {
+                    apiModelCombo.addItem(m);
+                }
+            }
+        });
+
+        // Initialize model combo for default provider
+        ApiKeyProvider defaultProvider = (ApiKeyProvider) apiProviderCombo.getSelectedItem();
+        if (defaultProvider != null) {
+            for (String m : defaultProvider.getModels()) {
+                apiModelCombo.addItem(m);
+            }
+        }
+
+        return outer;
+    }
+
     // ==================== UI Construction Helpers ====================
 
     private JPanel createNoticeBanner() {
@@ -371,8 +493,8 @@ public class AiModulePanel extends JPanel {
         icon.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
 
         JLabel text = new JLabel("AI analysis is completely optional. When enabled, "
-                + "HTTP request/response data from in-scope traffic will be sent to the configured CLI tool. "
-                + "You must have a CLI tool installed and authenticated. Data leaves your machine. "
+                + "HTTP request/response data from in-scope traffic will be sent to the configured LLM provider "
+                + "(via CLI tool or API key). Data leaves your machine. "
                 + "Smart Fuzzing sends active requests \u2014 use responsibly.");
         text.setFont(text.getFont().deriveFont(Font.PLAIN, 12f));
         text.setForeground(BANNER_TEXT);
@@ -632,8 +754,22 @@ public class AiModulePanel extends JPanel {
                                     String url = rr.request().url();
                                     if (url == null) continue;
 
-                                    // Skip entries without a response body
-                                    if (rr.response() == null) continue;
+                                    // If response is null, the entry was discovered but never fetched.
+                                    // Actively fetch it if the URL looks like JS/HTML.
+                                    if (rr.response() == null) {
+                                        if (hasJsOrHtmlExtension(url)) {
+                                            try {
+                                                rr = api.http().sendRequest(rr.request());
+                                                api.logging().logToOutput("[Scrape] Fetched missing response: " + url);
+                                            } catch (Exception fetchEx) {
+                                                api.logging().logToOutput("[Scrape] Fetch failed: " + url);
+                                                continue;
+                                            }
+                                            if (rr.response() == null) continue;
+                                        } else {
+                                            continue;
+                                        }
+                                    }
                                     String body = rr.response().bodyToString();
                                     if (body == null || body.isEmpty()) continue;
 
@@ -756,6 +892,31 @@ public class AiModulePanel extends JPanel {
         return false;
     }
 
+    /**
+     * Checks whether a URL looks like a JS or HTML resource based on file extension
+     * or common JS bundle path patterns. Used to decide whether to actively fetch
+     * site map entries that were discovered but never proxied (response == null).
+     */
+    private static boolean hasJsOrHtmlExtension(String url) {
+        String path = url.toLowerCase();
+        int hashIdx = path.indexOf('#');
+        if (hashIdx > 0) path = path.substring(0, hashIdx);
+        int qIdx = path.indexOf('?');
+        if (qIdx > 0) path = path.substring(0, qIdx);
+        int semiIdx = path.indexOf(';');
+        if (semiIdx > 0) path = path.substring(0, semiIdx);
+
+        if (path.endsWith(".js") || path.endsWith(".jsx") || path.endsWith(".mjs")
+                || path.endsWith(".ts") || path.endsWith(".tsx")
+                || path.endsWith(".html") || path.endsWith(".htm")
+                || path.endsWith(".xhtml") || path.endsWith(".shtml")) {
+            return true;
+        }
+
+        return path.contains("/static/js/") || path.contains("/assets/js/")
+                || path.contains("/_next/static/") || path.contains("/dist/");
+    }
+
     private static String formatSize(int chars) {
         if (chars < 1024) return chars + " B";
         if (chars < 1024 * 1024) return String.format("%.1f KB", chars / 1024.0);
@@ -813,6 +974,33 @@ public class AiModulePanel extends JPanel {
             }
         });
         popup.add(copyUrl);
+
+        // Improvement 11: Exploit This Finding — multi-step AI exploitation
+        popup.addSeparator();
+        JMenuItem exploitItem = new JMenuItem("Exploit This Finding (AI)");
+        exploitItem.setToolTipText("Use AI to perform multi-step exploitation of this confirmed vulnerability");
+        exploitItem.addActionListener(e -> {
+            Finding f = getSelectedFinding();
+            if (f == null) return;
+            if (f.getRequestResponse() == null || f.getRequestResponse().request() == null) {
+                JOptionPane.showMessageDialog(this, "No request data available for exploitation.",
+                        "Cannot Exploit", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            if (!analyzer.isAiConfigured()) {
+                JOptionPane.showMessageDialog(this, "AI is not configured. Select CLI or API Key mode first.",
+                        "AI Not Configured", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            int confirm = JOptionPane.showConfirmDialog(this,
+                    "Start multi-step AI exploitation of:\n" + f.getTitle() + "\nat " + f.getUrl() + "?\n\n"
+                    + "This will send multiple exploitation payloads to the target.",
+                    "Confirm Exploitation", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (confirm == JOptionPane.OK_OPTION) {
+                analyzer.exploitFinding(f, f.getRequestResponse());
+            }
+        });
+        popup.add(exploitItem);
 
         findingsTable.setComponentPopupMenu(popup);
 
@@ -899,6 +1087,70 @@ public class AiModulePanel extends JPanel {
         }.execute();
     }
 
+    // ==================== API Key Event Handlers ====================
+
+    private boolean applyApiKeyConfig() {
+        ApiKeyProvider selected = (ApiKeyProvider) apiProviderCombo.getSelectedItem();
+        if (selected == null) return false;
+
+        String model = (String) apiModelCombo.getSelectedItem();
+        if (model == null || model.isBlank()) {
+            apiKeyTestStatusLabel.setText("No model selected");
+            apiKeyTestStatusLabel.setForeground(ERROR_COLOR);
+            return false;
+        }
+
+        String key = new String(apiKeyField.getPassword()).trim();
+        if (key.isEmpty()) {
+            apiKeyTestStatusLabel.setText("API key cannot be empty");
+            apiKeyTestStatusLabel.setForeground(ERROR_COLOR);
+            return false;
+        }
+
+        analyzer.getLlmClient().configureApiKey(selected, key, model);
+        analyzer.setConnectionMode(AiConnectionMode.API_KEY);
+        apiKeyTestStatusLabel.setText("Settings applied");
+        apiKeyTestStatusLabel.setForeground(SUCCESS);
+        return true;
+    }
+
+    private void testApiKeyConnection() {
+        if (!applyApiKeyConfig()) return;
+
+        apiKeyTestBtn.setEnabled(false);
+        apiKeyTestStatusLabel.setText("Testing...");
+        apiKeyTestStatusLabel.setForeground(MUTED);
+
+        new SwingWorker<String, Void>() {
+            @Override
+            protected String doInBackground() {
+                try {
+                    return analyzer.getLlmClient().testConnection();
+                } catch (Exception e) {
+                    return "ERROR: " + e.getMessage();
+                }
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    String result = get();
+                    if (result.startsWith("ERROR:")) {
+                        apiKeyTestStatusLabel.setText(result);
+                        apiKeyTestStatusLabel.setForeground(ERROR_COLOR);
+                    } else {
+                        apiKeyTestStatusLabel.setText(result);
+                        apiKeyTestStatusLabel.setForeground(SUCCESS);
+                    }
+                } catch (Exception e) {
+                    apiKeyTestStatusLabel.setText("Test failed: " + e.getMessage());
+                    apiKeyTestStatusLabel.setForeground(ERROR_COLOR);
+                }
+                apiKeyTestBtn.setEnabled(true);
+            }
+        }.execute();
+    }
+
     // ==================== Table Management ====================
 
     private void autoRefresh() {
@@ -912,7 +1164,8 @@ public class AiModulePanel extends JPanel {
                     + "  |  Analyzed: " + analyzer.getAnalyzedCount()
                     + "  |  Findings: " + analyzer.getFindingsCount()
                     + "  |  Fuzz Requests: " + analyzer.getFuzzRequestsSent()
-                    + "  |  Errors: " + errors);
+                    + "  |  Errors: " + errors
+                    + "  |  " + analyzer.getCostSummary());
 
             // Highlight stats when scans are active
             statsLabel.setForeground(running > 0 ? ACCENT : MUTED);

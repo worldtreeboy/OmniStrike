@@ -15,16 +15,17 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike Extension — Entry Point
+ * OmniStrike v1.29 — Entry Point
  *
- * A pluggable scanning framework for Burp Suite with 20 modules:
- *   Recon (Passive): Endpoint Finder, Subdomain Collector, Security Header Analyzer
+ * A unified vulnerability scanning framework for Burp Suite with 19 modules:
+ *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
+ *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer
  *   Injection (Active): SQLi Detector, SSTI Scanner, SSRF Scanner, XSS Scanner,
- *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner, NoSQL Injection Scanner,
+ *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
- *       CRLF Injection, Authentication Bypass, HTTP Parameter Pollution
+ *       HTTP Parameter Pollution
  *
- * Uses the Montoya API exclusively.
+ * Built exclusively on the Montoya API.
  */
 public class OmniStrikeExtension implements BurpExtension {
 
@@ -33,17 +34,20 @@ public class OmniStrikeExtension implements BurpExtension {
     private ActiveScanExecutor executor;
     private TrafficInterceptor interceptor;
     private CollaboratorManager collaboratorManager;
+    private SessionKeepAlive sessionKeepAlive;
     private volatile MainPanel mainPanel;
+    private volatile Audit persistentAudit;
 
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.01 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.29 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
         findingsStore.setErrorLogger(msg -> api.logging().logToError(msg));
-        findingsStore.addListener(new DashboardReporter(api)); // Report all findings to Burp Dashboard
+        DashboardReporter dashboardReporter = new DashboardReporter(api);
+        findingsStore.addListener(dashboardReporter); // Report all findings to Burp Dashboard
         DeduplicationStore dedup = new DeduplicationStore();
         executor = new ActiveScanExecutor(5);
         ScopeManager scopeManager = new ScopeManager();
@@ -78,6 +82,7 @@ public class OmniStrikeExtension implements BurpExtension {
         aiAnalyzer.setDependencies(findingsStore);
         aiAnalyzer.setModuleRegistry(registry);
         aiAnalyzer.setCollaboratorManager(collaboratorManager);
+        aiAnalyzer.setSharedDataBus(dataBus);
         registry.registerModuleDisabled(aiAnalyzer);
 
         // Injection modules (active) — wire dedup, findingsStore, collaborator to ALL
@@ -106,16 +111,12 @@ public class OmniStrikeExtension implements BurpExtension {
         registry.registerModule(deser);
 
         GraphqlTool graphql = new GraphqlTool();
-        graphql.setDependencies(dedup, findingsStore);
+        graphql.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(graphql);
 
         XxeScanner xxe = new XxeScanner();
         xxe.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(xxe);
-
-        NoSqlInjectionScanner nosqli = new NoSqlInjectionScanner();
-        nosqli.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(nosqli);
 
         CorsMisconfScanner cors = new CorsMisconfScanner();
         cors.setDependencies(dedup, findingsStore, collaboratorManager);
@@ -137,14 +138,6 @@ public class OmniStrikeExtension implements BurpExtension {
         pathTraversal.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(pathTraversal);
 
-        CrlfInjectionScanner crlfInjection = new CrlfInjectionScanner();
-        crlfInjection.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(crlfInjection);
-
-        AuthBypassScanner authBypass = new AuthBypassScanner();
-        authBypass.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(authBypass);
-
         HttpParamPollutionScanner hpp = new HttpParamPollutionScanner();
         hpp.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(hpp);
@@ -161,6 +154,11 @@ public class OmniStrikeExtension implements BurpExtension {
         api.proxy().registerResponseHandler(interceptor);
         api.logging().logToOutput("Traffic interceptor registered.");
 
+        // ==================== SESSION KEEP-ALIVE ====================
+        sessionKeepAlive = new SessionKeepAlive(api);
+        // uiLogger is wired below after MainPanel is created (it needs logPanel)
+        api.logging().logToOutput("Session Keep-Alive initialized (disabled by default).");
+
         // ==================== SCANNER INTEGRATION ====================
         // Register OmniStrike modules as a native Burp ScanCheck so findings
         // appear in Dashboard task boxes (same as Burp's built-in active scan).
@@ -169,50 +167,53 @@ public class OmniStrikeExtension implements BurpExtension {
         api.scanner().registerScanCheck(scanCheck);
         api.logging().logToOutput("Scanner integration registered (findings appear in Dashboard).");
 
-        // Bridge: async findings (AI analysis, OOB Collaborator callbacks) → deferred queue
-        // → Dashboard via ScanCheck pipeline.
-        // Only bridges findings from the AI module — these arrive asynchronously (after
-        // passiveAudit() has already returned). Non-AI module findings are returned
-        // synchronously from passiveAudit() and already appear in Dashboard.
-        findingsStore.addListener(finding -> {
-            if ("ai-vuln-analyzer".equals(finding.getModuleId()) && finding.getRequestResponse() != null) {
-                scanCheck.addDeferredFinding(finding);
-                // Re-trigger an active audit so Burp calls passiveAudit() and drains the queue.
-                // LEGACY_ACTIVE_AUDIT_CHECKS is what the context menu uses and reliably triggers
-                // the ScanCheck pipeline, making findings appear in Dashboard Issue Activity.
-                try {
-                    Audit audit = api.scanner().startAudit(
-                            AuditConfiguration.auditConfiguration(
-                                    BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS));
-                    audit.addRequestResponse(finding.getRequestResponse());
-                } catch (Exception e) {
-                    // Fallback: finding is still in Site Map via DashboardReporter
-                    api.logging().logToOutput("[OmniStrike] AI→Dashboard bridge: audit trigger failed, "
-                            + "finding still available via Site Map. " + e.getMessage());
-                }
-            }
-        });
+        // Create a single persistent Audit so ALL findings aggregate in one
+        // "OmniStrike" Dashboard task box (like Burp's built-in "Live audit").
+        // DashboardReporter feeds every finding into the deferred queue on
+        // OmniStrikeScanCheck, then pokes this audit to trigger passiveAudit()
+        // which drains the queue and returns AuditIssues into the task box.
+        try {
+            persistentAudit = api.scanner().startAudit(
+                    AuditConfiguration.auditConfiguration(
+                            BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS));
+            dashboardReporter.setDashboardBridge(scanCheck, persistentAudit);
+            api.logging().logToOutput("Persistent Dashboard task box created.");
+        } catch (Exception e) {
+            api.logging().logToOutput("Dashboard task box unavailable (findings still appear in Site Map): "
+                    + e.getMessage());
+        }
 
         // ==================== CONTEXT MENU ====================
-        api.userInterface().registerContextMenuItemsProvider(
-                new OmniStrikeContextMenu(api, registry, interceptor, scanCheck));
+        OmniStrikeContextMenu contextMenu = new OmniStrikeContextMenu(
+                api, registry, interceptor, scanCheck, sessionKeepAlive);
+        contextMenu.setMainPanelSupplier(() -> mainPanel);
+        api.userInterface().registerContextMenuItemsProvider(contextMenu);
         api.logging().logToOutput("Context menu registered (right-click > Send to OmniStrike).");
 
         // ==================== UI ====================
         SwingUtilities.invokeLater(() -> {
             mainPanel = new MainPanel(
                     registry, findingsStore, scopeManager,
-                    executor, interceptor, collaboratorManager, api);
+                    executor, interceptor, collaboratorManager, sessionKeepAlive, api);
             api.userInterface().registerSuiteTab("OmniStrike", mainPanel);
+            // Wire SessionKeepAlive log messages to the Activity Log
+            sessionKeepAlive.setUiLogger((module, message) ->
+                    javax.swing.SwingUtilities.invokeLater(() ->
+                            mainPanel.getLogPanel().log("INFO", module, message)));
             api.logging().logToOutput("UI tab registered.");
         });
 
         // ==================== CLEANUP ON UNLOAD ====================
         final AiVulnAnalyzer aiRef = aiAnalyzer;
         api.extension().registerUnloadingHandler(() -> {
-            api.logging().logToOutput("OmniStrike unloading...");
+            try { api.logging().logToOutput("OmniStrike unloading..."); }
+            catch (NullPointerException ignored) {}
             interceptor.setRunning(false);
+            executor.setUnloading(true); // Signal NPEs from dead API proxy are expected
             interceptor.shutdown(); // stop passive executor
+            if (sessionKeepAlive != null) {
+                sessionKeepAlive.shutdown();
+            }
             // Stop UI timers to prevent leaks
             if (mainPanel != null) {
                 SwingUtilities.invokeLater(() -> mainPanel.stopTimers());
@@ -222,10 +223,14 @@ public class OmniStrikeExtension implements BurpExtension {
             if (collaboratorManager != null) {
                 collaboratorManager.shutdown();
             }
-            api.logging().logToOutput("OmniStrike unloaded. Goodbye!");
+            if (persistentAudit != null) {
+                try { persistentAudit.delete(); } catch (Exception ignored) {}
+            }
+            try { api.logging().logToOutput("OmniStrike unloaded. Goodbye!"); }
+            catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.01 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.29 ready ===");
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | Collaborator: " + (collabAvailable ? "Yes" : "No"));
         api.logging().logToOutput("Configure target scope and click Start to begin scanning.");

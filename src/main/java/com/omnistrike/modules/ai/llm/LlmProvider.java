@@ -29,9 +29,9 @@ public enum LlmProvider {
     /** Returns the default CLI binary name. */
     public String getCliCommand() { return defaultBinary; }
 
-    /** Whether this CLI provider reads the prompt from stdin (true) or as an argument (false). */
+    /** All CLI providers now read the prompt from stdin to prevent command injection. */
     public boolean usesStdinForPrompt() {
-        return this != CLI_OPENCODE;
+        return true;
     }
 
     @Override

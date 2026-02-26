@@ -102,6 +102,9 @@ public class ScanConfigDialog extends JDialog {
         KNOWN_CONFIGS.put("xss-scanner", List.of(
                 boolEntry("xss.domAnalysis.enabled", true),
                 boolEntry("xss.evasion.enabled", true),
+                boolEntry("xss.csti.enabled", true),
+                boolEntry("xss.frameworkXss.enabled", true),
+                boolEntry("xss.encodingXss.enabled", true),
                 boolEntry("xss.blindOob.enabled", true),
                 intEntry("xss.perHostDelay", 300)
         ));
@@ -112,19 +115,31 @@ public class ScanConfigDialog extends JDialog {
                 boolEntry("cmdi.windows.enabled", true),
                 boolEntry("cmdi.output.enabled", true),
                 boolEntry("cmdi.oob.enabled", true),
-                intEntry("cmdi.delaySecs", 5),
+                intEntry("cmdi.delaySecs", 18),
                 intEntry("cmdi.perHostDelay", 500)
         ));
 
         // Deserialization Scanner
         KNOWN_CONFIGS.put("deser-scanner", List.of(
-                intEntry("deser.timeThreshold", 4000),
+                intEntry("deser.timeThreshold", 14000),
                 intEntry("deser.perHostDelay", 500)
         ));
 
         // GraphQL Tool
         KNOWN_CONFIGS.put("graphql-tool", List.of(
-                boolEntry("graphql.securityTests.enabled", true)
+                boolEntry("graphql.securityTests.enabled", true),
+                boolEntry("graphql.injection.enabled", true),
+                boolEntry("graphql.injection.sqli.enabled", true),
+                boolEntry("graphql.injection.nosqli.enabled", true),
+                boolEntry("graphql.injection.cmdi.enabled", true),
+                boolEntry("graphql.injection.ssti.enabled", true),
+                boolEntry("graphql.authz.enabled", true),
+                boolEntry("graphql.authz.idor.enabled", true),
+                intEntry("graphql.authz.idor.maxIds", 20),
+                boolEntry("graphql.dos.enabled", true),
+                boolEntry("graphql.introspection.bypass", true),
+                boolEntry("graphql.oob.enabled", true),
+                intEntry("graphql.perHostDelay", 500)
         ));
 
         // XXE Scanner
@@ -134,19 +149,6 @@ public class ScanConfigDialog extends JDialog {
                 boolEntry("xxe.xinclude.enabled", true),
                 boolEntry("xxe.contentTypeConversion.enabled", true),
                 intEntry("xxe.perHostDelay", 500)
-        ));
-
-        // NoSQL Injection
-        KNOWN_CONFIGS.put("nosqli-scanner", List.of(
-                boolEntry("nosqli.authBypass.enabled", true),
-                boolEntry("nosqli.error.enabled", true),
-                boolEntry("nosqli.boolean.enabled", true),
-                boolEntry("nosqli.time.enabled", true),
-                boolEntry("nosqli.where.enabled", true),
-                boolEntry("nosqli.oob.enabled", true),
-                boolEntry("nosqli.ssji.enabled", true),
-                intEntry("nosqli.time.threshold", 4000),
-                intEntry("nosqli.perHostDelay", 500)
         ));
 
         // CORS Misconfiguration

@@ -42,11 +42,10 @@ public class SecurityHeaderAnalyzer implements ScanModule {
     private static final Map<String, String> REQUIRED_HEADERS = Map.ofEntries(
             Map.entry("Strict-Transport-Security", "Prevents MITM downgrade attacks. Recommended: max-age=31536000; includeSubDomains"),
             Map.entry("X-Content-Type-Options", "Prevents MIME-sniffing. Should be 'nosniff'"),
-            Map.entry("X-Frame-Options", "Prevents clickjacking. Should be 'DENY' or 'SAMEORIGIN'"),
+            Map.entry("X-Frame-Options", "Prevents clickjacking. Should be 'DENY' or 'SAMEORIGIN'. Supplement with CSP frame-ancestors"),
             Map.entry("Content-Security-Policy", "Prevents XSS and injection attacks"),
             Map.entry("Referrer-Policy", "Controls information leakage via Referer header"),
             Map.entry("Permissions-Policy", "Controls browser feature access (camera, microphone, geolocation, etc.)"),
-            Map.entry("X-XSS-Protection", "Should be '0' (disabled) as CSP supersedes it. The '1; mode=block' option can itself introduce vulnerabilities."),
             Map.entry("Cross-Origin-Opener-Policy", "Prevents cross-origin window access. Recommended: same-origin"),
             Map.entry("Cross-Origin-Resource-Policy", "Controls cross-origin resource loading"),
             Map.entry("Cross-Origin-Embedder-Policy", "Required for SharedArrayBuffer/high-res timers")
@@ -108,9 +107,13 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         // Only do full header analysis once per host
         boolean firstTimeHost = analyzedHosts.putIfAbsent(host, Boolean.TRUE) == null;
 
+        // Use merge to preserve ALL values for multi-valued headers (e.g., multiple
+        // Content-Security-Policy or Set-Cookie headers). Values are joined with \n
+        // so downstream checks analyze every header, not just the last one.
         Map<String, String> responseHeaderMap = new LinkedHashMap<>();
         for (var h : response.headers()) {
-            responseHeaderMap.put(h.name().toLowerCase(), h.value());
+            responseHeaderMap.merge(h.name().toLowerCase(), h.value(),
+                    (existing, newVal) -> existing + "\n" + newVal);
         }
 
         List<HeaderFinding> hostFindings = headerFindings.computeIfAbsent(host,
@@ -172,6 +175,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                                 Severity.INFO, Confidence.CERTAIN)
                         .url(url)
                         .evidence(infoHeader + ": " + value)
+                        .responseEvidence(infoHeader + ": " + value)
                         .description("Server/technology version disclosed via response header. "
                                 + "Attackers can use this to identify known vulnerabilities.")
                         .build());
@@ -196,6 +200,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             Severity.HIGH, Confidence.CERTAIN)
                     .url(url)
                     .evidence("Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true")
+                    .responseEvidence(acao)
                     .description("Dangerous CORS config. Any origin can make credentialed requests. "
                             + "Browsers actually block this combo, but it indicates a misconfigured server.")
                     .build());
@@ -205,6 +210,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             Severity.INFO, Confidence.CERTAIN)
                     .url(url)
                     .evidence("Access-Control-Allow-Origin: *")
+                    .responseEvidence(acao)
                     .description("Wildcard origin without credentials is often acceptable for public APIs.")
                     .build());
         } else if (acao.equalsIgnoreCase("null") && allowsCreds) {
@@ -213,6 +219,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             Severity.HIGH, Confidence.CERTAIN)
                     .url(url)
                     .evidence("Access-Control-Allow-Origin: null with credentials")
+                    .responseEvidence(acao)
                     .description("Reflects 'null' origin with credentials. Sandboxed iframes can exploit this.")
                     .build());
         }
@@ -230,6 +237,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             Severity.MEDIUM, Confidence.CERTAIN)
                     .url(url)
                     .evidence("CSP contains 'unsafe-inline'")
+                    .responseEvidence("'unsafe-inline'")
                     .description("unsafe-inline allows inline scripts/styles, significantly weakening XSS protection.")
                     .build());
         }
@@ -240,6 +248,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             Severity.MEDIUM, Confidence.CERTAIN)
                     .url(url)
                     .evidence("CSP contains 'unsafe-eval'")
+                    .responseEvidence("'unsafe-eval'")
                     .description("unsafe-eval allows eval(), new Function(), etc. Can be used to execute injected code.")
                     .build());
         }
@@ -255,6 +264,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                                 Severity.MEDIUM, Confidence.CERTAIN)
                         .url(url)
                         .evidence(directive)
+                        .responseEvidence(directive)
                         .description("Wildcard (*) source allows loading resources from any origin.")
                         .build());
             }
@@ -277,6 +287,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             .url(url)
                             .evidence("CSP directive '" + trimmed.split("\\s+")[0]
                                     + "' allows " + cdn + " which can host arbitrary JavaScript")
+                            .responseEvidence(cdn)
                             .description("CDN " + cdn + " allows arbitrary file hosting. Attackers can host "
                                     + "malicious JS on this CDN to bypass CSP.")
                             .build());
@@ -285,13 +296,15 @@ public class SecurityHeaderAnalyzer implements ScanModule {
             }
         }
 
-        // Check for data: or blob: in script-src
-        if (csp.contains("script-src") && (csp.contains("data:") || csp.contains("blob:"))) {
+        // Check for data: or blob: specifically within script-src directive
+        String scriptSrcDirective = extractDirective(csp, "script-src");
+        if (scriptSrcDirective != null && (scriptSrcDirective.contains("data:") || scriptSrcDirective.contains("blob:"))) {
             findings.add(Finding.builder("header-analyzer",
                             "CSP script-src allows data: or blob: URIs",
                             Severity.MEDIUM, Confidence.CERTAIN)
                     .url(url)
                     .evidence("script-src includes data: or blob: scheme")
+                    .responseEvidence(csp)
                     .description("data: and blob: URIs in script-src can be used to bypass CSP via injection.")
                     .build());
         }
@@ -318,6 +331,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                                     Severity.MEDIUM, Confidence.CERTAIN)
                             .url(url)
                             .evidence("Set-Cookie: " + value)
+                            .responseEvidence(value)
                             .description("Cookie '" + cookieName + "' appears session-related but lacks Secure flag. "
                                     + "May be sent over unencrypted HTTP.")
                             .build());
@@ -329,6 +343,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                                     Severity.MEDIUM, Confidence.CERTAIN)
                             .url(url)
                             .evidence("Set-Cookie: " + value)
+                            .responseEvidence(value)
                             .description("Cookie '" + cookieName + "' appears session-related but lacks HttpOnly flag. "
                                     + "Accessible to JavaScript, increasing XSS impact.")
                             .build());
@@ -340,6 +355,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                                     Severity.LOW, Confidence.CERTAIN)
                             .url(url)
                             .evidence("Set-Cookie: " + value)
+                            .responseEvidence(value)
                             .description("Cookie '" + cookieName + "' lacks SameSite attribute. "
                                     + "May be vulnerable to CSRF attacks in older browsers.")
                             .build());
@@ -349,6 +365,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                                     Severity.MEDIUM, Confidence.CERTAIN)
                             .url(url)
                             .evidence("Set-Cookie: " + value)
+                            .responseEvidence(value)
                             .description("SameSite=None requires Secure flag. Without it, the cookie will be rejected by modern browsers.")
                             .build());
                 }
@@ -371,6 +388,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                                 Severity.LOW, Confidence.CERTAIN)
                         .url(url)
                         .evidence("Strict-Transport-Security: " + hsts)
+                        .responseEvidence(hsts)
                         .description("HSTS max-age is " + maxAge + " seconds (< 6 months). "
                                 + "Recommended: at least 31536000 (1 year).")
                         .build());
@@ -384,9 +402,28 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             Severity.INFO, Confidence.CERTAIN)
                     .url(url)
                     .evidence("Strict-Transport-Security: " + hsts)
+                    .responseEvidence(hsts)
                     .description("HSTS does not include subdomains. Subdomains may be accessed over HTTP.")
                     .build());
         }
+    }
+
+    /**
+     * Extracts a specific CSP directive's value from a full CSP string.
+     * Returns null if the directive is not present.
+     * E.g., extractDirective("default-src 'self'; script-src cdn.example.com data:", "script-src")
+     *   → "script-src cdn.example.com data:"
+     */
+    private static String extractDirective(String csp, String directiveName) {
+        if (csp == null) return null;
+        // CSP directives are separated by ';'
+        for (String directive : csp.split(";")) {
+            String trimmed = directive.trim();
+            if (trimmed.toLowerCase().startsWith(directiveName.toLowerCase())) {
+                return trimmed;
+            }
+        }
+        return null;
     }
 
     private String extractCookieName(String setCookieValue) {

@@ -227,7 +227,7 @@ public class ModuleListPanel extends JPanel {
         return entry;
     }
 
-    private void selectModule(String moduleId) {
+    public void selectModule(String moduleId) {
         selectedModuleId = moduleId;
 
         // Update visual selection

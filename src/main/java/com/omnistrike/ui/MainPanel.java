@@ -4,8 +4,10 @@ import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.*;
 import com.omnistrike.model.Finding;
 import com.omnistrike.model.ScanModule;
+import com.omnistrike.model.Severity;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.ui.modules.AiModulePanel;
+import com.omnistrike.ui.modules.DeserModulePanel;
 import com.omnistrike.ui.modules.GenericModulePanel;
 
 import javax.swing.*;
@@ -27,6 +29,7 @@ public class MainPanel extends JPanel {
     private final ActiveScanExecutor executor;
     private final TrafficInterceptor interceptor;
     private final CollaboratorManager collaboratorManager;
+    private final SessionKeepAlive sessionKeepAlive;
     private final MontoyaApi api;
     private final LogPanel logPanel;
 
@@ -36,6 +39,7 @@ public class MainPanel extends JPanel {
     private final ModuleListPanel moduleListPanel;
     private final JTextField scopeField;
     private final JTextField threadField;
+    private final JTextField rateLimitField;
     private final JToggleButton startStopBtn;
     private final JLabel statusLabel;
     private final JLabel threadStatusLabel;
@@ -48,37 +52,56 @@ public class MainPanel extends JPanel {
     private final FindingsOverviewPanel passiveFindingsPanel;
     private final RequestResponsePanel requestResponsePanel;
 
+    // Custom module panel for deserializer (exposed for context menu "Send to Deserializer")
+    private DeserModulePanel deserModulePanel;
+
+    // Stats bar severity count labels
+    private final JLabel critLabel;
+    private final JLabel highLabel;
+    private final JLabel medLabel;
+    private final JLabel lowLabel;
+    private final JLabel infoLabel;
+    private final JLabel totalLabel;
+
+    // Scan progress bar
+    private final JProgressBar progressBar;
+
+    // Session keep-alive status label
+    private final JLabel sessionStatusLabel;
+
     // Default border for thread field (saved for resetting after validation)
     private final Border defaultThreadFieldBorder;
 
     public MainPanel(ModuleRegistry registry, FindingsStore findingsStore, ScopeManager scopeManager,
                      ActiveScanExecutor executor, TrafficInterceptor interceptor,
-                     CollaboratorManager collaboratorManager, MontoyaApi api) {
+                     CollaboratorManager collaboratorManager, SessionKeepAlive sessionKeepAlive,
+                     MontoyaApi api) {
         this.registry = registry;
         this.findingsStore = findingsStore;
         this.scopeManager = scopeManager;
         this.executor = executor;
         this.interceptor = interceptor;
         this.collaboratorManager = collaboratorManager;
+        this.sessionKeepAlive = sessionKeepAlive;
         this.api = api;
         this.logPanel = new LogPanel();
 
         setLayout(new BorderLayout());
 
-        // ============ TOP BAR ============
-        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 5));
-        topBar.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY),
-                BorderFactory.createEmptyBorder(5, 5, 5, 5)));
+        // ============ TOP AREA (2 rows + stats bar) ============
+        JPanel topContainer = new JPanel();
+        topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
+        topContainer.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY));
 
-        topBar.add(new JLabel("Target Scope:"));
+        // --- Row 1: Scope, Threads, Rate Limit ---
+        JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
+
+        row1.add(new JLabel("Target Scope:"));
         scopeField = new JTextField(30);
         scopeField.setToolTipText("Comma-separated target domains (e.g., example.com, api.example.com). Used for automated scanning and site map scraping.");
-
-        // Placeholder text to clarify scope field purpose
         scopeField.putClientProperty("JTextField.placeholderText",
                 "e.g. example.com, api.example.com");
-        topBar.add(scopeField);
+        row1.add(scopeField);
 
         // Live-sync scope field to ScopeManager so features like Scrape Site Map work without pressing Start
         scopeField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
@@ -96,7 +119,7 @@ public class MainPanel extends JPanel {
             }
         });
 
-        topBar.add(new JLabel("Threads:"));
+        row1.add(new JLabel("Threads:"));
         threadField = new JTextField("5", 3);
         threadField.setToolTipText("Number of concurrent scan threads (1-100). Higher values increase speed but also load.");
         defaultThreadFieldBorder = threadField.getBorder();
@@ -110,39 +133,78 @@ public class MainPanel extends JPanel {
             @Override
             public void changedUpdate(javax.swing.event.DocumentEvent e) { validateThreadField(); }
         });
-        topBar.add(threadField);
+        row1.add(threadField);
 
-        startStopBtn = new JToggleButton("Start");
+        row1.add(new JLabel("Rate Limit (ms):"));
+        rateLimitField = new JTextField("0", 4);
+        rateLimitField.setToolTipText("Global delay (ms) before each scan task. 0 = no limit. Applies to all modules. Per-module delays stack on top of this.");
+        rateLimitField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            @Override
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+            @Override
+            public void removeUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+            @Override
+            public void changedUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+        });
+        row1.add(rateLimitField);
+
+        topContainer.add(row1);
+
+        // --- Row 2: Buttons, Status, Thread Status, Collaborator, Progress Bar ---
+        JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
+
+        startStopBtn = new JToggleButton("Start Auto-Scan");
         startStopBtn.setBackground(new Color(50, 150, 50));
         startStopBtn.setForeground(Color.WHITE);
         startStopBtn.setFocusPainted(false);
-        startStopBtn.setToolTipText("Start or stop the active scanning engine");
+        startStopBtn.setToolTipText("Start or stop automated scanning of all in-scope proxied traffic");
         startStopBtn.addActionListener(e -> toggleScanning());
-        topBar.add(startStopBtn);
+        row2.add(startStopBtn);
 
-        // Select All / Deselect All buttons for modules
-        JButton selectAllBtn = new JButton("Select All");
-        selectAllBtn.setToolTipText("Enable all scan modules");
-        selectAllBtn.addActionListener(e -> setAllModulesEnabled(true));
-        topBar.add(selectAllBtn);
+        JButton stopScansBtn = new JButton("Stop Manual Scans");
+        stopScansBtn.setBackground(new Color(200, 50, 50));
+        stopScansBtn.setForeground(Color.WHITE);
+        stopScansBtn.setFocusPainted(false);
+        stopScansBtn.setToolTipText("Stop all scans launched via right-click context menu");
+        stopScansBtn.addActionListener(e -> {
+            int stopped = interceptor.stopManualScans();
+            int purged = executor.cancelAll();
+            if (stopped > 0 || purged > 0) {
+                logPanel.log("INFO", "Framework",
+                        "Stopped " + stopped + " scan task(s), purged " + purged + " queued.");
+            } else {
+                logPanel.log("INFO", "Framework", "No scans running.");
+            }
+            MainPanel.this.progressBar.setIndeterminate(false);
+            MainPanel.this.progressBar.setVisible(false);
+        });
+        row2.add(stopScansBtn);
 
-        JButton deselectAllBtn = new JButton("Deselect All");
-        deselectAllBtn.setToolTipText("Disable all scan modules");
-        deselectAllBtn.addActionListener(e -> setAllModulesEnabled(false));
-        topBar.add(deselectAllBtn);
+        // Time-based testing toggle — disabled by default, must be explicitly enabled.
+        // Controls ALL time-based blind injection tests (SQLi sleep, CmdI sleep/ping).
+        JCheckBox timeBasedCheckbox = new JCheckBox("Time-Based Testing");
+        timeBasedCheckbox.setSelected(false); // OFF by default
+        timeBasedCheckbox.setToolTipText(
+                "Enable time-based blind injection tests (SQLi SLEEP, CmdI sleep/ping). "
+                + "These tests are slow and can cause delays on the target server. "
+                + "Disabled by default — tick to enable.");
+        timeBasedCheckbox.addActionListener(e -> {
+            boolean selected = timeBasedCheckbox.isSelected();
+            TimingLock.setEnabled(selected);
+            logPanel.log("INFO", "Framework",
+                    "Time-based blind testing " + (selected ? "ENABLED" : "DISABLED"));
+        });
+        row2.add(timeBasedCheckbox);
 
         statusLabel = new JLabel("Stopped");
         statusLabel.setForeground(Color.RED);
         statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD));
-        topBar.add(Box.createHorizontalStrut(10));
-        topBar.add(statusLabel);
+        row2.add(statusLabel);
 
-        // Status label showing active thread count and queue size
         threadStatusLabel = new JLabel("Threads: 0 active | Queue: 0");
         threadStatusLabel.setForeground(Color.GRAY);
         threadStatusLabel.setFont(threadStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
-        topBar.add(Box.createHorizontalStrut(10));
-        topBar.add(threadStatusLabel);
+        row2.add(threadStatusLabel);
 
         // Collaborator status
         String collabStatus = collaboratorManager != null && collaboratorManager.isAvailable()
@@ -150,10 +212,111 @@ public class MainPanel extends JPanel {
         JLabel collabLabel = new JLabel(collabStatus);
         collabLabel.setForeground(collaboratorManager != null && collaboratorManager.isAvailable()
                 ? new Color(50, 150, 50) : Color.GRAY);
-        topBar.add(Box.createHorizontalStrut(10));
-        topBar.add(collabLabel);
+        row2.add(collabLabel);
 
-        add(topBar, BorderLayout.NORTH);
+        // Progress bar (visible only while scanning)
+        progressBar = new JProgressBar();
+        progressBar.setPreferredSize(new Dimension(150, 16));
+        progressBar.setStringPainted(false);
+        progressBar.setForeground(new Color(135, 206, 250)); // sky blue
+        progressBar.setVisible(false);
+        row2.add(progressBar);
+
+        topContainer.add(row2);
+
+        // --- Row 3: Session Keep-Alive controls ---
+        JPanel sessionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
+
+        JCheckBox sessionCheckbox = new JCheckBox("Session Keep-Alive");
+        sessionCheckbox.setSelected(false);
+        sessionCheckbox.setToolTipText(
+                "Periodically replay a saved login request to keep session cookies fresh. "
+                + "Right-click any request > 'Set as Session Login Request' to configure.");
+        sessionRow.add(sessionCheckbox);
+
+        sessionRow.add(new JLabel("Interval:"));
+        JComboBox<String> intervalCombo = new JComboBox<>(new String[]{
+                "1 min", "2 min", "3 min", "5 min", "10 min", "15 min", "30 min"});
+        intervalCombo.setSelectedItem("5 min");
+        intervalCombo.setToolTipText("How often to replay the login request");
+        sessionRow.add(intervalCombo);
+
+        sessionStatusLabel = new JLabel("Session: Not configured");
+        sessionStatusLabel.setForeground(Color.GRAY);
+        sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+        sessionRow.add(sessionStatusLabel);
+
+        // Wire checkbox to SessionKeepAlive
+        sessionCheckbox.addActionListener(e -> {
+            boolean selected = sessionCheckbox.isSelected();
+            if (selected && !sessionKeepAlive.hasLoginRequest()) {
+                JOptionPane.showMessageDialog(this,
+                        "No login request configured.\n"
+                        + "Right-click any request in Burp and select\n"
+                        + "'Set as Session Login Request' first.",
+                        "Session Keep-Alive", JOptionPane.INFORMATION_MESSAGE);
+                sessionCheckbox.setSelected(false);
+                return;
+            }
+            sessionKeepAlive.setEnabled(selected);
+            logPanel.log("INFO", "SessionKeepAlive",
+                    selected ? "Enabled" : "Disabled");
+        });
+
+        // Wire interval combo to SessionKeepAlive
+        intervalCombo.addActionListener(e -> {
+            String selected = (String) intervalCombo.getSelectedItem();
+            if (selected != null) {
+                int minutes = Integer.parseInt(selected.split(" ")[0]);
+                sessionKeepAlive.setIntervalMinutes(minutes);
+            }
+        });
+
+        // Wire status callback from SessionKeepAlive to update label
+        sessionKeepAlive.setStatusCallback(status -> {
+            SwingUtilities.invokeLater(() -> {
+                sessionStatusLabel.setText(status);
+                if (status.contains("ERROR")) {
+                    sessionStatusLabel.setForeground(Color.RED);
+                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.BOLD, 11f));
+                } else if (status.contains("Active")) {
+                    sessionStatusLabel.setForeground(new Color(50, 150, 50));
+                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                } else if (status.contains("Disabled")) {
+                    sessionStatusLabel.setForeground(new Color(200, 150, 50));
+                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                } else {
+                    sessionStatusLabel.setForeground(Color.GRAY);
+                    sessionStatusLabel.setFont(sessionStatusLabel.getFont().deriveFont(Font.PLAIN, 11f));
+                }
+            });
+        });
+
+        topContainer.add(sessionRow);
+
+        // --- Stats Bar: severity count badges ---
+        JPanel statsBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+        statsBar.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
+
+        critLabel = createSeverityBadge("CRITICAL: 0", new Color(180, 30, 30), Color.WHITE);
+        highLabel = createSeverityBadge("HIGH: 0", new Color(220, 80, 40), Color.WHITE);
+        medLabel = createSeverityBadge("MEDIUM: 0", new Color(230, 160, 30), Color.BLACK);
+        lowLabel = createSeverityBadge("LOW: 0", new Color(70, 140, 200), Color.WHITE);
+        infoLabel = createSeverityBadge("INFO: 0", new Color(130, 130, 130), Color.WHITE);
+
+        statsBar.add(critLabel);
+        statsBar.add(highLabel);
+        statsBar.add(medLabel);
+        statsBar.add(lowLabel);
+        statsBar.add(infoLabel);
+        statsBar.add(new JLabel("  |  "));
+        totalLabel = new JLabel("Total: 0");
+        totalLabel.setFont(totalLabel.getFont().deriveFont(Font.BOLD));
+        statsBar.add(totalLabel);
+
+        topContainer.add(statsBar);
+
+        add(topContainer, BorderLayout.NORTH);
 
         // ============ LEFT SIDEBAR ============
         moduleListPanel = new ModuleListPanel(registry, findingsStore);
@@ -168,6 +331,9 @@ public class MainPanel extends JPanel {
             JPanel panel;
             if ("ai-vuln-analyzer".equals(module.getId()) && module instanceof AiVulnAnalyzer aiModule) {
                 panel = new AiModulePanel(aiModule, findingsStore, registry, api, scopeManager);
+            } else if ("deser-scanner".equals(module.getId())) {
+                deserModulePanel = new DeserModulePanel(api, findingsStore);
+                panel = deserModulePanel;
             } else {
                 panel = new GenericModulePanel(module.getId(), module.getName(), findingsStore, api);
             }
@@ -219,6 +385,7 @@ public class MainPanel extends JPanel {
         passiveFindingsPanel = new FindingsOverviewPanel(findingsStore, passiveFilter);
         passiveFindingsPanel.setApi(api);
         requestResponsePanel = new RequestResponsePanel(findingsStore);
+        requestResponsePanel.setApi(api);
         bottomTabs.addTab("Active Findings", activeFindingsPanel);
         bottomTabs.addTab("Passive Findings", passiveFindingsPanel);
         bottomTabs.addTab("Request/Response", requestResponsePanel);
@@ -249,12 +416,31 @@ public class MainPanel extends JPanel {
                     }));
         }
 
-        // Timer to periodically update finding counts and thread status
+        // Timer to periodically update finding counts, thread status, stats bar, and session status
         updateTimer = new Timer(3000, e -> {
             moduleListPanel.updateFindingsCounts();
             updateThreadStatus();
+            updateStatsBar();
+            updateSessionStatus();
         });
         updateTimer.start();
+    }
+
+    /**
+     * Applies the global rate limit from the UI field to the executor.
+     */
+    private void applyRateLimit() {
+        String text = rateLimitField.getText().trim();
+        if (text.isEmpty()) {
+            executor.setRateLimitMs(0);
+            return;
+        }
+        try {
+            int value = Integer.parseInt(text);
+            executor.setRateLimitMs(value);
+        } catch (NumberFormatException ignored) {
+            // Invalid input — keep current value
+        }
     }
 
     /**
@@ -291,17 +477,18 @@ public class MainPanel extends JPanel {
             int active = executor.getActiveCount();
             int queue = executor.getQueueSize();
             threadStatusLabel.setText("Threads: " + active + " active | Queue: " + queue);
-        });
-    }
 
-    /**
-     * Enables or disables all modules in the registry and refreshes the sidebar.
-     */
-    private void setAllModulesEnabled(boolean enabled) {
-        for (ScanModule module : registry.getAllModules()) {
-            registry.setEnabled(module.getId(), enabled);
-        }
-        moduleListPanel.rebuildModuleList();
+            // Show progress bar when there are active threads, hide when idle
+            if (active > 0) {
+                if (!progressBar.isVisible()) {
+                    progressBar.setIndeterminate(true);
+                    progressBar.setVisible(true);
+                }
+            } else if (!startStopBtn.isSelected()) {
+                progressBar.setIndeterminate(false);
+                progressBar.setVisible(false);
+            }
+        });
     }
 
     private void toggleScanning() {
@@ -331,10 +518,12 @@ public class MainPanel extends JPanel {
             }
 
             interceptor.setRunning(true);
-            startStopBtn.setText("Stop");
+            startStopBtn.setText("Stop Auto-Scan");
             startStopBtn.setBackground(new Color(200, 50, 50));
             statusLabel.setText("Running");
             statusLabel.setForeground(new Color(50, 150, 50));
+            progressBar.setIndeterminate(true);
+            progressBar.setVisible(true);
 
             logPanel.log("INFO", "Framework", "Scanner started. Scope: " + scope
                     + " | Threads: " + executor.getThreadPoolSize());
@@ -342,10 +531,13 @@ public class MainPanel extends JPanel {
         } else {
             // Stop scanning
             interceptor.setRunning(false);
-            startStopBtn.setText("Start");
+            executor.cancelAll();
+            startStopBtn.setText("Start Auto-Scan");
             startStopBtn.setBackground(new Color(50, 150, 50));
             statusLabel.setText("Stopped");
             statusLabel.setForeground(Color.RED);
+            progressBar.setIndeterminate(false);
+            progressBar.setVisible(false);
 
             logPanel.log("INFO", "Framework", "Scanner stopped.");
         }
@@ -374,11 +566,58 @@ public class MainPanel extends JPanel {
                 ((GenericModulePanel) panel).stopTimers();
             } else if (panel instanceof AiModulePanel) {
                 ((AiModulePanel) panel).stopTimers();
+            } else if (panel instanceof DeserModulePanel) {
+                ((DeserModulePanel) panel).stopTimers();
             }
         }
     }
 
+    private static JLabel createSeverityBadge(String text, Color bg, Color fg) {
+        JLabel label = new JLabel(text);
+        label.setOpaque(true);
+        label.setBackground(bg);
+        label.setForeground(fg);
+        label.setFont(label.getFont().deriveFont(Font.BOLD, 11f));
+        label.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
+        return label;
+    }
+
+    /**
+     * Polls the SessionKeepAlive status and updates the label.
+     * Acts as a fallback in case the callback-based update misses an event.
+     */
+    private void updateSessionStatus() {
+        SwingUtilities.invokeLater(() -> {
+            String status = sessionKeepAlive.getStatusMessage();
+            sessionStatusLabel.setText(status);
+        });
+    }
+
+    private void updateStatsBar() {
+        SwingUtilities.invokeLater(() -> {
+            critLabel.setText("CRITICAL: " + findingsStore.getCountBySeverity(Severity.CRITICAL));
+            highLabel.setText("HIGH: " + findingsStore.getCountBySeverity(Severity.HIGH));
+            medLabel.setText("MEDIUM: " + findingsStore.getCountBySeverity(Severity.MEDIUM));
+            lowLabel.setText("LOW: " + findingsStore.getCountBySeverity(Severity.LOW));
+            infoLabel.setText("INFO: " + findingsStore.getCountBySeverity(Severity.INFO));
+            totalLabel.setText("Total: " + findingsStore.getCount());
+        });
+    }
+
     public LogPanel getLogPanel() {
         return logPanel;
+    }
+
+    /** Returns the custom DeserModulePanel, or null if not yet created. */
+    public DeserModulePanel getDeserModulePanel() {
+        return deserModulePanel;
+    }
+
+    /** Programmatically switches to the given module's detail panel. */
+    public void selectModule(String moduleId) {
+        SwingUtilities.invokeLater(() -> {
+            cardLayout.show(moduleDetailContainer, moduleId);
+            moduleListPanel.selectModule(moduleId);
+        });
     }
 }

@@ -8,6 +8,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PayloadEncoder;
 
 import com.omnistrike.model.*;
 
@@ -94,18 +95,30 @@ public class HttpParamPollutionScanner implements ScanModule {
     }
 
     @Override
+    public List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        HttpRequest request = requestResponse.request();
+        String urlPath = extractPath(request.url());
+        List<HppTarget> targets = extractTargets(request);
+        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        return runHppTargets(requestResponse, targets, urlPath);
+    }
+
+    @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
-
-        // Extract testable parameters (URL query and body params)
         List<HppTarget> targets = extractTargets(request);
+        return runHppTargets(requestResponse, targets, urlPath);
+    }
 
+    private List<Finding> runHppTargets(HttpRequestResponse requestResponse,
+                                         List<HppTarget> targets, String urlPath) {
         for (HppTarget target : targets) {
             if (!dedup.markIfNew("hpp", urlPath, target.name)) continue;
 
             try {
-                String url = request.url();
+                String url = requestResponse.request().url();
 
                 // Phase 1: Duplicate parameter with canary
                 if (config.getBool("hpp.duplicateCanary.enabled", true)) {
@@ -139,6 +152,12 @@ public class HttpParamPollutionScanner implements ScanModule {
 
     private void testDuplicateCanary(HttpRequestResponse original, HppTarget target,
                                       String url, String urlPath) throws InterruptedException {
+        // Get baseline response for comparison
+        HttpRequestResponse baseline = sendRequest(original.request());
+        if (baseline == null || baseline.response() == null) return;
+        String baselineBody = baseline.response().bodyToString();
+        if (baselineBody == null) baselineBody = "";
+
         // Append duplicate parameter: param=original&param=canary
         HttpRequest modified = appendDuplicateParam(original.request(), target, CANARY);
         if (modified == null) return;
@@ -147,7 +166,9 @@ public class HttpParamPollutionScanner implements ScanModule {
         if (result == null || result.response() == null) return;
 
         String body = result.response().bodyToString();
-        if (body != null && body.contains(CANARY)) {
+        // Only report if canary appears in response but NOT in baseline, and not an error page
+        if (body != null && body.contains(CANARY) && !baselineBody.contains(CANARY)
+                && result.response().statusCode() < 400) {
             findingsStore.addFinding(Finding.builder("hpp",
                             "HTTP Parameter Pollution: Duplicate Parameter Accepted",
                             Severity.MEDIUM, Confidence.FIRM)
@@ -164,6 +185,8 @@ public class HttpParamPollutionScanner implements ScanModule {
                             + "requests with duplicates (400 Bad Request) or consistently use only the first "
                             + "occurrence. Ensure front-end proxies and back-end servers agree on parameter "
                             + "precedence.")
+                    .payload(target.name + "=" + target.originalValue + "&" + target.name + "=" + CANARY)
+                    .responseEvidence(CANARY)
                     .requestResponse(result)
                     .build());
         }
@@ -204,14 +227,21 @@ public class HttpParamPollutionScanner implements ScanModule {
         int modLen = getBodyLength(result);
         String modBody = result.response().bodyToString();
 
-        // Check if response changed meaningfully (different status, body length change, new content)
+        // Check for structural proof of privilege escalation, not just response diff
         boolean statusChanged = modStatus != baselineStatus;
-        boolean bodyLenChanged = baselineLen > 0 && Math.abs(modLen - baselineLen) > (baselineLen * 0.10);
-        boolean hasEscalationIndicator = modBody != null && (
-                modBody.contains("admin") || modBody.contains("privilege")
-                        || modBody.contains("granted") || modBody.contains("elevated"));
+        boolean bodyLenChanged = baselineLen > 0 && Math.abs(modLen - baselineLen) > (baselineLen * 0.20);
+        boolean statusUpgrade = statusChanged && modStatus == 200 && baselineStatus >= 400;
 
-        if (statusChanged || bodyLenChanged || hasEscalationIndicator) {
+        // Structural privilege indicators
+        String baselineBody = baselineResult.response().bodyToString();
+        if (baselineBody == null) baselineBody = "";
+        String privIndicator = findPrivilegeIndicator(modBody, baselineBody, result);
+        boolean hasStructuralProof = privIndicator != null;
+
+        // Status upgrade (403→200) WITH functional content = strong indicator
+        boolean confirmedEscalation = statusUpgrade && hasStructuralProof;
+
+        if (confirmedEscalation) {
             findingsStore.addFinding(Finding.builder("hpp",
                             "HTTP Parameter Pollution: Potential Privilege Escalation",
                             Severity.HIGH, Confidence.FIRM)
@@ -219,16 +249,35 @@ public class HttpParamPollutionScanner implements ScanModule {
                     .evidence("Original: " + target.name + "=" + target.originalValue + " (status "
                             + baselineStatus + ", " + baselineLen + " bytes) | "
                             + "With duplicate " + target.name + "=" + escalationValue + ": status "
-                            + modStatus + ", " + modLen + " bytes")
+                            + modStatus + ", " + modLen + " bytes | " + privIndicator)
                     .description("Sending a duplicate parameter '" + target.name + "' with a conflicting "
                             + "privilege value ('" + escalationValue + "') causes the server to respond "
-                            + "differently. If the application's front-end validates the first value ('"
-                            + target.originalValue + "') but the back-end processes the last value ('"
-                            + escalationValue + "'), this HPP vector can escalate privileges, bypass access "
-                            + "controls, or modify authorization decisions.")
+                            + "with privilege-elevated content. Structural indicators confirm the response "
+                            + "contains admin-level functionality.")
                     .remediation("Reject requests with duplicate parameters for security-sensitive fields. "
                             + "Validate authorization server-side using session state, not client-supplied "
                             + "parameters. Never use request parameters for role or permission decisions.")
+                    .payload(target.name + "=" + target.originalValue + "&" + target.name + "=" + escalationValue)
+                    .requestResponse(result)
+                    .build());
+        } else if (statusUpgrade || (statusChanged && bodyLenChanged)) {
+            // Response changed but no structural proof — downgrade to INFO
+            findingsStore.addFinding(Finding.builder("hpp",
+                            "HTTP Parameter Pollution: Parameter Precedence Detected (Manual Verification Required)",
+                            Severity.INFO, Confidence.TENTATIVE)
+                    .url(url).parameter(target.name)
+                    .evidence("Original: " + target.name + "=" + target.originalValue + " (status "
+                            + baselineStatus + ", " + baselineLen + " bytes) | "
+                            + "With duplicate " + target.name + "=" + escalationValue + ": status "
+                            + modStatus + ", " + modLen + " bytes"
+                            + " | Parameter precedence detected (server uses LAST value) — manual verification required to confirm privilege escalation")
+                    .description("Sending a duplicate parameter '" + target.name + "' with a conflicting "
+                            + "privilege value ('" + escalationValue + "') caused a different response, "
+                            + "but no structural indicators of privilege escalation were detected. "
+                            + "The response change may be a different error page, redirect, or unrelated behavior.")
+                    .remediation("Reject requests with duplicate parameters for security-sensitive fields. "
+                            + "Validate authorization server-side using session state, not client-supplied parameters.")
+                    .payload(target.name + "=" + target.originalValue + "&" + target.name + "=" + escalationValue)
                     .requestResponse(result)
                     .build());
         }
@@ -253,7 +302,11 @@ public class HttpParamPollutionScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
-            if (body != null && body.contains(fullPayload)) {
+            // Skip error responses (WAF blocked it, not bypassed)
+            if (result.response().statusCode() >= 400) { perHostDelay(); continue; }
+            // Check payload is present and NOT HTML-escaped (escaped = safe)
+            if (body != null && body.contains(fullPayload)
+                    && !body.contains(fullPayload.replace("<", "&lt;"))) {
                 findingsStore.addFinding(Finding.builder("hpp",
                                 "HTTP Parameter Pollution: WAF Bypass via Payload Splitting",
                                 Severity.MEDIUM, Confidence.TENTATIVE)
@@ -269,6 +322,8 @@ public class HttpParamPollutionScanner implements ScanModule {
                         .remediation("Implement WAF rules that account for parameter concatenation. Reject "
                                 + "duplicate parameters at the WAF/proxy level. Apply output encoding on "
                                 + "the server side regardless of input validation.")
+                        .payload(target.name + "=" + part1 + "&" + target.name + "=" + part2)
+                        .responseEvidence(fullPayload)
                         .requestResponse(result)
                         .build());
                 return; // One finding per parameter is enough
@@ -322,6 +377,8 @@ public class HttpParamPollutionScanner implements ScanModule {
                     .remediation("Document and enforce consistent parameter handling across all layers "
                             + "(load balancer, WAF, reverse proxy, application server). Reject requests "
                             + "with duplicate parameters for sensitive operations.")
+                    .payload(target.name + "=" + firstValue + "&" + target.name + "=" + lastValue)
+                    .responseEvidence(hasFirst ? firstValue : lastValue)
                     .requestResponse(result)
                     .build());
         }
@@ -373,7 +430,10 @@ public class HttpParamPollutionScanner implements ScanModule {
     private HttpRequest appendDuplicateParamWithValues(HttpRequest request, HppTarget target,
                                                         String firstValue, String secondValue) {
         try {
-            String suffix = target.name + "=" + secondValue;
+            // Encode second value for safe inclusion in query/body — prevents malformed
+            // requests when secondValue contains special chars (e.g., WAF bypass payloads).
+            String encodedSecondValue = PayloadEncoder.encode(secondValue);
+            String suffix = target.name + "=" + encodedSecondValue;
 
             switch (target.location) {
                 case QUERY: {
@@ -381,7 +441,7 @@ public class HttpParamPollutionScanner implements ScanModule {
                     String fullUrl = request.url();
                     // First update the original parameter value
                     HttpRequest modified = request.withUpdatedParameters(
-                            HttpParameter.urlParameter(target.name, firstValue));
+                            HttpParameter.urlParameter(target.name, PayloadEncoder.encode(firstValue)));
                     // Then append the duplicate to the query string
                     String modUrl = modified.url();
                     String separator = modUrl.contains("?") ? "&" : "?";
@@ -391,7 +451,7 @@ public class HttpParamPollutionScanner implements ScanModule {
                 case BODY: {
                     // Modify body directly
                     HttpRequest modified = request.withUpdatedParameters(
-                            HttpParameter.bodyParameter(target.name, firstValue));
+                            HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(firstValue)));
                     String body = modified.bodyToString();
                     if (body == null) body = "";
                     String separator = body.isEmpty() ? "" : "&";
@@ -435,6 +495,45 @@ public class HttpParamPollutionScanner implements ScanModule {
         } catch (Exception e) {
             return 0;
         }
+    }
+
+    // ==================== PRIVILEGE ESCALATION DETECTION ====================
+
+    /**
+     * Checks for structural indicators of privilege escalation in the modified response.
+     * Returns a description of the indicator found, or null if none detected.
+     */
+    private String findPrivilegeIndicator(String modBody, String baselineBody, HttpRequestResponse result) {
+        if (modBody == null || modBody.isEmpty()) return null;
+        String modLower = modBody.toLowerCase();
+        String baseLower = baselineBody != null ? baselineBody.toLowerCase() : "";
+
+        // Admin-specific HTML elements not in baseline
+        String[] adminIndicators = {
+                "/admin", "/dashboard", "/manage", "/settings/admin",
+                "administrator", "superuser", "super_admin",
+                "user management", "manage users", "admin panel",
+                "role: admin", "role\":\"admin", "\"role\":\"admin\"",
+                "access level: admin", "privilege: admin",
+        };
+        for (String indicator : adminIndicators) {
+            if (modLower.contains(indicator) && !baseLower.contains(indicator)) {
+                return "Admin-specific content detected in response: '" + indicator + "'";
+            }
+        }
+
+        // Different or upgraded session cookie
+        for (var h : result.response().headers()) {
+            if (h.name().equalsIgnoreCase("Set-Cookie")) {
+                String cookieVal = h.value().toLowerCase();
+                if (cookieVal.contains("admin") || cookieVal.contains("role")
+                        || cookieVal.contains("privilege")) {
+                    return "Modified session cookie set: " + h.value().substring(0, Math.min(h.value().length(), 100));
+                }
+            }
+        }
+
+        return null;
     }
 
     // ==================== GENERAL HELPERS ====================

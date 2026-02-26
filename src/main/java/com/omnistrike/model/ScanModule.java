@@ -34,6 +34,17 @@ public interface ScanModule {
      */
     List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api);
 
+    /**
+     * Process only a specific parameter. Active scanners should override this
+     * to filter their injection points to just the named parameter.
+     * Default falls back to full scan (for passive modules and scanners where
+     * per-parameter targeting doesn't apply).
+     */
+    default List<Finding> processHttpFlowForParameter(
+            HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
+        return processHttpFlow(requestResponse, api);
+    }
+
     /** Called once when the module is loaded. Perform any setup here. */
     void initialize(MontoyaApi api, ModuleConfig config);
 

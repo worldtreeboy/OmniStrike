@@ -10,6 +10,12 @@ import java.util.regex.Pattern;
 /**
  * Executes LLM prompts via local CLI tools (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI).
  * Each call spawns a fresh process — no shared state, inherently thread-safe.
+ *
+ * SECURITY: The prompt is ALWAYS piped via stdin, never passed as a command-line argument.
+ * Attacker-controlled HTTP response data embedded in prompts could contain shell metacharacters
+ * (& | ; etc.) that cmd.exe /c would interpret, enabling remote code execution on the
+ * pentester's machine. Stdin piping is immune to this because the data never passes through
+ * the shell's command-line parser.
  */
 public class CliBackend {
 
@@ -34,10 +40,11 @@ public class CliBackend {
                     "No CLI binary configured for " + provider.getDisplayName());
         }
 
-        List<String> command = buildCommand(provider, binary, prompt);
-        boolean pipeStdin = needsStdinPipe(provider);
+        List<String> command = buildCommand(provider, binary);
 
-        // On Windows, wrap with cmd.exe /c so .cmd/.bat wrappers (npm globals) are found
+        // On Windows, wrap with cmd.exe /c so .cmd/.bat wrappers (npm globals) are found.
+        // Safe because command arguments never contain attacker-controlled content —
+        // the prompt is always piped via stdin.
         if (IS_WINDOWS && !binary.contains("\\") && !binary.contains("/") && !binary.endsWith(".exe")) {
             command.add(0, "cmd.exe");
             command.add(1, "/c");
@@ -52,12 +59,10 @@ public class CliBackend {
 
             Process process = pb.start();
 
-            // Pipe prompt to stdin if needed
-            if (pipeStdin) {
-                try (OutputStream os = process.getOutputStream()) {
-                    os.write(prompt.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                }
+            // Always pipe the prompt via stdin — never pass as a CLI argument.
+            try (OutputStream os = process.getOutputStream()) {
+                os.write(prompt.getBytes(StandardCharsets.UTF_8));
+                os.flush();
             }
 
             // Read stdout in a separate thread to avoid blocking
@@ -124,7 +129,11 @@ public class CliBackend {
         return "Connected but unexpected response: " + truncate(response, 100);
     }
 
-    private List<String> buildCommand(LlmProvider provider, String binary, String prompt) {
+    /**
+     * Builds the command-line arguments for each CLI provider.
+     * The prompt is NEVER included as an argument — it is always piped via stdin.
+     */
+    private List<String> buildCommand(LlmProvider provider, String binary) {
         List<String> cmd = new ArrayList<>();
         cmd.add(binary);
 
@@ -149,20 +158,16 @@ public class CliBackend {
                 cmd.add("-");
             }
             case CLI_OPENCODE -> {
-                // opencode run <prompt>  (prompt passed as argument, not stdin)
+                // opencode run -  (reads prompt from stdin via - flag)
                 cmd.add("run");
-                cmd.add(prompt);
+                cmd.add("-");
             }
             default -> {
-                // Unknown CLI — just pass prompt as argument
-                cmd.add(prompt);
+                // Unknown CLI — pass stdin flag, most CLIs accept - for stdin
+                cmd.add("-");
             }
         }
         return cmd;
-    }
-
-    private boolean needsStdinPipe(LlmProvider provider) {
-        return provider.usesStdinForPrompt();
     }
 
     private String stripAnsi(String text) {

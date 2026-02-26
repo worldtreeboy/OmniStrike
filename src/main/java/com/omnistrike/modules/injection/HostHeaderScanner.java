@@ -120,9 +120,16 @@ public class HostHeaderScanner implements ScanModule {
         if (collaboratorManager == null || !collaboratorManager.isAvailable()) return;
 
         AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+        AtomicReference<String> sentHost = new AtomicReference<>();
         String collabPayload = collaboratorManager.generatePayload(
                 "host-header", url, "Host", "Password reset poisoning via Host header",
                 interaction -> {
+                    // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
+                    // fires on a 5-second interval so this race is rare, but when it happens the 50ms
+                    // wait is almost always enough for the sending thread to complete its set() call.
+                    for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
                     findingsStore.addFinding(Finding.builder("host-header",
                                     "Host Header Injection: Password Reset Poisoning",
                                     Severity.CRITICAL, Confidence.CERTAIN)
@@ -135,12 +142,14 @@ public class HostHeaderScanner implements ScanModule {
                                     + "the link would leak their reset token to the attacker.")
                             .remediation("Never use the Host header to generate URLs in emails or password reset links. "
                                     + "Use a hardcoded, server-side configured base URL instead.")
-                            .requestResponse(sentRequest.get())
+                            .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
+                            .payload(sentHost.get())
                             .build());
                     api.logging().logToOutput("[Host Header] Password reset poisoning confirmed! " + url);
                 });
 
         if (collabPayload == null) return;
+        sentHost.set(collabPayload);
 
         try {
             HttpRequest modified = original.request()
@@ -157,18 +166,6 @@ public class HostHeaderScanner implements ScanModule {
     // ==================== PHASE 2: ROUTING SSRF ====================
 
     private void testRoutingSsrf(HttpRequestResponse original, String url) throws InterruptedException {
-        // Capture baseline first
-        HttpRequestResponse baseline;
-        try {
-            baseline = api.http().sendRequest(original.request());
-        } catch (Exception e) {
-            return;
-        }
-        if (baseline == null || baseline.response() == null) return;
-
-        int baselineStatus = baseline.response().statusCode();
-        int baselineLen = baseline.response().bodyToString().length();
-
         for (String internalHost : INTERNAL_HOSTS) {
             try {
                 HttpRequest modified = original.request()
@@ -177,30 +174,22 @@ public class HostHeaderScanner implements ScanModule {
                 HttpRequestResponse result = api.http().sendRequest(modified);
                 if (result == null || result.response() == null) continue;
 
-                int resultStatus = result.response().statusCode();
-                int resultLen = result.response().bodyToString().length();
-
-                // Different status code or significantly different body length suggests routing change
-                boolean statusChanged = resultStatus != baselineStatus;
-                boolean bodyChanged = Math.abs(resultLen - baselineLen) > 200;
-
-                if (resultStatus == 200 && (statusChanged || bodyChanged)) {
-                    Severity sev = Severity.HIGH;
-                    Confidence conf = bodyChanged && statusChanged ? Confidence.CERTAIN : Confidence.FIRM;
-
+                // Structural proof: the injected host must appear in a security-sensitive location
+                String sensitiveLocation = findHostInSensitiveLocation(result, internalHost);
+                if (sensitiveLocation != null) {
                     findingsStore.addFinding(Finding.builder("host-header",
                                     "Host Header Injection: Routing to Internal Host (" + internalHost + ")",
-                                    sev, conf)
+                                    Severity.HIGH, Confidence.FIRM)
                             .url(url).parameter("Host")
-                            .evidence("Host: " + internalHost + " | Status: " + resultStatus
-                                    + " (baseline: " + baselineStatus + ") | Body length: " + resultLen
-                                    + " (baseline: " + baselineLen + ")")
-                            .description("Setting the Host header to '" + internalHost + "' caused a different "
-                                    + "response, indicating the server may route requests based on the Host header. "
-                                    + "This could allow access to internal services or admin panels.")
+                            .evidence("Host: " + internalHost + " | " + sensitiveLocation)
+                            .description("Setting the Host header to '" + internalHost + "' caused the "
+                                    + "injected value to appear in a security-sensitive location in the response. "
+                                    + "This confirms the server uses the Host header for routing or URL generation, "
+                                    + "enabling potential access to internal services or SSRF.")
                             .remediation("Configure the web server to reject requests with unexpected Host headers. "
                                     + "Use a whitelist of allowed Host values.")
                             .requestResponse(result)
+                            .payload(internalHost)
                             .build());
                     return;
                 }
@@ -209,6 +198,67 @@ public class HostHeaderScanner implements ScanModule {
             }
             perHostDelay();
         }
+    }
+
+    /**
+     * Checks if the injected host value appears in a security-sensitive location in the response:
+     * (1) Location redirect header, (2) absolute URL in body (href=, src=, action=, url(, content="),
+     * (3) password reset / account verification link in body.
+     * Returns a description of where it was found, or null if not found in any sensitive location.
+     */
+    private String findHostInSensitiveLocation(HttpRequestResponse result, String injectedValue) {
+        // Check Location header
+        for (var h : result.response().headers()) {
+            if (h.name().equalsIgnoreCase("Location") && h.value().contains(injectedValue)) {
+                return "Injected value found in Location redirect header: " + h.value();
+            }
+        }
+
+        String body = result.response().bodyToString();
+        if (body == null || body.isEmpty()) return null;
+
+        // Check absolute URLs in body
+        String bodyLower = body.toLowerCase();
+        String valueLower = injectedValue.toLowerCase();
+
+        // Pattern: href="...injectedValue...", src="...injectedValue...", action="...injectedValue..."
+        String[] urlPrefixes = {"href=", "src=", "action=", "url(", "content=\"http"};
+        for (String prefix : urlPrefixes) {
+            int searchFrom = 0;
+            while (true) {
+                int prefixIdx = bodyLower.indexOf(prefix, searchFrom);
+                if (prefixIdx < 0) break;
+                // Check if the injected value appears within the next 500 chars (URL length limit)
+                int endIdx = Math.min(prefixIdx + prefix.length() + 500, body.length());
+                String urlSpan = bodyLower.substring(prefixIdx, endIdx);
+                if (urlSpan.contains(valueLower)) {
+                    // Extract the actual URL snippet for evidence
+                    int snippetEnd = Math.min(prefixIdx + prefix.length() + 200, body.length());
+                    String snippet = body.substring(prefixIdx, snippetEnd);
+                    int quoteEnd = snippet.indexOf('"', prefix.length() + 1);
+                    if (quoteEnd < 0) quoteEnd = snippet.indexOf('\'', prefix.length() + 1);
+                    if (quoteEnd < 0) quoteEnd = Math.min(100, snippet.length());
+                    return "Injected value found in body URL attribute: " + snippet.substring(0, Math.min(quoteEnd + 1, snippet.length()));
+                }
+                searchFrom = prefixIdx + 1;
+            }
+        }
+
+        // Check for password reset / verification links containing the injected value
+        String[] resetIndicators = {"reset", "verify", "activate", "confirm", "invitation", "token=", "recover"};
+        for (String indicator : resetIndicators) {
+            int idx = bodyLower.indexOf(indicator);
+            if (idx >= 0) {
+                // Check nearby context (500 chars around) for the injected value
+                int start = Math.max(0, idx - 200);
+                int end = Math.min(body.length(), idx + 500);
+                if (bodyLower.substring(start, end).contains(valueLower)) {
+                    return "Injected value found near password reset/verification link containing '" + indicator + "'";
+                }
+            }
+        }
+
+        return null;
     }
 
     // ==================== PHASE 3: DUPLICATE HOST HEADERS ====================
@@ -223,6 +273,16 @@ public class HostHeaderScanner implements ScanModule {
         }
         if (originalHost.isEmpty()) return;
 
+        // Get baseline to check if attacker string already exists
+        String baselineBody = "";
+        try {
+            HttpRequestResponse baseline = api.http().sendRequest(original.request());
+            if (baseline != null && baseline.response() != null) {
+                baselineBody = baseline.response().bodyToString();
+                if (baselineBody == null) baselineBody = "";
+            }
+        } catch (Exception e) { /* proceed with empty baseline */ }
+
         String attackerHost = "attacker.com";
         try {
             // Add a second Host header (keep the original, add attacker's)
@@ -231,22 +291,26 @@ public class HostHeaderScanner implements ScanModule {
             HttpRequestResponse result = api.http().sendRequest(modified);
             if (result == null || result.response() == null) return;
 
-            String body = result.response().bodyToString();
-            // Check if the attacker host appears in the response (indicating the second Host was used)
-            if (body != null && body.contains(attackerHost)) {
-                findingsStore.addFinding(Finding.builder("host-header",
-                                "Host Header Injection: Duplicate Host Header Accepted",
-                                Severity.MEDIUM, Confidence.FIRM)
-                        .url(url).parameter("Host")
-                        .evidence("Original Host: " + originalHost + " | Injected second Host: " + attackerHost
-                                + " | Attacker host reflected in response body")
-                        .description("The server accepted a request with two Host headers and used the "
-                                + "attacker-controlled value. This can lead to cache poisoning, password "
-                                + "reset poisoning, or SSRF depending on how the Host is used.")
-                        .remediation("Configure the web server/reverse proxy to reject requests with "
-                                + "duplicate Host headers.")
-                        .requestResponse(result)
-                        .build());
+            // Structural proof: injected host must appear in security-sensitive location
+            if (result.response().statusCode() < 400) {
+                String sensitiveLocation = findHostInSensitiveLocation(result, attackerHost);
+                if (sensitiveLocation != null && !baselineBody.contains(attackerHost)) {
+                    findingsStore.addFinding(Finding.builder("host-header",
+                                    "Host Header Injection: Duplicate Host Header Accepted",
+                                    Severity.MEDIUM, Confidence.FIRM)
+                            .url(url).parameter("Host")
+                            .evidence("Original Host: " + originalHost + " | Injected second Host: " + attackerHost
+                                    + " | " + sensitiveLocation)
+                            .description("The server accepted a request with two Host headers and used the "
+                                    + "attacker-controlled value in a security-sensitive location. This can lead "
+                                    + "to cache poisoning, password reset poisoning, or SSRF.")
+                            .remediation("Configure the web server/reverse proxy to reject requests with "
+                                    + "duplicate Host headers.")
+                            .requestResponse(result)
+                            .payload(attackerHost)
+                            .responseEvidence(attackerHost)
+                            .build());
+                }
             }
         } catch (Exception e) {
             api.logging().logToError("Duplicate Host test failed: " + e.getMessage());
@@ -259,6 +323,16 @@ public class HostHeaderScanner implements ScanModule {
     private void testOverrideHeaders(HttpRequestResponse original, String url) throws InterruptedException {
         String attackerValue = "attacker.com";
 
+        // Get baseline response for comparison
+        String baselineBody = "";
+        try {
+            HttpRequestResponse baseline = api.http().sendRequest(original.request());
+            if (baseline != null && baseline.response() != null) {
+                baselineBody = baseline.response().bodyToString();
+                if (baselineBody == null) baselineBody = "";
+            }
+        } catch (Exception e) { /* proceed with empty baseline */ }
+
         for (String header : OVERRIDE_HEADERS) {
             try {
                 // Test 1: Simple reflection test
@@ -270,21 +344,24 @@ public class HostHeaderScanner implements ScanModule {
                         .withRemovedHeader(header)
                         .withAddedHeader(header, headerValue);
                 HttpRequestResponse result = api.http().sendRequest(modified);
-                if (result != null && result.response() != null) {
-                    String body = result.response().bodyToString();
-                    if (body != null && body.contains(attackerValue)) {
+                if (result != null && result.response() != null && result.response().statusCode() < 400) {
+                    // Structural proof: injected value must appear in security-sensitive location
+                    String sensitiveLocation = findHostInSensitiveLocation(result, attackerValue);
+                    if (sensitiveLocation != null && !baselineBody.contains(attackerValue)) {
                         findingsStore.addFinding(Finding.builder("host-header",
                                         "Host Header Override via " + header,
                                         Severity.MEDIUM, Confidence.FIRM)
                                 .url(url).parameter(header)
-                                .evidence(header + ": " + headerValue + " | Attacker value reflected in response")
+                                .evidence(header + ": " + headerValue + " | " + sensitiveLocation)
                                 .description("The override header '" + header + "' is processed by the server "
-                                        + "and its value reflected in the response. This can be used for cache "
-                                        + "poisoning, password reset poisoning, or open redirect attacks.")
+                                        + "and its value appears in a security-sensitive location. This can be used "
+                                        + "for cache poisoning, password reset poisoning, or open redirect attacks.")
                                 .remediation("Ignore or strip override headers unless they come from a trusted "
                                         + "reverse proxy. Configure the web server to only trust these headers "
                                         + "from specific upstream IPs.")
                                 .requestResponse(result)
+                                .payload(headerValue)
+                                .responseEvidence(attackerValue)
                                 .build());
                     }
                 }
@@ -294,6 +371,7 @@ public class HostHeaderScanner implements ScanModule {
                 if (config.getBool("host.oob.enabled", true)
                         && collaboratorManager != null && collaboratorManager.isAvailable()) {
                     AtomicReference<HttpRequestResponse> oobSent = new AtomicReference<>();
+                    AtomicReference<String> oobPayloadRef = new AtomicReference<>();
                     String collabPayload = collaboratorManager.generatePayload(
                             "host-header", url, header, "Host override OOB via " + header,
                             interaction -> {
@@ -308,6 +386,7 @@ public class HostHeaderScanner implements ScanModule {
                                                 + "This confirms the header is actively used for routing or URL generation.")
                                         .remediation("Strip or ignore override headers from untrusted sources.")
                                         .requestResponse(oobSent.get())
+                                        .payload(oobPayloadRef.get())
                                         .build());
                             });
 
@@ -315,6 +394,7 @@ public class HostHeaderScanner implements ScanModule {
                         String oobHeaderValue = header.equals("Forwarded")
                                 ? "host=" + collabPayload
                                 : collabPayload;
+                        oobPayloadRef.set(oobHeaderValue);
                         HttpRequest oobModified = original.request()
                                 .withRemovedHeader(header)
                                 .withAddedHeader(header, oobHeaderValue);

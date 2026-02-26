@@ -26,8 +26,23 @@ public class ScopeManager {
                 .filter(s -> !s.isEmpty())
                 .map(ScopeManager::extractHost)
                 .filter(h -> h != null && !h.isEmpty())
+                .filter(ScopeManager::isValidScopeDomain)
                 .collect(Collectors.toUnmodifiableSet());
         targetDomains = newSet;
+    }
+
+    /**
+     * Validates that a scope domain entry is specific enough to be safe.
+     * Rejects bare TLDs (e.g., "com", "net") that would match too broadly.
+     * Allows IP addresses (no dot required for IPv4/IPv6 literals).
+     */
+    private static boolean isValidScopeDomain(String domain) {
+        if (domain == null || domain.isEmpty()) return false;
+        // Allow IP addresses (contain digits and dots, or are IPv6)
+        if (domain.matches("\\d{1,3}(\\.\\d{1,3}){3}")) return true; // IPv4
+        if (domain.contains(":")) return true; // IPv6
+        // Reject entries without a dot (bare TLDs like "com", "org", "net")
+        return domain.contains(".");
     }
 
     public Set<String> getTargetDomains() {
@@ -56,6 +71,12 @@ public class ScopeManager {
             String stripped = url;
             if (stripped.contains("://")) {
                 stripped = stripped.substring(stripped.indexOf("://") + 3);
+            }
+            // Strip userinfo (user:pass@) to prevent bypass via http://attacker@target.com/
+            int atSign = stripped.indexOf('@');
+            int slashBeforeAt = stripped.indexOf('/');
+            if (atSign > 0 && (slashBeforeAt < 0 || atSign < slashBeforeAt)) {
+                stripped = stripped.substring(atSign + 1);
             }
             // Handle IPv6 bracket notation [::1]
             if (stripped.startsWith("[")) {

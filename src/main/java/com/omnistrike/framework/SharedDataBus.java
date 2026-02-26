@@ -16,14 +16,21 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public class SharedDataBus {
 
+    private static final int MAX_SET_SIZE = 50_000;
+    private static final int MAX_OBJECTS = 1_000;
+
     private final ConcurrentHashMap<String, Set<String>> stringSets = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Object> objects = new ConcurrentHashMap<>();
 
     /**
-     * Add a value to a named set channel.
+     * Add a value to a named set channel. Capped at MAX_SET_SIZE per channel
+     * to prevent unbounded memory growth during long-running scans.
      */
     public void addToSet(String channel, String value) {
-        stringSets.computeIfAbsent(channel, k -> ConcurrentHashMap.newKeySet()).add(value);
+        Set<String> set = stringSets.computeIfAbsent(channel, k -> ConcurrentHashMap.newKeySet());
+        if (set.size() < MAX_SET_SIZE) {
+            set.add(value);
+        }
     }
 
     /**
@@ -35,9 +42,13 @@ public class SharedDataBus {
     }
 
     /**
-     * Store an arbitrary object.
+     * Store an arbitrary object. Capped at MAX_OBJECTS total entries.
+     * Existing keys can always be updated (overwritten); only new keys are rejected at cap.
      */
     public void putObject(String key, Object value) {
+        if (objects.size() >= MAX_OBJECTS && !objects.containsKey(key)) {
+            return; // reject new keys at cap, but allow updates to existing keys
+        }
         objects.put(key, value);
     }
 
