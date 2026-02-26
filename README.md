@@ -232,7 +232,7 @@ Detection for **20 template engines** (Jinja2, Twig, Freemarker, Velocity, Pebbl
 **6-language coverage** with passive fingerprinting, active payload injection, and **OOB-first Collaborator detection** (~56 verified OOB payloads — all validated for real-world exploitability):
 
 - **Java** — 16 time-based gadget chains (CommonsCollections 1-7, Spring1-2, BeanUtils, Groovy1, Hibernate1, C3P0, JRMPClient, ROME, BeanShell1, Myfaces1, Jdk7u21, Vaadin1, Click1), 32 vulnerable library signatures, ~19 OOB payloads (JNDI LDAP/RMI/DNS, Fastjson JdbcRowSetImpl/JndiDataSourceFactory/UnixPrintService/1.2.68+/LdapAttribute, Jackson JdbcRowSetImpl/C3P0/Logback, XStream ProcessBuilder/EventHandler/SortedSet, SnakeYAML ScriptEngineManager/JdbcRowSet/C3P0)
-- **.NET** — 12 BinaryFormatter + 15 JSON.NET + 7 XML serializer payloads, ~9 OOB payloads (ObjectDataProvider nslookup/certutil/PowerShell, XAML XamlReader/DataContractSerializer XXE/SoapFormatter SSRF, SoapFormatter ObjectDataProvider, XmlDocument XXE)
+- **.NET** — 32 gadgets across 9 formatters (BinaryFormatter, SoapFormatter, Json.Net, JavaScriptSerializer, DataContractJsonSerializer, XmlSerializer, NetDataContractSerializer, DataContractSerializer, Raw), ~9 OOB payloads (ObjectDataProvider nslookup/certutil/PowerShell, XAML XamlReader/DataContractSerializer XXE/SoapFormatter SSRF, SoapFormatter ObjectDataProvider, XmlDocument XXE)
 - **PHP** — 14 framework chains (WordPress, Magento, Laravel, Monolog, Drupal, ThinkPHP, CakePHP), 3 OOB payloads (SoapClient SSRF + WSDL, Monolog SocketHandler — all with correct PHP null bytes and string lengths)
 - **Python** — 12 active payloads + 12 OOB payloads (Pickle os.system/os.popen/urllib/builtins.exec, PyYAML os.system/subprocess, jsonpickle, Pickle P2 binary variants)
 - **Ruby** — 8 active payloads + 5 OOB payloads (Gem::Source YAML, Marshal binary Gem::Source @uri, Marshal Gadget chain nslookup/curl/wget). Detects Marshal data in cookies and YAML object tags.
@@ -345,21 +345,6 @@ Supports **Claude CLI**, **Gemini CLI**, **Codex CLI**, **OpenCode CLI**, and di
 | **OOB detection** | Blind SQLi, XXE, SSRF, RCE, and deserialization via Burp Collaborator callbacks |
 | **Deduplication** | Findings deduplicated by normalized URL with cross-module overlap prevention |
 
-### OWASP Top 10 Coverage
-
-| OWASP Category | OmniStrike Modules |
-|---|---|
-| **A01 Broken Access Control** | Auth Bypass, CORS Misconfiguration, IDOR via GraphQL |
-| **A02 Cryptographic Failures** | Security Header Analyzer (cookie flags, HSTS) |
-| **A03 Injection** | SQLi, XSS, SSTI, CMDi, XXE, HPP |
-| **A04 Insecure Design** | GraphQL schema analysis, Hidden Endpoint Finder |
-| **A05 Security Misconfiguration** | Security Headers, CORS, Cache Poisoning, Host Header |
-| **A06 Vulnerable Components** | Deserialization gadget chains (Java/.NET/PHP/Python/Ruby/Node.js), Prototype Pollution |
-| **A07 Auth Failures** | Auth Bypass scanner, session cookie analysis |
-| **A08 Data Integrity** | Deserialization, SSRF, Host Header Injection |
-| **A09 Logging Failures** | Verbose error detection, debug endpoint discovery |
-| **A10 SSRF** | SSRF Scanner, cloud metadata, DNS rebinding, protocol smuggling |
-
 ---
 
 ## Usage
@@ -469,11 +454,11 @@ For bugs and feature requests: [GitHub Issues](https://github.com/worldtreeboy/O
 
 ## What's New in v1.29
 
-**Deserialization Payload Generator** &mdash; New standalone payload generation tool for insecure deserialization testing across 6 languages.
+**Deserialization Payload Generator** &mdash; Standalone payload generation tool for insecure deserialization testing across 6 languages with ysoserial.net-style Gadget + Formatter UX.
 
 - **Universal Payload Generator** &mdash; Generate deserialization exploit payloads for Java, .NET/C#, PHP, Python, Ruby, and Node.js directly from the OmniStrike UI. No external tools (ysoserial, ysoserial.net) required.
-- **25 .NET/C# Gadget Chains** &mdash; Full ysoserial.net coverage: TypeConfuseDelegate, TextFormattingRunProperties, ActivitySurrogateSelectorFromFile, ClaimsPrincipal, SessionSecurityToken, RolePrincipal, GenericPrincipal, WindowsClaimsIdentity, PSObject, DataSet, DataSetTypeSpoofing, LosFormatter, ViewState, JsonNet, JavaScriptSerializer, XmlSerializer, NetDataContractSerializer, DataContractSerializer, ObjectDataProvider, AxHostState, ResourceSet, SoapFormatter, WindowsIdentity, ObjectStateFormatter, ActivitySurrogateSelector.
-- **Java Chains** &mdash; URLDNS (fully native, zero external deps), CommonsCollections1/5/6, CommonsBeanutils1, JNDIExploit, DNSCallback.
+- **32 .NET Gadgets + 9 Formatters** &mdash; ysoserial.net-style two-dropdown UX: select a Gadget, then a compatible Formatter. ObjectDataProvider supports 8 formatters (SoapFormatter, Json.Net, JavaScriptSerializer, DataContractJsonSerializer, XmlSerializer, NetDataContractSerializer, DataContractSerializer, Raw XAML). Full gadget list: TypeConfuseDelegate, TypeConfuseDelegateMono, TextFormattingRunProperties, PSObject, ActivitySurrogate, ActivitySurrogateDisableTypeCheck, ActivitySurrogateSelectorFromFile, ClaimsIdentity, ClaimsPrincipal, WindowsIdentity, WindowsPrincipal, WindowsClaimsIdentity, SessionSecurityToken, SessionViewStateHistoryItem, RolePrincipal, GenericPrincipal, AxHostState, ToolboxItemContainer, ResourceSet, ObjRef, DataSet, DataSetOldBehaviour, DataSetOldBehaviourFromFile, DataSetTypeSpoofing, ObjectDataProvider, GetterSettingsPropertyValue, GetterSecurityException, GetterCompilerResults, XamlAssemblyLoadFromFile, XamlImageInfo, BaseActivationFactory, TransactionManagerReenlist.
+- **34 Java Gadget Chains** &mdash; Full ysoserial coverage with reflection-based generators: URLDNS, DNSCallback, CommonsCollections1-7, CommonsBeanutils1/1_183, Spring1/2, Hibernate1/2, Groovy1, Jdk7u21, JRMPClient/Listener, JNDIExploit, ROME, BeanShell1, C3P0, Click1, FileUpload1, JBossInterceptors1, JavassistWeld1, JSON1, Jython1, MozillaRhino1/2, Myfaces1/2, Vaadin1, Wicket1, Clojure.
 - **PHP Chains** &mdash; LaravelPOP, MonologRCE, GuzzleFnStream, WordPressPHPObject, GenericDestruct, GenericPHPGGC.
 - **Python Chains** &mdash; Pickle (os.system, subprocess, eval, exec), PyYAML exploits.
 - **Ruby Chains** &mdash; ERBTemplate, GemRequirement, GemInstaller, UniversalRCE.
