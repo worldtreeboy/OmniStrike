@@ -114,6 +114,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 // Active injection scanners (SQLi, XSS, etc.) are pointless against static file URLs.
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
+                    if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
                     if (m.isPassive()) {
                         moduleIds.add(m.getId());
                         passive++;
@@ -122,6 +123,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             } else {
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
+                    if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
                     moduleIds.add(m.getId());
                     if (m.isPassive()) passive++;
                     else active++;
@@ -233,24 +235,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             }
         }
 
-        // ============ "Open OmniStrike Deserializer" — switch to Deser payload generator panel ============
-        {
-            Supplier<MainPanel> supplier = mainPanelSupplier;
-            if (supplier != null) {
-                MainPanel mp = supplier.get();
-                if (mp != null && mp.getDeserModulePanel() != null) {
-                    JMenuItem deserItem = new JMenuItem("Open OmniStrike Deserializer");
-                    deserItem.setToolTipText("Open the deserialization payload generator panel");
-                    deserItem.addActionListener(e -> {
-                        MainPanel panel = supplier.get();
-                        if (panel == null) return;
-                        panel.selectModule("deser-scanner");
-                    });
-                    items.add(deserItem);
-                }
-            }
-        }
-
         // ============ "Open WebSocket Scanner" — switch to WS Scanner panel ============
         {
             Supplier<MainPanel> supplier = mainPanelSupplier;
@@ -303,6 +287,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         List<ScanModule> passiveModules = new ArrayList<>();
         for (ScanModule m : registry.getEnabledNonAiModules()) {
             if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
+            if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
             if (m.isPassive()) {
                 passiveModules.add(m);
             } else {
