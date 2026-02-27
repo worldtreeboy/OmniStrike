@@ -6,7 +6,6 @@ import burp.api.montoya.http.message.params.ParsedHttpParameter;
 import com.omnistrike.modules.exploit.omnimap.OmniMapConfig;
 import com.omnistrike.modules.exploit.omnimap.dbms.DbmsDetector;
 import com.omnistrike.modules.exploit.omnimap.tamper.TamperEngine;
-import com.omnistrike.modules.exploit.omnimap.technique.Technique;
 
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
@@ -32,7 +31,7 @@ public class OmniMapConfigDialog extends JDialog {
     // Form fields
     private JComboBox<String> paramCombo;
     private final Map<String, String> paramTypeMap = new LinkedHashMap<>(); // display → type
-    private final Map<Technique, JCheckBox> techniqueChecks = new LinkedHashMap<>();
+    // Techniques section removed — only Boolean Blind is used
     private JComboBox<String> dbmsCombo;
     private JComboBox<String> actionCombo;
     private JTextField targetDbField;
@@ -41,7 +40,7 @@ public class OmniMapConfigDialog extends JDialog {
     private JSpinner levelSpinner;
     private JSpinner riskSpinner;
     private JSpinner threadsSpinner;
-    private JSpinner timeDelaySpinner;
+    // timeDelaySpinner removed — time-based technique removed
     private JTextField prefixField;
     private JTextField suffixField;
     private JTextField trueStringField;
@@ -81,8 +80,15 @@ public class OmniMapConfigDialog extends JDialog {
         subtitle.setForeground(FG_SECONDARY);
         subtitle.setFont(MONO_SMALL);
         gc.gridy = row++;
-        gc.insets = new Insets(0, 0, 8, 0);
+        gc.insets = new Insets(0, 0, 2, 0);
         content.add(subtitle, gc);
+
+        JLabel techNote = new JLabel("Technique: Boolean blind (content-based conditional responses)");
+        techNote.setForeground(FG_DIM);
+        techNote.setFont(MONO_SMALL);
+        gc.gridy = row++;
+        gc.insets = new Insets(0, 0, 8, 0);
+        content.add(techNote, gc);
         gc.insets = new Insets(3, 0, 3, 0);
 
         // === Parameter Selection ===
@@ -91,21 +97,6 @@ public class OmniMapConfigDialog extends JDialog {
         populateParameters(reqResp);
         gc.gridy = row++;
         content.add(wrapSection("Target Parameter", paramCombo), gc);
-
-        // === Techniques ===
-        JPanel techInner = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        techInner.setOpaque(false);
-        for (Technique t : Technique.values()) {
-            JCheckBox cb = new JCheckBox(t.getDisplayName(), t != Technique.STACKED);
-            styleCheckBox(cb);
-            if (t == Technique.STACKED) {
-                cb.setToolTipText("Stacked queries can modify data \u2014 use with caution!");
-            }
-            techniqueChecks.put(t, cb);
-            techInner.add(cb);
-        }
-        gc.gridy = row++;
-        content.add(wrapSection("Techniques", techInner), gc);
 
         // === DBMS + Action (side by side) ===
         JPanel dbmsActionRow = new JPanel(new GridLayout(1, 2, 10, 0));
@@ -187,8 +178,6 @@ public class OmniMapConfigDialog extends JDialog {
         ag.gridx = 3; riskSpinner = makeSpinner(1, 1, 3); advInner.add(riskSpinner, ag);
         ag.gridx = 4; advInner.add(styledLabel("Threads:"), ag);
         ag.gridx = 5; threadsSpinner = makeSpinner(5, 1, 10); advInner.add(threadsSpinner, ag);
-        ag.gridx = 6; advInner.add(styledLabel("Delay(s):"), ag);
-        ag.gridx = 7; timeDelaySpinner = makeSpinner(5, 1, 30); advInner.add(timeDelaySpinner, ag);
 
         // Row 1: Prefix, Suffix
         ag.gridy = 1;
@@ -331,12 +320,7 @@ public class OmniMapConfigDialog extends JDialog {
             c.setParameterType(paramTypeMap.getOrDefault(selected, "url"));
         }
 
-        EnumSet<Technique> techniques = EnumSet.noneOf(Technique.class);
-        for (Map.Entry<Technique, JCheckBox> entry : techniqueChecks.entrySet()) {
-            if (entry.getValue().isSelected()) techniques.add(entry.getKey());
-        }
-        if (techniques.isEmpty()) techniques = EnumSet.allOf(Technique.class);
-        c.setTechniques(techniques);
+        // Boolean Blind is the only technique — already set by default in OmniMapConfig
 
         String dbms = (String) dbmsCombo.getSelectedItem();
         c.setDbms("Auto-detect".equals(dbms) ? null : dbms);
@@ -361,7 +345,6 @@ public class OmniMapConfigDialog extends JDialog {
         c.setLevel((int) levelSpinner.getValue());
         c.setRisk((int) riskSpinner.getValue());
         c.setThreads((int) threadsSpinner.getValue());
-        c.setTimeDelay((int) timeDelaySpinner.getValue());
         c.setPrefix(getFieldText(prefixField, "e.g. ')"));
         c.setSuffix(getFieldText(suffixField, "e.g. -- -"));
         c.setTrueString(getFieldText(trueStringField, "e.g. Welcome"));

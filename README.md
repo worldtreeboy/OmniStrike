@@ -2,11 +2,11 @@
 
 <p align="center">
   <strong>One extension to replace them all.</strong><br>
-  15 active scanners, 4 passive analyzers, AI-powered analysis — single JAR.
+  15 active scanners, 4 passive analyzers, SQL exploitation engine, AI-powered analysis — single JAR.
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.33-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.34-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -17,6 +17,7 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#modules">Modules</a> &bull;
+  <a href="#omnimap-exploiter">OmniMap</a> &bull;
   <a href="#websocket-scanner">WebSocket Scanner</a> &bull;
   <a href="#deserialization-payload-generator">Deser Generator</a> &bull;
   <a href="#ai-scanning">AI Scanning</a> &bull;
@@ -43,6 +44,7 @@
 | Module | What it does |
 |---|---|
 | **SQLi Detector** | Auth bypass, error-based, UNION, time-based blind (3-step verification), boolean-blind (2-round), 64 OOB payloads. ~375 payloads/param across 10 database engines. |
+| **OmniMap Exploiter** | Post-detection SQL injection exploitation engine. Boolean blind extraction via content-based conditional responses. 5 DBMS dialects (MySQL, PostgreSQL, MSSQL, Oracle, SQLite), auto boundary/DBMS detection, parallel character extraction, adaptive bisection, predictive optimization, WAF bypass tamper engine. [Details below](#omnimap-exploiter). |
 | **XSS Scanner** | 6 reflection contexts, smart filter probing (only sends viable payloads), adaptive evasion generation, DOM XSS flow analysis, CSTI, framework-specific payloads (AngularJS/Angular/Vue/React/jQuery), blind XSS via Collaborator. |
 | **SSRF Scanner** | Collaborator OOB, cloud metadata with multi-marker validation (AWS/Azure/GCP/Oracle), DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads (gopher, LDAP, etc). |
 | **SSTI Scanner** | 20 template engines, large-number canaries (131803 not 49), template syntax consumption verification, 32 OOB payloads. |
@@ -125,6 +127,30 @@ Intercepts WebSocket frames via Burp's proxy and provides both passive analysis 
 
 ---
 
+## OmniMap Exploiter
+
+Post-detection SQL injection exploitation engine — extracts databases, tables, columns, and data from confirmed injection points.
+
+**Technique**: Boolean blind via content-based conditional responses. Injects `AND condition` payloads and determines true/false by comparing how the application responds differently (page content, status code, response length) to true vs false conditions. The most universally reliable extraction technique — works across all DBMS and injection contexts where the page reflects different content for valid vs invalid queries.
+
+**How it works**:
+1. Right-click any request → **Send to OmniMap Exploiter**
+2. Select the injectable parameter, DBMS (or auto-detect), and what to extract
+3. Click **Exploit** — OmniMap auto-detects the injection boundary, fingerprints the DBMS, and extracts data
+
+**Capabilities**:
+- **5 DBMS dialects**: MySQL, PostgreSQL, MSSQL, Oracle, SQLite — each with correct syntax for string functions, pagination, schema queries
+- **Auto boundary detection**: Tests prefix/suffix combinations (single quote, double quote, parentheses, comments) like sqlmap
+- **Boolean DBMS fingerprinting**: Uses DB-specific functions (CONNECTION_ID, PG_BACKEND_PID, @@SPID, BITAND, SQLITE_VERSION) to identify the backend
+- **Parallel character extraction**: Multi-threaded bisection — extracts N characters simultaneously
+- **Adaptive bisection**: Tests common ranges first (a-z → 0-9 → full ASCII), saving ~30% requests
+- **Predictive optimization**: Tests common table/column names (users, password, email, etc.) before falling back to bisection
+- **Level/Risk system**: Level 1-5 controls boundary complexity, Risk 1-3 controls payload intrusiveness
+- **WAF bypass**: 9 tamper transforms (space2comment, randomCase, charencode, etc.)
+- **Full UI**: Config dialog, database tree view, data table with CSV export, live request log
+
+---
+
 ## AI Scanning
 
 Right-click any request to trigger AI analysis. Never auto-fires — zero wasted tokens.
@@ -193,6 +219,10 @@ Requires JDK 17+. Dependencies: montoya-api 2026.2, gson 2.11.0.
 ---
 
 ## Changelog
+
+### v1.34 (2026-02-27)
+- **OmniMap Exploiter**: SQL injection exploitation engine — boolean blind extraction via content-based conditional responses
+- 5 DBMS dialects (MySQL, PostgreSQL, MSSQL, Oracle, SQLite), auto boundary/DBMS detection, parallel multi-threaded character extraction, adaptive bisection, predictive optimization, WAF bypass tamper engine, full config dialog + results UI
 
 ### v1.33 (2026-02-27)
 - **WebSocket Scanner**: New module — passive frame analysis (sensitive data, auth issues, error leakage) + OOB-first active fuzzing across 8 injection categories (CSWSH, SQLi, CmdI, SSRF, SSTI, XSS, IDOR, AuthZ bypass)
