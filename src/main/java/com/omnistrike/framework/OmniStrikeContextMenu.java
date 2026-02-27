@@ -297,22 +297,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
         String selectedParam = detectSelectedParameter(event);
         if (selectedParam != null && !staticResource) {
-            // "Scan This Parameter (ip) — All Modules"
-            JMenuItem scanParamAll = new JMenuItem("Scan This Parameter (" + selectedParam + ") \u2014 All Modules");
-            scanParamAll.addActionListener(e -> {
-                List<String> moduleIds = new ArrayList<>();
-                for (ScanModule m : activeModules) {
-                    moduleIds.add(m.getId());
-                }
-                interceptor.scanRequest(reqResp, moduleIds, selectedParam);
-                showToast("Parameter Scan",
-                        "Scanning parameter '" + selectedParam + "' with " + moduleIds.size() + " active module(s)\n"
-                        + url
-                        + "\n\nResults will appear in Dashboard and OmniStrike tab.");
-            });
-            items.add(scanParamAll);
-
-            // "Scan This Parameter (ip) >" — per-module submenu (active modules only)
+            // "Scan This Parameter (ip) >" — user picks exactly one module
             JMenu paramSubMenu = new JMenu("Scan This Parameter (" + selectedParam + ")");
             for (ScanModule module : activeModules) {
                 JMenu moduleParamMenu = new JMenu(module.getName());
