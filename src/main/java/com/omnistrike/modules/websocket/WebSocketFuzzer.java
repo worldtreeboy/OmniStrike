@@ -209,10 +209,11 @@ public class WebSocketFuzzer {
      * Binary accept/reject test — no OOB needed.
      */
     private void testCSWSH(WebSocketConnection connection) {
-        if (!dedupCheck(connection.getUpgradeUrl(), "cswsh")) return;
+        if (!dedupCheck(connection.getUpgradeUrl(), "cswsh")) { log("CSWSH: Skipped (dedup)"); return; }
 
         try {
             String wsUrl = connection.getUpgradeUrl();
+            log("CSWSH: Testing Origin validation on " + wsUrl);
             URI uri = URI.create(toWsUri(wsUrl));
 
             // Build a WebSocket connection with a spoofed Origin header
@@ -254,13 +255,14 @@ public class WebSocketFuzzer {
     // ==================== SQL Injection ====================
 
     private void testSQLi(WebSocketConnection connection, String wsUrl) {
-        if (!dedupCheck(wsUrl, "sqli")) return;
+        if (!dedupCheck(wsUrl, "sqli")) { log("SQLi: Skipped (dedup)"); return; }
 
         List<String> sampleMessages = getClientMessages(connection);
         if (sampleMessages.isEmpty()) {
-            log("SQLi: No client messages to fuzz");
+            log("SQLi: No client-to-server text messages to fuzz — skipping");
             return;
         }
+        log("SQLi: Found " + sampleMessages.size() + " client message(s) to fuzz");
 
         // Phase 1: OOB payloads
         boolean oobAvailable = collaboratorManager != null && collaboratorManager.isAvailable();
@@ -321,10 +323,11 @@ public class WebSocketFuzzer {
     // ==================== Command Injection ====================
 
     private void testCommandInjection(WebSocketConnection connection, String wsUrl) {
-        if (!dedupCheck(wsUrl, "cmdi")) return;
+        if (!dedupCheck(wsUrl, "cmdi")) { log("CmdI: Skipped (dedup)"); return; }
 
         List<String> sampleMessages = getClientMessages(connection);
-        if (sampleMessages.isEmpty()) return;
+        if (sampleMessages.isEmpty()) { log("CmdI: No client messages — skipping"); return; }
+        log("CmdI: Found " + sampleMessages.size() + " client message(s) to fuzz");
 
         // Phase 1: OOB
         boolean oobAvailable = collaboratorManager != null && collaboratorManager.isAvailable();
@@ -411,16 +414,17 @@ public class WebSocketFuzzer {
     // ==================== SSRF ====================
 
     private void testSSRF(WebSocketConnection connection, String wsUrl) {
-        if (!dedupCheck(wsUrl, "ssrf")) return;
+        if (!dedupCheck(wsUrl, "ssrf")) { log("SSRF: Skipped (dedup)"); return; }
 
         List<String> sampleMessages = getClientMessages(connection);
-        if (sampleMessages.isEmpty()) return;
+        if (sampleMessages.isEmpty()) { log("SSRF: No client messages — skipping"); return; }
 
         // OOB only — no meaningful in-band fallback for blind SSRF
         if (collaboratorManager == null || !collaboratorManager.isAvailable()) {
-            log("SSRF: Collaborator not available, skipping (no in-band fallback for blind SSRF)");
+            log("SSRF: Collaborator not available — skipping (no in-band fallback for blind SSRF)");
             return;
         }
+        log("SSRF: Found " + sampleMessages.size() + " client message(s), scanning for URL-like params");
 
         // Look for URL-like values in messages to inject into
         Pattern urlParam = Pattern.compile("\"(?:url|uri|href|link|src|redirect|callback|webhook|endpoint|target|dest)\"\\s*:\\s*\"([^\"]+)\"",
@@ -460,10 +464,11 @@ public class WebSocketFuzzer {
     // ==================== SSTI ====================
 
     private void testSSTI(WebSocketConnection connection, String wsUrl) {
-        if (!dedupCheck(wsUrl, "ssti")) return;
+        if (!dedupCheck(wsUrl, "ssti")) { log("SSTI: Skipped (dedup)"); return; }
 
         List<String> sampleMessages = getClientMessages(connection);
-        if (sampleMessages.isEmpty()) return;
+        if (sampleMessages.isEmpty()) { log("SSTI: No client messages — skipping"); return; }
+        log("SSTI: Found " + sampleMessages.size() + " client message(s) to fuzz");
 
         // Phase 1: OOB
         boolean oobAvailable = collaboratorManager != null && collaboratorManager.isAvailable();
@@ -534,10 +539,11 @@ public class WebSocketFuzzer {
     // ==================== XSS ====================
 
     private void testXSS(WebSocketConnection connection, String wsUrl) {
-        if (!dedupCheck(wsUrl, "xss")) return;
+        if (!dedupCheck(wsUrl, "xss")) { log("XSS: Skipped (dedup)"); return; }
 
         List<String> sampleMessages = getClientMessages(connection);
-        if (sampleMessages.isEmpty()) return;
+        if (sampleMessages.isEmpty()) { log("XSS: No client messages — skipping"); return; }
+        log("XSS: Found " + sampleMessages.size() + " client message(s) to fuzz");
 
         // Primary: Inject unique canary, check reflection
         String canary = "<xss" + ThreadLocalRandom.current().nextInt(10000, 99999) + ">";
@@ -588,10 +594,11 @@ public class WebSocketFuzzer {
     // ==================== IDOR ====================
 
     private void testIDOR(WebSocketConnection connection, String wsUrl) {
-        if (!dedupCheck(wsUrl, "idor")) return;
+        if (!dedupCheck(wsUrl, "idor")) { log("IDOR: Skipped (dedup)"); return; }
 
         List<String> sampleMessages = getClientMessages(connection);
-        if (sampleMessages.isEmpty()) return;
+        if (sampleMessages.isEmpty()) { log("IDOR: No client messages — skipping"); return; }
+        log("IDOR: Found " + sampleMessages.size() + " client message(s) to test");
 
         for (String original : sampleMessages) {
             if (Thread.currentThread().isInterrupted()) return;
@@ -642,10 +649,11 @@ public class WebSocketFuzzer {
     // ==================== AuthZ Bypass ====================
 
     private void testAuthZBypass(WebSocketConnection connection, String wsUrl) {
-        if (!dedupCheck(wsUrl, "authz")) return;
+        if (!dedupCheck(wsUrl, "authz")) { log("AuthZ: Skipped (dedup)"); return; }
 
         List<String> sampleMessages = getClientMessages(connection);
-        if (sampleMessages.isEmpty()) return;
+        if (sampleMessages.isEmpty()) { log("AuthZ: No client messages — skipping"); return; }
+        log("AuthZ: Found " + sampleMessages.size() + " client message(s) to test");
 
         try {
             URI uri = URI.create(toWsUri(wsUrl));

@@ -375,6 +375,40 @@ public class WebSocketScannerPanel extends JPanel {
             return;
         }
 
+        // Count client-to-server text messages (what the fuzzer actually uses as templates)
+        long clientTextCount = conn.getMessages().stream()
+                .filter(m -> m.getDirection() == WebSocketMessage.Direction.CLIENT_TO_SERVER
+                        && m.isText() && m.getPayload() != null && !m.getPayload().isEmpty())
+                .count();
+
+        String cswhNote = "\n\nNote: CSWSH (Origin validation) test always runs regardless.";
+        if (clientTextCount == 0) {
+            int choice = JOptionPane.showConfirmDialog(this,
+                    "No client-to-server text messages found for this connection.\n" +
+                    "The fuzzer uses these as templates to inject payloads into.\n" +
+                    "Only the CSWSH (Cross-Site WebSocket Hijacking) test will run.\n\n" +
+                    "To get full coverage, interact with the WebSocket app through your\n" +
+                    "browser first (send chat messages, make requests, etc.) so the\n" +
+                    "proxy captures client messages, then click Scan again.\n\n" +
+                    "Run CSWSH-only scan anyway?",
+                    "Limited Scan", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+            if (choice != JOptionPane.YES_OPTION) return;
+        } else {
+            // Show confirmation with scan preview
+            boolean collabAvail = collaboratorManager != null && collaboratorManager.isAvailable();
+            String oobNote = collabAvail
+                    ? "OOB (Collaborator): Available — OOB-first strategy active"
+                    : "OOB (Collaborator): Unavailable — in-band detection only";
+            JOptionPane.showMessageDialog(this,
+                    "Starting active scan on: " + truncate(conn.getUpgradeUrl(), 60) + "\n\n" +
+                    "Client messages to fuzz: " + clientTextCount + "\n" +
+                    oobNote + "\n\n" +
+                    "Tests: CSWSH, SQLi, CmdI, SSRF, SSTI, XSS, IDOR, AuthZ Bypass\n" +
+                    "Payloads are sent DIRECTLY to the target (not through Burp proxy).\n" +
+                    "Results will appear in the Findings table below.",
+                    "WebSocket Scan Starting", JOptionPane.INFORMATION_MESSAGE);
+        }
+
         scanButton.setEnabled(false);
         stopButton.setEnabled(true);
         progressBar.setIndeterminate(true);
@@ -525,6 +559,23 @@ public class WebSocketScannerPanel extends JPanel {
             statusLabel.setText(fuzzer.getScanStatus());
             statusLabel.setForeground(FG_SECONDARY);
             refreshFindings();
+
+            // Show completion dialog so the user knows the scan finished
+            int payloads = fuzzer.getPayloadsSent();
+            int findings = fuzzer.getFindingsCount();
+            String title = findings > 0 ? "Scan Complete — Vulnerabilities Found!" : "Scan Complete";
+            int msgType = findings > 0 ? JOptionPane.WARNING_MESSAGE : JOptionPane.INFORMATION_MESSAGE;
+            JOptionPane.showMessageDialog(this,
+                    "WebSocket scan finished.\n\n" +
+                    "Payloads sent: " + payloads + "\n" +
+                    "Findings: " + findings + "\n\n" +
+                    (findings > 0
+                            ? "Check the Findings table below for details."
+                            : (payloads == 0
+                                    ? "No payloads were sent. Check the Burp extension output\n" +
+                                      "log for error details (Extensions > Output tab)."
+                                    : "No vulnerabilities detected.")),
+                    title, msgType);
         }
     }
 
