@@ -2,11 +2,11 @@
 
 <p align="center">
   <strong>One extension to replace them all.</strong><br>
-  14 active scanners, 4 passive analyzers, AI-powered analysis — single JAR.
+  15 active scanners, 4 passive analyzers, AI-powered analysis — single JAR.
 </p>
 
 <p align="center">
-  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.30-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/worldtreeboy/OmniStrike/releases"><img src="https://img.shields.io/badge/version-1.33-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/Java-17+-orange?style=flat-square&logo=openjdk" alt="Java 17+">
   <img src="https://img.shields.io/badge/Burp_Suite-Montoya_API-E8350E?style=flat-square" alt="Montoya API">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square" alt="License"></a>
@@ -17,6 +17,7 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#modules">Modules</a> &bull;
+  <a href="#websocket-scanner">WebSocket Scanner</a> &bull;
   <a href="#deserialization-payload-generator">Deser Generator</a> &bull;
   <a href="#ai-scanning">AI Scanning</a> &bull;
   <a href="#building-from-source">Build</a>
@@ -37,7 +38,7 @@
 
 ## Modules
 
-### Active Scanners (14)
+### Active Scanners (15)
 
 | Module | What it does |
 |---|---|
@@ -48,6 +49,7 @@
 | **Command Injection** | 3-step time-based, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/`%0a`/backtick/double-encoding bypasses. |
 | **XXE Scanner** | 4-phase: XML body, XInclude, JSON→XML, Content-Type forcing. UTF-16 bypass, SAML detection, 14 OOB payloads. |
 | **Deserialization** | 6 languages, 137+ gadget chains, passive fingerprinting, OOB-first Collaborator detection, blind spray mode. [Details below](#deserialization-scanner). |
+| **WebSocket Scanner** | Passive frame analysis + OOB-first active fuzzing across 8 injection categories (CSWSH, SQLi, CmdI, SSRF, SSTI, XSS, IDOR, AuthZ bypass). [Details below](#websocket-scanner). |
 | **GraphQL** | 7-phase: introspection (4 bypasses), schema analysis, injection (SQLi/NoSQLi/CMDi/SSTI/traversal), IDOR, DoS config, HTTP-level, error disclosure. Auto-generates queries from schema. |
 | **CORS** | Reflected origin, null trust, subdomain trust, scheme downgrade, wildcard+credentials, preflight bypass. |
 | **Cache Poisoning** | 30 unkeyed header vectors, 29 unkeyed query params, cacheability analysis, poison confirmation. |
@@ -98,6 +100,31 @@ Standalone tool for generating deserialization payloads — no external tools ne
 
 ---
 
+## WebSocket Scanner
+
+Intercepts WebSocket frames via Burp's proxy and provides both passive analysis and on-demand active fuzzing.
+
+**Passive Analysis** (runs automatically on every intercepted frame):
+- Sensitive data: credit cards (Luhn-validated), SSNs, API keys, passwords, JWTs
+- PII: email addresses, phone numbers
+- Connection issues: unencrypted `ws://`, missing Origin header, session-less connections, auth tokens in URL
+- Error leakage: SQL error strings, stack traces in server responses
+
+**Active Fuzzing** (click "Scan" on a connection — OOB-first strategy):
+
+| Category | OOB Phase | In-Band Fallback | Confidence |
+|---|---|---|---|
+| CSWSH | N/A (binary accept/reject) | Origin validation test | CERTAIN |
+| SQL Injection | xp_dirtree, extractvalue, COPY | Error-based (SQL error string match) | CERTAIN / FIRM |
+| Command Injection | nslookup, curl, ping | Time-based (3x statistical, >=4s delta) | CERTAIN / FIRM |
+| SSRF | Collaborator URLs in URL params | None (blind SSRF) | CERTAIN |
+| SSTI | Multi-engine nslookup | Math eval ({{7*7}}→49) | CERTAIN / FIRM |
+| XSS | img onerror fetch | Canary reflection detection | CERTAIN / FIRM |
+| IDOR | N/A | ID substitution + response diff | TENTATIVE |
+| AuthZ Bypass | N/A | Auth vs unauth response comparison | FIRM |
+
+---
+
 ## AI Scanning
 
 Right-click any request to trigger AI analysis. Never auto-fires — zero wasted tokens.
@@ -137,7 +164,7 @@ Also supports CLI tools: Claude Code, Gemini CLI, Codex CLI, OpenCode CLI.
 - **Smart filter probing**: Probes which characters survive filtering, then sends only viable payloads
 - **3-step timing**: Baseline → true delay → false must NOT delay
 - **Deduplication**: Cross-module, normalized URL dedup
-- **Request/response highlighting**: All 19 modules annotate findings with byte-range markers in Burp Dashboard
+- **Request/response highlighting**: All 20 modules annotate findings with byte-range markers in Burp Dashboard
 
 ---
 
@@ -166,6 +193,10 @@ Requires JDK 17+. Dependencies: montoya-api 2026.2, gson 2.11.0.
 ---
 
 ## Changelog
+
+### v1.33 (2026-02-27)
+- **WebSocket Scanner**: New module — passive frame analysis (sensitive data, auth issues, error leakage) + OOB-first active fuzzing across 8 injection categories (CSWSH, SQLi, CmdI, SSRF, SSTI, XSS, IDOR, AuthZ bypass)
+- **Custom WS UI panel**: Live connection dropdown, real-time message table with direction/search filters, scan controls, per-connection findings view
 
 ### v1.30 (2026-02-27)
 - **Deserialization payload expansion**: 137+ chains (47 PHP from phpggc, 26 Python with Pickle v0/v2/v4, 17 Node.js, 13 Ruby)
