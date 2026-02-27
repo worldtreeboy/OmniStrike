@@ -290,20 +290,42 @@ public class CachePoisonScanner implements ScanModule {
 
     /**
      * Confirm cache poisoning by:
-     * 1. Sending a poisoned request (header with new canary)
-     * 2. Sending a clean request to the same URL
+     * 1. Sending a poisoned request (header with new canary) to a CACHE-BUSTERED URL
+     * 2. Sending a clean request to the SAME cache-bustered URL
      * 3. Checking if the canary persists in the clean response
+     *
+     * Both requests use the same unique cache buster parameter so they hit
+     * an isolated cache entry. This prevents the test from poisoning the
+     * real production cache that end users would access.
      */
     private boolean confirmPoisoning(HttpRequestResponse original, String headerName, String url) throws InterruptedException {
         String confirmCanary = generateCanary();
+        String cacheBuster = "_omnistrike_cb_" + System.nanoTime();
 
-        // Send poisoned request
-        sendWithHeader(original, headerName, confirmCanary);
+        // Add cache buster to the base request so both poison + clean hit the same isolated entry
+        HttpRequest busteredRequest;
+        try {
+            busteredRequest = original.request().withUpdatedParameters(
+                    burp.api.montoya.http.message.params.HttpParameter.urlParameter(
+                            cacheBuster, "1"));
+        } catch (Exception e) {
+            return false;
+        }
+
+        // Send poisoned request (with injected header + cache buster)
+        try {
+            HttpRequest poisonRequest = busteredRequest
+                    .withRemovedHeader(headerName)
+                    .withAddedHeader(headerName, confirmCanary);
+            api.http().sendRequest(poisonRequest);
+        } catch (Exception e) {
+            return false;
+        }
         perHostDelay();
 
-        // Send clean request (no injected header)
+        // Send clean request (no injected header, same cache buster)
         try {
-            HttpRequestResponse cleanResult = api.http().sendRequest(original.request());
+            HttpRequestResponse cleanResult = api.http().sendRequest(busteredRequest);
             if (cleanResult != null && cleanResult.response() != null) {
                 return isCanaryReflected(cleanResult, confirmCanary);
             }

@@ -8,6 +8,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 /**
@@ -21,6 +22,7 @@ public class FindingsStore {
     private final CopyOnWriteArrayList<Finding> findings = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, Boolean> seenKeys = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<FindingsListener> listeners = new CopyOnWriteArrayList<>();
+    private final AtomicBoolean fullWarningLogged = new AtomicBoolean(false);
     private volatile java.util.function.Consumer<String> errorLogger;
 
     public interface FindingsListener {
@@ -57,7 +59,17 @@ public class FindingsStore {
     public void addFinding(Finding finding) {
         boolean added;
         synchronized (this) {
-            if (findings.size() >= MAX_FINDINGS) return; // cap check FIRST
+            if (findings.size() >= MAX_FINDINGS) {
+                if (fullWarningLogged.compareAndSet(false, true)) {
+                    java.util.function.Consumer<String> logger = errorLogger;
+                    if (logger != null) {
+                        logger.accept("[FindingsStore] WARNING: Reached " + MAX_FINDINGS
+                                + " findings limit — new findings are being DROPPED. "
+                                + "Export your results and clear findings to continue.");
+                    }
+                }
+                return;
+            }
             String param = finding.getParameter() != null ? finding.getParameter() : "";
             String normalizedUrl = normalizeUrlForDedup(finding.getUrl());
             // Primary key: module + title + normalized URL (no query params) + parameter
@@ -130,6 +142,7 @@ public class FindingsStore {
     public synchronized void clear() {
         findings.clear();
         seenKeys.clear();
+        fullWarningLogged.set(false);
     }
 
     /**

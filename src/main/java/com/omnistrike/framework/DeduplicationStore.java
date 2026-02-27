@@ -1,6 +1,8 @@
 package com.omnistrike.framework;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 
 /**
  * Shared deduplication map. Ensures each module+endpoint+parameter combination
@@ -11,6 +13,12 @@ public class DeduplicationStore {
     private static final int MAX_ENTRIES = 500_000;
 
     private final ConcurrentHashMap<String, Boolean> seen = new ConcurrentHashMap<>();
+    private final AtomicBoolean fullWarningLogged = new AtomicBoolean(false);
+    private volatile Consumer<String> warningLogger;
+
+    public void setWarningLogger(Consumer<String> logger) {
+        this.warningLogger = logger;
+    }
 
     /**
      * Mark this combination as seen. Returns true if this is the FIRST time
@@ -18,7 +26,10 @@ public class DeduplicationStore {
      * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
      */
     public synchronized boolean markIfNew(String moduleId, String urlPath, String parameterName) {
-        if (seen.size() >= MAX_ENTRIES) return false;
+        if (seen.size() >= MAX_ENTRIES) {
+            logFullWarning();
+            return false;
+        }
         String normalizedPath = normalizePath(urlPath);
         String key = moduleId + ":" + normalizedPath + ":" + (parameterName != null ? parameterName : "");
         return seen.putIfAbsent(key, Boolean.TRUE) == null;
@@ -30,7 +41,7 @@ public class DeduplicationStore {
      * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
      */
     public synchronized boolean markIfNew(String moduleId, String method, String urlPath, String parameterName) {
-        if (seen.size() >= MAX_ENTRIES) return false;
+        if (seen.size() >= MAX_ENTRIES) { logFullWarning(); return false; }
         String normalizedPath = normalizePath(urlPath);
         String m = method != null ? method.toUpperCase() : "GET";
         String key = moduleId + ":" + m + ":" + normalizedPath + ":" + (parameterName != null ? parameterName : "");
@@ -48,7 +59,7 @@ public class DeduplicationStore {
      * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
      */
     public synchronized boolean markIfNewRaw(String rawKey) {
-        if (seen.size() >= MAX_ENTRIES) return false;
+        if (seen.size() >= MAX_ENTRIES) { logFullWarning(); return false; }
         return seen.putIfAbsent(rawKey, Boolean.TRUE) == null;
     }
 
@@ -74,6 +85,21 @@ public class DeduplicationStore {
 
     public int size() {
         return seen.size();
+    }
+
+    /**
+     * Logs a one-time warning when the dedup store hits its 500k entry limit.
+     * After this fires, ALL markIfNew() calls return false (nothing new gets tested).
+     */
+    private void logFullWarning() {
+        if (fullWarningLogged.compareAndSet(false, true)) {
+            Consumer<String> logger = warningLogger;
+            if (logger != null) {
+                logger.accept("[DeduplicationStore] WARNING: Reached " + MAX_ENTRIES
+                        + " entries — all new scan targets will be SKIPPED. "
+                        + "Use 'Clear Dedup' or restart the extension to resume scanning.");
+            }
+        }
     }
 
     /**

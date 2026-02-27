@@ -19,7 +19,7 @@ public class CollaboratorManager {
     private CollaboratorClient client;
     private ScheduledExecutorService poller;
     private volatile boolean available = false;
-    private volatile int payloadTtlMinutes = 10;
+    private volatile int payloadTtlMinutes = 60;
 
     // Map payload ID -> callback to invoke when interaction is received
     private final ConcurrentHashMap<String, PendingPayload> pendingPayloads = new ConcurrentHashMap<>();

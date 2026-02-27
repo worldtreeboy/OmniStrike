@@ -715,7 +715,7 @@ public class XxeScanner implements ScanModule {
         // Secondary confirmation: check for the well-known Linux passwd file pattern
         if (!confirmed && filePath.equals("/etc/passwd")) {
             if (LINUX_PASSWD_EVIDENCE.matcher(responseBody).find()
-                    && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find()) {
+                    && (baselineBody == null || !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find())) {
                 confirmed = true;
                 matchedEvidence = "root:x:0:0: pattern found";
             }
@@ -724,7 +724,7 @@ public class XxeScanner implements ScanModule {
         // Secondary confirmation: check for Windows win.ini pattern
         if (!confirmed && filePath.contains("win.ini")) {
             if (WINDOWS_WIN_INI_EVIDENCE.matcher(responseBody).find()
-                    && !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find()) {
+                    && (baselineBody == null || !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find())) {
                 confirmed = true;
                 matchedEvidence = "[fonts] section found";
             }
@@ -733,7 +733,7 @@ public class XxeScanner implements ScanModule {
         // Secondary confirmation: check for Windows hosts file pattern
         if (!confirmed && filePath.contains("hosts")) {
             if (WINDOWS_HOSTS_EVIDENCE.matcher(responseBody).find()
-                    && !WINDOWS_HOSTS_EVIDENCE.matcher(baselineBody).find()) {
+                    && (baselineBody == null || !WINDOWS_HOSTS_EVIDENCE.matcher(baselineBody).find())) {
                 confirmed = true;
                 matchedEvidence = "localhost entry found";
             }
@@ -783,7 +783,7 @@ public class XxeScanner implements ScanModule {
             String responseBody = nonExistentResult.response().bodyToString();
             if (responseBody != null
                     && DTD_PROCESSING_ERROR_PATTERN.matcher(responseBody).find()
-                    && !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find()) {
+                    && (baselineBody == null || !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find())) {
                 findingsStore.addFinding(Finding.builder("xxe-scanner",
                                 "XXE Error-Based: XML parser processes external entities",
                                 Severity.HIGH, Confidence.FIRM)
@@ -814,7 +814,7 @@ public class XxeScanner implements ScanModule {
             String responseBody = malformedResult.response().bodyToString();
             if (responseBody != null
                     && DTD_PROCESSING_ERROR_PATTERN.matcher(responseBody).find()
-                    && !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find()) {
+                    && (baselineBody == null || !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find())) {
                 findingsStore.addFinding(Finding.builder("xxe-scanner",
                                 "XXE Error-Based: Parameter entity processing confirmed",
                                 Severity.HIGH, Confidence.FIRM)
@@ -1347,7 +1347,7 @@ public class XxeScanner implements ScanModule {
                 String responseBody = result.response().bodyToString();
                 if (responseBody != null
                         && evidencePattern.matcher(responseBody).find()
-                        && !evidencePattern.matcher(baselineBody).find()) {
+                        && (baselineBody == null || !evidencePattern.matcher(baselineBody).find())) {
                     findingsStore.addFinding(Finding.builder("xxe-scanner",
                                     "XXE via " + encoding + " Encoding Bypass: " + filePath + " (" + osType + ")",
                                     Severity.CRITICAL, Confidence.CERTAIN)
@@ -1399,7 +1399,7 @@ public class XxeScanner implements ScanModule {
             if (result1 != null && result1.response() != null) {
                 String body = result1.response().bodyToString();
                 if (body != null && LINUX_PASSWD_EVIDENCE.matcher(body).find()
-                        && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find()) {
+                        && (baselineBody == null || !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find())) {
                     findingsStore.addFinding(Finding.builder("xxe-scanner",
                                     "XXE via HTML-Encoded Parameter Entity Bypass: /etc/passwd read",
                                     Severity.CRITICAL, Confidence.CERTAIN)
@@ -1433,7 +1433,7 @@ public class XxeScanner implements ScanModule {
             if (result2 != null && result2.response() != null) {
                 String body = result2.response().bodyToString();
                 if (body != null && LINUX_PASSWD_EVIDENCE.matcher(body).find()
-                        && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find()) {
+                        && (baselineBody == null || !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find())) {
                     findingsStore.addFinding(Finding.builder("xxe-scanner",
                                     "XXE via CDATA Wrapping Bypass: /etc/passwd read",
                                     Severity.CRITICAL, Confidence.CERTAIN)
@@ -1467,9 +1467,9 @@ public class XxeScanner implements ScanModule {
                 String body = result3.response().bodyToString();
                 if (body != null) {
                     boolean hasPasswd = LINUX_PASSWD_EVIDENCE.matcher(body).find()
-                            && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find();
+                            && (baselineBody == null || !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find());
                     boolean hasDtdError = DTD_PROCESSING_ERROR_PATTERN.matcher(body).find()
-                            && !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find();
+                            && (baselineBody == null || !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find());
 
                     if (hasPasswd) {
                         findingsStore.addFinding(Finding.builder("xxe-scanner",
@@ -1520,7 +1520,7 @@ public class XxeScanner implements ScanModule {
                 if (result4 != null && result4.response() != null) {
                     String body = result4.response().bodyToString();
                     if (body != null && WINDOWS_WIN_INI_EVIDENCE.matcher(body).find()
-                            && !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find()) {
+                            && (baselineBody == null || !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find())) {
                         findingsStore.addFinding(Finding.builder("xxe-scanner",
                                         "XXE via Content-Type text/xml Bypass: win.ini read",
                                         Severity.CRITICAL, Confidence.CERTAIN)
@@ -1555,7 +1555,7 @@ public class XxeScanner implements ScanModule {
             if (result5 != null && result5.response() != null) {
                 String body = result5.response().bodyToString();
                 if (body != null && WINDOWS_WIN_INI_EVIDENCE.matcher(body).find()
-                        && !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find()) {
+                        && (baselineBody == null || !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find())) {
                     findingsStore.addFinding(Finding.builder("xxe-scanner",
                                     "XXE via HTML-Encoded Parameter Entity Bypass: win.ini read",
                                     Severity.CRITICAL, Confidence.CERTAIN)
@@ -1596,7 +1596,7 @@ public class XxeScanner implements ScanModule {
             String body = passwdResult.response().bodyToString();
             if (body != null
                     && LINUX_PASSWD_EVIDENCE.matcher(body).find()
-                    && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find()) {
+                    && (baselineBody == null || !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find())) {
                 findingsStore.addFinding(Finding.builder("xxe-scanner",
                                 "XXE via XInclude: /etc/passwd read",
                                 Severity.CRITICAL, Confidence.CERTAIN)
@@ -1625,7 +1625,7 @@ public class XxeScanner implements ScanModule {
             String body = winIniResult.response().bodyToString();
             if (body != null
                     && WINDOWS_WIN_INI_EVIDENCE.matcher(body).find()
-                    && !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find()) {
+                    && (baselineBody == null || !WINDOWS_WIN_INI_EVIDENCE.matcher(baselineBody).find())) {
                 findingsStore.addFinding(Finding.builder("xxe-scanner",
                                 "XXE via XInclude: win.ini read",
                                 Severity.CRITICAL, Confidence.CERTAIN)
@@ -1689,7 +1689,7 @@ public class XxeScanner implements ScanModule {
             if (body != null) {
                 // If we see the file content, confirmed
                 if (LINUX_PASSWD_EVIDENCE.matcher(body).find()
-                        && !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find()) {
+                        && (baselineBody == null || !LINUX_PASSWD_EVIDENCE.matcher(baselineBody).find())) {
                     findingsStore.addFinding(Finding.builder("xxe-scanner",
                                     "XXE via XInclude (with fallback): /etc/passwd read",
                                     Severity.CRITICAL, Confidence.CERTAIN)

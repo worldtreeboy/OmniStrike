@@ -288,6 +288,26 @@ public class HttpParamPollutionScanner implements ScanModule {
 
     private void testWafBypass(HttpRequestResponse original, HppTarget target,
                                 String url, String urlPath) throws InterruptedException {
+        // First, check if a NON-split full payload is blocked (implies WAF exists).
+        // If the full payload goes through unsplit, there's no WAF to bypass — skip.
+        String probePayload = SPLIT_PAYLOADS[0][0] + SPLIT_PAYLOADS[0][1]; // e.g. <script>alert(1)</script>
+        HttpRequest probeRequest = original.request().withUpdatedParameters(
+                target.location == ParamLocation.QUERY
+                        ? HttpParameter.urlParameter(target.name, PayloadEncoder.encode(probePayload))
+                        : HttpParameter.bodyParameter(target.name, PayloadEncoder.encode(probePayload)));
+        HttpRequestResponse probeResult = sendRequest(probeRequest);
+        if (probeResult == null || probeResult.response() == null) return;
+
+        boolean fullPayloadBlocked = probeResult.response().statusCode() >= 400
+                || (probeResult.response().bodyToString() != null
+                    && !probeResult.response().bodyToString().contains(probePayload));
+        // If full payload was NOT blocked, there's no WAF — no point testing split bypass
+        if (!fullPayloadBlocked) {
+            perHostDelay();
+            return;
+        }
+        perHostDelay();
+
         for (String[] splitParts : SPLIT_PAYLOADS) {
             String part1 = splitParts[0];
             String part2 = splitParts[1];
@@ -302,23 +322,24 @@ public class HttpParamPollutionScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
-            // Skip error responses (WAF blocked it, not bypassed)
+            // Skip error responses (WAF blocked the split too)
             if (result.response().statusCode() >= 400) { perHostDelay(); continue; }
             // Check payload is present and NOT HTML-escaped (escaped = safe)
             if (body != null && body.contains(fullPayload)
                     && !body.contains(fullPayload.replace("<", "&lt;"))) {
                 findingsStore.addFinding(Finding.builder("hpp",
                                 "HTTP Parameter Pollution: WAF Bypass via Payload Splitting",
-                                Severity.MEDIUM, Confidence.TENTATIVE)
+                                Severity.MEDIUM, Confidence.FIRM)
                         .url(url).parameter(target.name)
-                        .evidence("Split payload across duplicate params: " + target.name + "="
+                        .evidence("Full payload '" + probePayload + "' was BLOCKED (status "
+                                + probeResult.response().statusCode() + ") | "
+                                + "Split payload across duplicate params: " + target.name + "="
                                 + part1 + "&" + target.name + "=" + part2 + " | "
-                                + "Reassembled payload '" + fullPayload + "' found in response")
-                        .description("An attack payload split across duplicate '" + target.name + "' "
-                                + "parameters was reassembled by the server and reflected in the response. "
-                                + "This technique can bypass WAF rules that inspect individual parameter "
-                                + "values — neither '" + part1 + "' nor '" + part2 + "' triggers WAF rules "
-                                + "alone, but the server concatenates them into a complete attack payload.")
+                                + "Reassembled payload '" + fullPayload + "' found in response (BYPASSED)")
+                        .description("The WAF/filter blocks the full payload '" + probePayload + "' but "
+                                + "when the same payload is split across duplicate '" + target.name + "' "
+                                + "parameters, the server concatenates them and the filter is bypassed. "
+                                + "This confirms a WAF bypass via HTTP Parameter Pollution.")
                         .remediation("Implement WAF rules that account for parameter concatenation. Reject "
                                 + "duplicate parameters at the WAF/proxy level. Apply output encoding on "
                                 + "the server side regardless of input validation.")
