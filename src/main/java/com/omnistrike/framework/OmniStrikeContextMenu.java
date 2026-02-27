@@ -111,6 +111,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 // Static resource (JS, CSS, HTML, etc.) — only run passive analyzers.
                 // Active injection scanners (SQLi, XSS, etc.) are pointless against static file URLs.
                 for (ScanModule m : nonAi) {
+                    if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
                     if (m.isPassive()) {
                         moduleIds.add(m.getId());
                         passive++;
@@ -118,6 +119,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 }
             } else {
                 for (ScanModule m : nonAi) {
+                    if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
                     moduleIds.add(m.getId());
                     if (m.isPassive()) passive++;
                     else active++;
@@ -247,11 +249,28 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             }
         }
 
+        // ============ "Open WebSocket Scanner" — switch to WS Scanner panel ============
+        {
+            Supplier<MainPanel> supplier = mainPanelSupplier;
+            if (supplier != null) {
+                JMenuItem wsItem = new JMenuItem("Open WebSocket Scanner");
+                wsItem.setToolTipText("Open the WebSocket Scanner panel for passive analysis and active fuzzing");
+                wsItem.addActionListener(e -> {
+                    MainPanel panel = supplier.get();
+                    if (panel == null) return;
+                    panel.selectModule("ws-scanner");
+                });
+                items.add(wsItem);
+            }
+        }
+
         // ============ "Scan This Parameter" — targeted parameter scanning ============
         // Build module lists early (needed for both parameter menu and per-module submenu)
+        // Exclude ws-scanner — it doesn't process HTTP flows (uses its own WS interceptor)
         List<ScanModule> activeModules = new ArrayList<>();
         List<ScanModule> passiveModules = new ArrayList<>();
         for (ScanModule m : registry.getEnabledNonAiModules()) {
+            if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
             if (m.isPassive()) {
                 passiveModules.add(m);
             } else {

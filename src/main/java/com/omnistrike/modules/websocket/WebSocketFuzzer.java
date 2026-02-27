@@ -109,12 +109,27 @@ public class WebSocketFuzzer {
             return;
         }
 
+        if (executor == null) {
+            logError("Cannot start scan: executor not initialized");
+            scanning.set(false);
+            scanStatus = "Scan failed: executor not initialized";
+            return;
+        }
+
         findingsCount.set(0);
         payloadsSent.set(0);
+
+        // Clear dedup entries for this module so re-scans work.
+        // Dedup is designed for automatic traffic interception (same URL flowing through
+        // repeatedly), not for explicit user-initiated on-demand scans.
+        if (dedup != null) {
+            dedup.clearModule(MODULE_ID);
+        }
+
         scanStatus = "Starting scan on " + connection.getUpgradeUrl();
         log(scanStatus);
 
-        currentScanFuture = executor.submitTracked(() -> {
+        Future<?> future = executor.submitTracked(() -> {
             try {
                 runAllTests(connection);
             } catch (Exception e) {
@@ -126,6 +141,14 @@ public class WebSocketFuzzer {
                 log(scanStatus);
             }
         });
+
+        if (future == null) {
+            scanning.set(false);
+            scanStatus = "Scan failed: executor rejected task (queue full or shutting down)";
+            logError(scanStatus);
+        } else {
+            currentScanFuture = future;
+        }
     }
 
     /**
@@ -815,6 +838,7 @@ public class WebSocketFuzzer {
         } catch (TimeoutException e) {
             return null;
         } catch (Exception e) {
+            log("sendAndReceive failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
             return null;
         }
     }
@@ -852,7 +876,7 @@ public class WebSocketFuzzer {
             ws.sendClose(WebSocket.NORMAL_CLOSURE, "done");
 
         } catch (Exception e) {
-            // Fire and forget — errors are expected for OOB payloads
+            log("sendFuzzPayload failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
         }
     }
 

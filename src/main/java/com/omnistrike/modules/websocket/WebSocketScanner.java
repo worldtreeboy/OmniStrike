@@ -88,6 +88,9 @@ public class WebSocketScanner implements ScanModule {
         this.api = api;
         this.config = config;
 
+        // Wire API to interceptor (was constructed with null api)
+        interceptor.setApi(api);
+
         // Wire API to components
         interceptor.setLogger(msg -> {
             if (uiLogger != null) uiLogger.accept(msg);

@@ -16,7 +16,7 @@ import java.util.function.Consumer;
  */
 public class WebSocketInterceptor implements ProxyWebSocketCreationHandler {
 
-    private final MontoyaApi api;
+    private volatile MontoyaApi api;
     private final WebSocketConnectionTracker tracker;
     private final WebSocketAnalyzer analyzer;
     private volatile boolean enabled = true;
@@ -26,6 +26,10 @@ public class WebSocketInterceptor implements ProxyWebSocketCreationHandler {
         this.api = api;
         this.tracker = tracker;
         this.analyzer = analyzer;
+    }
+
+    public void setApi(MontoyaApi api) {
+        this.api = api;
     }
 
     public void setLogger(Consumer<String> logger) {
