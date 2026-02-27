@@ -628,6 +628,7 @@ public class OmniMapPanel extends JPanel {
         int[] rows = dataTable.getSelectedRows();
         int[] cols = dataTable.getSelectedColumns();
         if (rows.length == 0 || cols.length == 0) return;
+
         StringBuilder sb = new StringBuilder();
         for (int r : rows) {
             for (int i = 0; i < cols.length; i++) {

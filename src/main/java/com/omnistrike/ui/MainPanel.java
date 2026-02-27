@@ -761,8 +761,8 @@ public class MainPanel extends JPanel {
                 ((DeserModulePanel) panel).stopTimers();
             } else if (panel instanceof WebSocketScannerPanel) {
                 ((WebSocketScannerPanel) panel).stopTimers();
-            } else if (panel instanceof OmniMapPanel) {
-                ((OmniMapPanel) panel).stopTimers();
+            } else if (panel == omniMapPanel && omniMapPanel != null) {
+                try { panel.getClass().getMethod("stopTimers").invoke(panel); } catch (Exception ignored) {}
             }
         }
     }
