@@ -8,6 +8,7 @@ import burp.api.montoya.scanner.audit.Audit;
 import com.omnistrike.framework.*;
 import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
+import com.omnistrike.modules.websocket.WebSocketScanner;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.modules.recon.*;
 import com.omnistrike.ui.GlobalThemeManager;
@@ -143,6 +144,12 @@ public class OmniStrikeExtension implements BurpExtension {
         hpp.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(hpp);
 
+        // WebSocket Scanner (passive + active fuzzing)
+        WebSocketScanner wsScanner = new WebSocketScanner();
+        wsScanner.setDependencies(dedup, findingsStore, collaboratorManager);
+        wsScanner.setExecutor(executor);
+        registry.registerModule(wsScanner);
+
         // Initialize all modules
         registry.initializeAll(api);
         api.logging().logToOutput("Registered " + registry.getAllModules().size() + " modules.");
@@ -206,6 +213,12 @@ public class OmniStrikeExtension implements BurpExtension {
             sessionKeepAlive.setUiLogger((module, message) ->
                     javax.swing.SwingUtilities.invokeLater(() ->
                             mainPanel.getLogPanel().log("INFO", module, message)));
+            // Wire WebSocket Scanner log messages to the Activity Log
+            if (wsScanner != null) {
+                wsScanner.setUiLogger(msg ->
+                        javax.swing.SwingUtilities.invokeLater(() ->
+                                mainPanel.getLogPanel().log("INFO", "WS-Scanner", msg)));
+            }
             api.logging().logToOutput("UI tab registered. Theme: Default (Burp native).");
         });
 

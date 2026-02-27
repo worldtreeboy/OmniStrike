@@ -9,6 +9,8 @@ import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.ui.modules.AiModulePanel;
 import com.omnistrike.ui.modules.DeserModulePanel;
 import com.omnistrike.ui.modules.GenericModulePanel;
+import com.omnistrike.ui.modules.WebSocketScannerPanel;
+import com.omnistrike.modules.websocket.WebSocketScanner;
 
 import static com.omnistrike.ui.CyberTheme.*;
 
@@ -495,6 +497,8 @@ public class MainPanel extends JPanel {
             } else if ("deser-scanner".equals(module.getId())) {
                 deserModulePanel = new DeserModulePanel(api, findingsStore);
                 panel = deserModulePanel;
+            } else if ("ws-scanner".equals(module.getId()) && module instanceof WebSocketScanner wsModule) {
+                panel = new WebSocketScannerPanel(wsModule, findingsStore, collaboratorManager, api);
             } else {
                 panel = new GenericModulePanel(module.getId(), module.getName(), findingsStore, api);
             }
@@ -746,6 +750,8 @@ public class MainPanel extends JPanel {
                 ((AiModulePanel) panel).stopTimers();
             } else if (panel instanceof DeserModulePanel) {
                 ((DeserModulePanel) panel).stopTimers();
+            } else if (panel instanceof WebSocketScannerPanel) {
+                ((WebSocketScannerPanel) panel).stopTimers();
             }
         }
     }
