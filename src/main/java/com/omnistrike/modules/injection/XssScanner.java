@@ -784,24 +784,36 @@ public class XssScanner implements ScanModule {
      */
     private void analyzeDirectFlows(String script, String url, HttpRequestResponse reqResp,
                                      List<Finding> findings, Set<String> reported) {
-        for (String source : DOM_SOURCES_ALL) {
+        // Only use HIGH and MEDIUM risk sources for direct flow analysis.
+        // LOW risk sources (.value, .textContent, JSON.parse) are too generic for
+        // proximity-based detection — they appear on virtually every interactive page.
+        // LOW sources are properly handled by analyzeVariableFlows() (Phase 2) which
+        // requires actual data flow evidence via variable assignment tracking.
+        String[][] directSourceArrays = {DOM_SOURCES_HIGH, DOM_SOURCES_MEDIUM};
+        for (String[] sourceArray : directSourceArrays) {
+        for (String source : sourceArray) {
             int srcIdx = -1;
             while ((srcIdx = script.indexOf(source, srcIdx + 1)) >= 0) {
                 for (String sink : DOM_SINKS_ALL) {
                     String key = source + "|" + sink;
                     if (reported.contains(key)) continue;
 
-                    // Search for sink within 800 chars of source (either direction)
-                    int searchStart = Math.max(0, srcIdx - 800);
-                    int searchEnd = Math.min(script.length(), srcIdx + source.length() + 800);
-                    String region = script.substring(searchStart, searchEnd);
+                    // Require source and sink in the SAME STATEMENT (bounded by ';').
+                    // The old 800-char proximity window caused false positives when
+                    // unrelated source and sink appeared near each other in the same script block
+                    // (e.g., location.pathname for analytics 400 chars from innerHTML for templates).
+                    int stmtStart = script.lastIndexOf(';', srcIdx);
+                    stmtStart = stmtStart < 0 ? 0 : stmtStart + 1;
+                    int stmtEnd = script.indexOf(';', srcIdx + source.length());
+                    if (stmtEnd < 0) stmtEnd = script.length();
+                    String region = script.substring(stmtStart, stmtEnd);
 
                     int sinkOffset = region.indexOf(sink);
                     if (sinkOffset >= 0) {
-                        int sinkAbsIdx = searchStart + sinkOffset;
+                        int sinkAbsIdx = stmtStart + sinkOffset;
                         if (sinkAbsIdx == srcIdx) continue; // Same position
 
-                        // Check if sanitizer is present between source and sink
+                        // Check if sanitizer is present in the statement
                         boolean sanitized = isSanitized(region);
 
                         String context = extractContext(script, Math.min(srcIdx, sinkAbsIdx),
@@ -839,6 +851,7 @@ public class XssScanner implements ScanModule {
                 }
             }
         }
+        } // end directSourceArrays loop
     }
 
     /**
@@ -1430,24 +1443,47 @@ public class XssScanner implements ScanModule {
 
     /**
      * Phase 9: Framework-specific DOM XSS patterns in HTML attributes.
+     * Only reports MEDIUM when the bound expression references user-controllable input.
+     * Skips entirely when a sanitizer is present. Downgrades to INFO otherwise.
      */
     private void analyzeFrameworkAttributes(String body, String url, HttpRequestResponse reqResp,
                                              List<Finding> findings, Set<String> reported) {
+        // Keywords indicating user-controlled input in framework expressions
+        String[] userInputIndicators = {
+                "location", "search", "hash", "query", "param", "url", "href",
+                "route", "router", "request", "req", "input", "user",
+                "$route", "$router", "document.URL", "document.referrer",
+                "cookie", "localStorage", "sessionStorage", "postMessage",
+                "event.data", "window.name", "window.location"
+        };
+        // Sanitizer keywords — if present in the expression, skip (already safe)
+        String[] sanitizerKeywords = {
+                "DOMPurify", "sanitize", "escape", "encode", "purify", "clean",
+                "xssFilter", "htmlEntities", "stripTags"
+        };
+
         // Vue: v-html with dynamic binding
         Pattern vueVHtml = Pattern.compile("v-html\\s*=\\s*[\"']([^\"']+)[\"']");
         Matcher vuem = vueVHtml.matcher(body);
         while (vuem.find()) {
             String key = "vue-vhtml|" + vuem.start();
             if (reported.contains(key)) continue;
+            String expr = vuem.group(1);
+            if (exprContainsAny(expr, sanitizerKeywords)) continue; // Sanitized — skip
+            boolean hasUserInput = exprContainsAny(expr, userInputIndicators);
 
             findings.add(Finding.builder("xss-scanner",
                             "DOM XSS: Vue v-html Directive",
-                            Severity.MEDIUM, Confidence.TENTATIVE)
+                            hasUserInput ? Severity.MEDIUM : Severity.INFO, Confidence.TENTATIVE)
                     .url(url)
                     .evidence("v-html binding: " + vuem.group()
-                            + "\nExpression: " + vuem.group(1))
-                    .description("Vue's v-html directive renders raw HTML without sanitization. If the bound "
-                            + "expression '" + vuem.group(1) + "' contains user-controlled data, XSS is possible.")
+                            + "\nExpression: " + expr
+                            + "\nUser input detected: " + (hasUserInput ? "YES" : "NO (manual review needed)"))
+                    .description("Vue's v-html directive renders raw HTML without sanitization. "
+                            + (hasUserInput
+                            ? "The expression '" + expr + "' references user-controllable input — XSS is likely."
+                            : "The expression '" + expr + "' does not obviously reference user input, "
+                            + "but verify the data source manually."))
                     .remediation("Use {{ }} interpolation (auto-escaped) instead of v-html. If HTML rendering "
                             + "is needed, sanitize with DOMPurify first.")
                     .requestResponse(reqResp)
@@ -1463,15 +1499,21 @@ public class XssScanner implements ScanModule {
         while (reactm.find()) {
             String key = "react-danger|" + reactm.start();
             if (reported.contains(key)) continue;
+            String expr = reactm.group(1).trim();
+            if (exprContainsAny(expr, sanitizerKeywords)) continue; // Sanitized — skip
+            boolean hasUserInput = exprContainsAny(expr, userInputIndicators);
 
             findings.add(Finding.builder("xss-scanner",
                             "DOM XSS: React dangerouslySetInnerHTML",
-                            Severity.MEDIUM, Confidence.TENTATIVE)
+                            hasUserInput ? Severity.MEDIUM : Severity.INFO, Confidence.TENTATIVE)
                     .url(url)
                     .evidence("React: " + truncate(reactm.group(), 200)
-                            + "\nContent expression: " + reactm.group(1).trim())
-                    .description("React's dangerouslySetInnerHTML renders unescaped HTML. If the content "
-                            + "includes user-controlled data, XSS is possible.")
+                            + "\nContent expression: " + expr
+                            + "\nUser input detected: " + (hasUserInput ? "YES" : "NO (manual review needed)"))
+                    .description("React's dangerouslySetInnerHTML renders unescaped HTML. "
+                            + (hasUserInput
+                            ? "The expression references user-controllable input — XSS is likely."
+                            : "No obvious user input detected — verify the data source manually."))
                     .remediation("Avoid dangerouslySetInnerHTML. If needed, sanitize with DOMPurify.sanitize() "
                             + "before passing to __html.")
                     .requestResponse(reqResp)
@@ -1480,23 +1522,29 @@ public class XssScanner implements ScanModule {
             reported.add(key);
         }
 
-        // Angular: bypassSecurityTrust* calls
+        // Angular: bypassSecurityTrust* calls — extract argument to check for user input
         Pattern angularBypass = Pattern.compile(
-                "bypassSecurityTrust(Html|Script|Url|ResourceUrl|Style)\\s*\\(",
+                "bypassSecurityTrust(Html|Script|Url|ResourceUrl|Style)\\s*\\(([^)]{0,300})\\)",
                 Pattern.CASE_INSENSITIVE);
         Matcher angm = angularBypass.matcher(body);
         while (angm.find()) {
             String key = "angular-bypass|" + angm.start();
             if (reported.contains(key)) continue;
+            String expr = angm.group(2) != null ? angm.group(2).trim() : "";
+            if (exprContainsAny(expr, sanitizerKeywords)) continue;
+            boolean hasUserInput = exprContainsAny(expr, userInputIndicators);
 
             findings.add(Finding.builder("xss-scanner",
                             "DOM XSS: Angular Security Bypass — bypassSecurityTrust" + angm.group(1),
-                            Severity.HIGH, Confidence.TENTATIVE)
+                            hasUserInput ? Severity.HIGH : Severity.LOW, Confidence.TENTATIVE)
                     .url(url)
-                    .evidence("Angular bypass: " + angm.group())
+                    .evidence("Angular bypass: " + angm.group()
+                            + "\nUser input detected: " + (hasUserInput ? "YES" : "NO (manual review needed)"))
                     .description("Angular's DomSanitizer.bypassSecurityTrust" + angm.group(1)
-                            + "() disables Angular's built-in XSS protection. If the input contains "
-                            + "user-controlled data, XSS is possible.")
+                            + "() disables Angular's built-in XSS protection. "
+                            + (hasUserInput
+                            ? "The argument references user-controllable input — XSS is likely."
+                            : "No obvious user input detected — verify the data source manually."))
                     .remediation("Avoid bypassSecurityTrust* functions. Use Angular's built-in sanitization "
                             + "or sanitize with DOMPurify before bypassing.")
                     .requestResponse(reqResp)
@@ -1512,22 +1560,36 @@ public class XssScanner implements ScanModule {
             while (ngm.find()) {
                 String key = "angularjs-bind|" + ngm.start();
                 if (reported.contains(key)) continue;
+                String expr = ngm.group(1);
+                if (exprContainsAny(expr, sanitizerKeywords)) continue;
+                boolean hasUserInput = exprContainsAny(expr, userInputIndicators);
 
                 findings.add(Finding.builder("xss-scanner",
                                 "DOM XSS: AngularJS ng-bind-html",
-                                Severity.MEDIUM, Confidence.TENTATIVE)
+                                hasUserInput ? Severity.MEDIUM : Severity.INFO, Confidence.TENTATIVE)
                         .url(url)
                         .evidence("ng-bind-html: " + ngm.group()
-                                + "\nExpression: " + ngm.group(1))
-                        .description("AngularJS ng-bind-html renders HTML content. If the bound expression "
-                                + "contains user input, XSS may be possible (especially in AngularJS < 1.6 "
-                                + "or with $sce disabled).")
+                                + "\nExpression: " + expr
+                                + "\nUser input detected: " + (hasUserInput ? "YES" : "NO (manual review needed)"))
+                        .description("AngularJS ng-bind-html renders HTML content. "
+                                + (hasUserInput
+                                ? "The expression references user-controllable input — XSS is likely."
+                                : "No obvious user input detected — verify manually."))
                         .requestResponse(reqResp)
                         .responseEvidence(ngm.group())
                         .build());
                 reported.add(key);
             }
         }
+    }
+
+    /** Checks if expression contains any of the given keywords (case-insensitive). */
+    private static boolean exprContainsAny(String expr, String[] keywords) {
+        String lower = expr.toLowerCase();
+        for (String kw : keywords) {
+            if (lower.contains(kw.toLowerCase())) return true;
+        }
+        return false;
     }
 
     // ==================== PASSIVE: DOM CLOBBERING (Improvement 4) ====================

@@ -135,8 +135,8 @@ public class HttpParamPollutionScanner implements ScanModule {
                     testWafBypass(requestResponse, target, url, urlPath);
                 }
 
-                // Phase 4: Parameter precedence detection
-                if (config.getBool("hpp.precedence.enabled", true)) {
+                // Phase 4: Parameter precedence detection (off by default — fires on most endpoints)
+                if (config.getBool("hpp.precedence.enabled", false)) {
                     testParameterPrecedence(requestResponse, target, url, urlPath);
                 }
 

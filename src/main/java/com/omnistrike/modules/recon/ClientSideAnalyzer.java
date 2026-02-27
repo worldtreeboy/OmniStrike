@@ -397,10 +397,17 @@ public class ClientSideAnalyzer implements ScanModule {
                     String pairKey = source + "→" + sink;
                     if (reportedPairs.contains(pairKey)) continue;
 
-                    // Check if a sanitizer call exists between source and sink positions
+                    // Require source and sink in the SAME STATEMENT (no ';' between them).
+                    // The old approach reported any source+sink in the same script block,
+                    // causing false positives when unrelated code used both URL APIs and
+                    // DOM manipulation in the same script (e.g., analytics + templating).
                     int regionStart = Math.min(sourceIdx, sinkIdx);
                     int regionEnd = Math.max(sourceIdx + source.length(), sinkIdx + sink.length());
-                    String between = script.substring(regionStart, Math.min(regionEnd, script.length()));
+                    String betweenCheck = script.substring(regionStart, Math.min(regionEnd, script.length()));
+                    if (betweenCheck.contains(";")) continue; // Different statements — no proven flow
+
+                    // Check if a sanitizer call exists between source and sink positions
+                    String between = betweenCheck;
                     boolean hasSanitizer = false;
                     for (String san : sanitizers) {
                         if (between.contains(san)) { hasSanitizer = true; break; }
