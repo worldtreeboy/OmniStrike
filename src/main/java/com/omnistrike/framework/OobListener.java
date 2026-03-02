@@ -1,24 +1,21 @@
 package com.omnistrike.framework;
 
 import burp.api.montoya.collaborator.InteractionType;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.*;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.BiConsumer;
 
 /**
  * Embedded HTTP + DNS server that catches OOB callbacks from target applications.
- * Runs inside the Burp extension — no external server required.
+ * Uses raw {@link ServerSocket} for HTTP (not {@code com.sun.net.httpserver} which
+ * is blocked by Burp Suite's classloader) and {@link DatagramSocket} for DNS.
  *
  * <ul>
  *   <li><b>HTTP</b>: Any request to {@code http://<ip>:<httpPort>/<payloadId>/...} is matched.</li>
@@ -29,7 +26,9 @@ import java.util.function.BiConsumer;
  */
 public class OobListener {
 
-    private HttpServer httpServer;
+    private ServerSocket httpServerSocket;
+    private ExecutorService httpExecutor;
+    private Thread httpAcceptThread;
     private DatagramSocket dnsSocket;
     private Thread dnsThread;
     private final String bindAddress;
@@ -47,7 +46,7 @@ public class OobListener {
     public OobListener(String bindAddress, int httpPort) {
         this.bindAddress = bindAddress;
         this.httpPort = httpPort;
-        this.dnsPort = 53; // Default DNS port
+        this.dnsPort = 53;
     }
 
     public OobListener(String bindAddress, int httpPort, int dnsPort) {
@@ -60,17 +59,36 @@ public class OobListener {
         this.interactionHandler = handler;
     }
 
-    // ==================== HTTP LISTENER ====================
+    // ==================== HTTP LISTENER (raw ServerSocket) ====================
 
     /**
-     * Starts the HTTP listener. All paths are handled — the first path segment is the payload ID.
+     * Starts the HTTP listener using a raw ServerSocket.
+     * Accepts connections on a background thread, dispatches each to a thread pool.
      */
     public void startHttp() throws IOException {
-        httpServer = HttpServer.create(new InetSocketAddress(bindAddress, httpPort), 0);
-        httpServer.createContext("/", this::handleRequest);
-        httpServer.setExecutor(Executors.newFixedThreadPool(4));
-        httpServer.start();
+        InetAddress addr = InetAddress.getByName(bindAddress);
+        httpServerSocket = new ServerSocket(httpPort, 50, addr);
+        httpExecutor = Executors.newFixedThreadPool(4, r -> {
+            Thread t = new Thread(r, "OmniStrike-OOB-HTTP");
+            t.setDaemon(true);
+            return t;
+        });
         httpRunning = true;
+
+        httpAcceptThread = new Thread(() -> {
+            while (httpRunning) {
+                try {
+                    Socket clientSocket = httpServerSocket.accept();
+                    httpExecutor.submit(() -> handleHttpConnection(clientSocket));
+                } catch (IOException e) {
+                    if (httpRunning) {
+                        // Real error, not just socket closed during shutdown
+                    }
+                }
+            }
+        }, "OmniStrike-OOB-Accept");
+        httpAcceptThread.setDaemon(true);
+        httpAcceptThread.start();
     }
 
     /** Legacy start() — starts HTTP only for backward compatibility. */
@@ -80,10 +98,109 @@ public class OobListener {
 
     public void stopHttp() {
         httpRunning = false;
-        if (httpServer != null) {
-            httpServer.stop(1);
-            httpServer = null;
+        if (httpServerSocket != null) {
+            try { httpServerSocket.close(); } catch (IOException ignored) {}
+            httpServerSocket = null;
         }
+        if (httpExecutor != null) {
+            httpExecutor.shutdownNow();
+            httpExecutor = null;
+        }
+        if (httpAcceptThread != null) {
+            httpAcceptThread.interrupt();
+            httpAcceptThread = null;
+        }
+    }
+
+    /**
+     * Handles a single HTTP connection: reads the request line to extract the path,
+     * extracts the payload ID, fires the callback, and sends a 200 OK response.
+     */
+    private void handleHttpConnection(Socket socket) {
+        try {
+            socket.setSoTimeout(5000); // 5 second read timeout
+            InputStream in = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            // Read the request line (e.g., "GET /abc123/cmdi HTTP/1.1\r\n")
+            String requestLine = readLine(in);
+            if (requestLine == null || requestLine.isEmpty()) {
+                socket.close();
+                return;
+            }
+
+            // Read headers (we just need Host for the evidence string)
+            String host = "";
+            String line;
+            while ((line = readLine(in)) != null && !line.isEmpty()) {
+                if (line.toLowerCase().startsWith("host:")) {
+                    host = line.substring(5).trim();
+                }
+            }
+
+            // Parse method and path from request line: "GET /abc123/cmdi HTTP/1.1"
+            String[] parts = requestLine.split(" ");
+            String method = parts.length > 0 ? parts[0] : "GET";
+            String path = parts.length > 1 ? parts[1] : "/";
+
+            // Extract payload ID from the first path segment
+            String payloadId = extractPayloadId(path);
+
+            // Build raw request string for evidence
+            InetAddress remoteAddr = socket.getInetAddress();
+            int remotePort = socket.getPort();
+            String rawRequest = method + " " + path + " HTTP/1.1\n"
+                    + "Host: " + host + "\n"
+                    + "From: " + remoteAddr.getHostAddress() + ":" + remotePort;
+
+            // Dispatch to CollaboratorManager
+            if (payloadId != null && !payloadId.isEmpty() && interactionHandler != null) {
+                CustomOobInteraction interaction = new CustomOobInteraction(
+                        payloadId,
+                        remoteAddr,
+                        remotePort,
+                        rawRequest
+                );
+                interactionHandler.accept(payloadId, interaction);
+            }
+
+            // Send 200 OK response
+            String response = "HTTP/1.1 200 OK\r\n"
+                    + "Content-Type: text/plain\r\n"
+                    + "Content-Length: 2\r\n"
+                    + "Connection: close\r\n"
+                    + "\r\n"
+                    + "OK";
+            out.write(response.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+        } catch (Exception e) {
+            // Never crash — just close the connection
+        } finally {
+            try { socket.close(); } catch (IOException ignored) {}
+        }
+    }
+
+    /**
+     * Reads a single line from the input stream (terminated by \r\n or \n).
+     */
+    private String readLine(InputStream in) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        int c;
+        while ((c = in.read()) != -1) {
+            if (c == '\r') {
+                int next = in.read(); // consume \n
+                if (next != '\n' && next != -1) {
+                    sb.append((char) c);
+                    sb.append((char) next);
+                    continue;
+                }
+                break;
+            }
+            if (c == '\n') break;
+            sb.append((char) c);
+            if (sb.length() > 8192) break; // Safety limit
+        }
+        return sb.toString();
     }
 
     // ==================== DNS LISTENER ====================
@@ -99,7 +216,7 @@ public class OobListener {
         dnsSocket = new DatagramSocket(dnsPort, addr);
 
         dnsThread = new Thread(() -> {
-            byte[] buf = new byte[512]; // Standard DNS UDP max size
+            byte[] buf = new byte[512];
             while (dnsRunning) {
                 try {
                     DatagramPacket packet = new DatagramPacket(buf, buf.length);
@@ -170,46 +287,6 @@ public class OobListener {
         return bindAddress;
     }
 
-    private void handleRequest(HttpExchange exchange) {
-        try {
-            String path = exchange.getRequestURI().getPath();
-            String method = exchange.getRequestMethod();
-            InetSocketAddress remoteAddr = exchange.getRemoteAddress();
-
-            // Extract payload ID from the first path segment: /abc123/cmdi → abc123
-            String payloadId = extractPayloadId(path);
-
-            // Build raw request string for evidence
-            String rawRequest = method + " " + exchange.getRequestURI() + " HTTP/1.1\n"
-                    + "Host: " + exchange.getRequestHeaders().getFirst("Host") + "\n"
-                    + "From: " + remoteAddr.getAddress().getHostAddress() + ":" + remoteAddr.getPort();
-
-            // Dispatch to CollaboratorManager
-            if (payloadId != null && !payloadId.isEmpty() && interactionHandler != null) {
-                CustomOobInteraction interaction = new CustomOobInteraction(
-                        payloadId,
-                        remoteAddr.getAddress(),
-                        remoteAddr.getPort(),
-                        rawRequest
-                );
-                interactionHandler.accept(payloadId, interaction);
-            }
-
-            // Always return 200 OK — we want the target to think the request succeeded
-            byte[] body = "OK".getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", "text/plain");
-            exchange.sendResponseHeaders(200, body.length);
-            try (OutputStream os = exchange.getResponseBody()) {
-                os.write(body);
-            }
-        } catch (Exception e) {
-            try {
-                exchange.sendResponseHeaders(500, 0);
-                exchange.close();
-            } catch (IOException ignored) {}
-        }
-    }
-
     /**
      * Extracts the payload ID from the first URL path segment.
      * {@code /abc123def/cmdi} → {@code abc123def}
@@ -218,7 +295,6 @@ public class OobListener {
      */
     private String extractPayloadId(String path) {
         if (path == null || path.length() <= 1) return null;
-        // Remove leading slash
         String trimmed = path.substring(1);
         int slashIdx = trimmed.indexOf('/');
         return slashIdx > 0 ? trimmed.substring(0, slashIdx) : trimmed;
@@ -249,7 +325,6 @@ public class OobListener {
         } catch (SocketException e) {
             // Fallback: at least offer localhost
         }
-        // Always offer loopback as last option
         result.add(new String[]{"loopback", "127.0.0.1"});
         return result;
     }
@@ -280,40 +355,32 @@ public class OobListener {
 
     /**
      * Handles an incoming DNS query packet (RFC 1035).
-     * Extracts the queried domain name, uses the first label as the payload ID,
-     * sends a valid A record response, and fires the interaction callback.
      */
     private void handleDnsQuery(DatagramPacket packet) {
         try {
             byte[] data = packet.getData();
             int len = packet.getLength();
-            if (len < 12) return; // Too short for a DNS header
+            if (len < 12) return;
 
-            // Parse DNS header (RFC 1035 Section 4.1.1)
             int txnId = ((data[0] & 0xFF) << 8) | (data[1] & 0xFF);
             int flags = ((data[2] & 0xFF) << 8) | (data[3] & 0xFF);
             int qdCount = ((data[4] & 0xFF) << 8) | (data[5] & 0xFF);
 
-            // Only handle standard queries (QR=0, OPCODE=0)
-            if ((flags & 0x8000) != 0) return; // QR bit set = response, not query
+            if ((flags & 0x8000) != 0) return;
             if (qdCount < 1) return;
 
-            // Parse the question section — extract the queried domain name
-            int offset = 12; // Skip header
+            int offset = 12;
             String domain = parseDomainName(data, offset, len);
             if (domain == null || domain.isEmpty()) return;
 
-            // Extract payload ID from the first label (before first dot)
             String payloadId = domain.contains(".")
                     ? domain.substring(0, domain.indexOf('.'))
                     : domain;
 
-            // Build raw request string for evidence
             String rawRequest = "DNS Query: " + domain
                     + " from " + packet.getAddress().getHostAddress() + ":" + packet.getPort()
                     + " (txnId=" + txnId + ")";
 
-            // Fire the interaction callback
             if (payloadId != null && !payloadId.isEmpty() && interactionHandler != null) {
                 CustomOobInteraction interaction = new CustomOobInteraction(
                         payloadId,
@@ -325,7 +392,6 @@ public class OobListener {
                 interactionHandler.accept(payloadId, interaction);
             }
 
-            // Build and send DNS response with A record pointing to our IP
             byte[] response = buildDnsResponse(data, len, txnId, domain);
             if (response != null) {
                 DatagramPacket responsePacket = new DatagramPacket(
@@ -337,18 +403,13 @@ public class OobListener {
         }
     }
 
-    /**
-     * Parses a domain name from the DNS question section (RFC 1035 Section 4.1.2).
-     * Format: sequence of (length-byte, label-bytes), terminated by 0x00.
-     * Example: 0x07 "example" 0x03 "com" 0x00 → "example.com"
-     */
     private String parseDomainName(byte[] data, int offset, int maxLen) {
         StringBuilder domain = new StringBuilder();
         while (offset < maxLen) {
             int labelLen = data[offset] & 0xFF;
-            if (labelLen == 0) break; // End of domain name
-            if ((labelLen & 0xC0) == 0xC0) break; // Pointer (compression) — stop parsing
-            if (offset + 1 + labelLen > maxLen) break; // Bounds check
+            if (labelLen == 0) break;
+            if ((labelLen & 0xC0) == 0xC0) break;
+            if (offset + 1 + labelLen > maxLen) break;
             if (domain.length() > 0) domain.append('.');
             domain.append(new String(data, offset + 1, labelLen, StandardCharsets.US_ASCII));
             offset += 1 + labelLen;
@@ -356,11 +417,6 @@ public class OobListener {
         return domain.toString().toLowerCase();
     }
 
-    /**
-     * Builds a DNS response packet with an A record pointing to our listener IP.
-     * Mirrors the query's transaction ID and question section, sets QR=1 (response),
-     * AA=1 (authoritative), and appends a single A record answer.
-     */
     private byte[] buildDnsResponse(byte[] queryData, int queryLen, int txnId, String domain) {
         try {
             InetAddress responseIp = InetAddress.getByName(bindAddress);
@@ -369,44 +425,40 @@ public class OobListener {
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream(512);
 
-            // DNS Header (12 bytes)
-            baos.write((txnId >> 8) & 0xFF); // Transaction ID high
-            baos.write(txnId & 0xFF);        // Transaction ID low
-            baos.write(0x85);                 // Flags high: QR=1, AA=1, RD=1
-            baos.write(0x00);                 // Flags low: RCODE=0 (no error)
+            baos.write((txnId >> 8) & 0xFF);
+            baos.write(txnId & 0xFF);
+            baos.write(0x85);
+            baos.write(0x00);
             baos.write(0x00); baos.write(0x01); // QDCOUNT = 1
             baos.write(0x00); baos.write(0x01); // ANCOUNT = 1
             baos.write(0x00); baos.write(0x00); // NSCOUNT = 0
             baos.write(0x00); baos.write(0x00); // ARCOUNT = 0
 
-            // Question section — copy the domain name from the query
             int offset = 12;
             while (offset < queryLen) {
                 int labelLen = queryData[offset] & 0xFF;
                 if (labelLen == 0) {
-                    baos.write(0x00); // Terminator
+                    baos.write(0x00);
                     offset++;
                     break;
                 }
                 baos.write(queryData, offset, 1 + labelLen);
                 offset += 1 + labelLen;
             }
-            // QTYPE (2 bytes) + QCLASS (2 bytes) — copy from query
             if (offset + 4 <= queryLen) {
                 baos.write(queryData, offset, 4);
             } else {
-                baos.write(0x00); baos.write(0x01); // A record
-                baos.write(0x00); baos.write(0x01); // IN class
+                baos.write(0x00); baos.write(0x01);
+                baos.write(0x00); baos.write(0x01);
             }
 
-            // Answer section — pointer to domain name in question (0xC00C)
-            baos.write(0xC0); baos.write(0x0C); // Name pointer to offset 12
+            baos.write(0xC0); baos.write(0x0C);
             baos.write(0x00); baos.write(0x01); // TYPE = A
             baos.write(0x00); baos.write(0x01); // CLASS = IN
-            baos.write(0x00); baos.write(0x00); // TTL high (60 seconds)
-            baos.write(0x00); baos.write(0x3C); // TTL low
-            baos.write(0x00); baos.write(0x04); // RDLENGTH = 4 (IPv4)
-            baos.write(ipBytes);                // RDATA = our IP
+            baos.write(0x00); baos.write(0x00);
+            baos.write(0x00); baos.write(0x3C); // TTL = 60s
+            baos.write(0x00); baos.write(0x04); // RDLENGTH = 4
+            baos.write(ipBytes);
 
             return baos.toByteArray();
         } catch (Exception e) {
