@@ -119,27 +119,20 @@ public class StepperPanel extends JPanel {
         });
         topPanel.add(invalidateBtn);
 
-        // ════════════════════ EXPLANATION BANNER ════════════════════
+        // ════════════════════ EXPLANATION BANNER (collapsible) ════════════════════
         JPanel bannerPanel = new JPanel(new BorderLayout(0, 0));
         bannerPanel.setBackground(BG_SURFACE);
         bannerPanel.setBorder(BorderFactory.createCompoundBorder(
                 new CyberTheme.GlowMatteBorder(1, 0, 1, 0, BORDER),
-                BorderFactory.createEmptyBorder(6, 10, 6, 10)));
+                BorderFactory.createEmptyBorder(4, 10, 4, 10)));
 
         JTextArea helpText = new JTextArea(
-                "STEPPER — Prerequisite Request Chain\n\n"
-                + "Multi-step web flows (login -> CSRF token -> session -> form) produce single-use tokens.\n"
-                + "Stepper automates this: define the prerequisite requests (steps 1-4), configure extraction\n"
-                + "rules to capture tokens from each response, and Stepper automatically replays the full chain\n"
-                + "before ANY outgoing request (Repeater, active scans, Intruder).\n\n"
-                + "HOW TO USE:\n"
+                "HOW TO USE:\n"
                 + "  1. Enable Stepper (checkbox above)\n"
                 + "  2. Right-click requests in Proxy/Repeater -> 'Send to Stepper' to add prerequisite steps\n"
                 + "  3. Select each step and add extraction rules (e.g., COOKIE: PHPSESSID, BODY_REGEX for CSRF)\n"
                 + "  4. Use {{variable_name}} placeholders in later steps or your target request headers/body\n"
-                + "  5. Click 'Run Chain' to test, or just send a request — Stepper runs automatically\n\n"
-                + "The chain runs once per Cache TTL window. During active scans (hundreds of requests/sec),\n"
-                + "cached tokens are reused without re-running the chain.");
+                + "  5. Click 'Run Chain' to test, or just send a request — Stepper runs automatically");
         helpText.setEditable(false);
         helpText.setLineWrap(true);
         helpText.setWrapStyleWord(true);
@@ -147,6 +140,18 @@ public class StepperPanel extends JPanel {
         helpText.setForeground(FG_SECONDARY);
         helpText.setFont(MONO_SMALL);
         bannerPanel.add(helpText, BorderLayout.CENTER);
+
+        // Toggle button to show/hide the help banner
+        JButton helpToggle = new JButton("? Help");
+        styleButton(helpToggle, NEON_CYAN);
+        helpToggle.setMargin(new Insets(2, 8, 2, 8));
+        bannerPanel.setVisible(false); // Collapsed by default
+        helpToggle.addActionListener(e -> {
+            bannerPanel.setVisible(!bannerPanel.isVisible());
+            helpToggle.setText(bannerPanel.isVisible() ? "? Hide Help" : "? Help");
+            revalidate();
+        });
+        topPanel.add(helpToggle);
 
         JPanel northWrapper = new JPanel();
         northWrapper.setLayout(new BoxLayout(northWrapper, BoxLayout.Y_AXIS));
@@ -321,6 +326,7 @@ public class StepperPanel extends JPanel {
         JSplitPane stepRuleSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, stepsPanel, rulesPanel);
         stepRuleSplit.setDividerLocation(200);
         styleSplitPane(stepRuleSplit);
+        stepRuleSplit.setDividerSize(8);
         centerPanel.add(stepRuleSplit, BorderLayout.CENTER);
 
         add(centerPanel, BorderLayout.CENTER);
@@ -409,10 +415,11 @@ public class StepperPanel extends JPanel {
         JSplitPane bottomSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, cookiePanel, varPanel);
         bottomSplit.setDividerLocation(450);
         styleSplitPane(bottomSplit);
+        bottomSplit.setDividerSize(8);
         bottomPanel.add(bottomSplit, BorderLayout.CENTER);
 
         add(bottomPanel, BorderLayout.SOUTH);
-        bottomPanel.setPreferredSize(new Dimension(0, 180));
+        bottomPanel.setPreferredSize(new Dimension(0, 160));
 
         // ════════════════════ Refresh Timer ════════════════════
         refreshTimer = new Timer(3000, e -> {
