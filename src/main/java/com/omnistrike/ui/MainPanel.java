@@ -724,13 +724,16 @@ public class MainPanel extends JPanel {
                 BorderFactory.createEmptyBorder(4, 12, 4, 12)));
         customControls.add(listenerToggle);
 
-        // Listener status label
+        oobPanel.add(customControls);
+
+        // --- Listener status row (separate line so it doesn't get truncated) ---
+        JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        statusRow.setBackground(BG_DARK);
         JLabel listenerStatusLabel = new JLabel("Status: Not started");
         listenerStatusLabel.setForeground(FG_SECONDARY);
-        listenerStatusLabel.setFont(MONO_SMALL);
-        customControls.add(listenerStatusLabel);
-
-        oobPanel.add(customControls);
+        listenerStatusLabel.setFont(MONO_BOLD);
+        statusRow.add(listenerStatusLabel);
+        oobPanel.add(statusRow);
 
         // --- Payload preview label ---
         JPanel previewRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
@@ -763,11 +766,13 @@ public class MainPanel extends JPanel {
 
         // --- Visibility toggle ---
         customControls.setVisible(customOobRadio.isSelected());
+        statusRow.setVisible(customOobRadio.isSelected());
         previewRow.setVisible(customOobRadio.isSelected());
 
         // --- Radio button actions ---
         burpCollabRadio.addActionListener(e -> {
             customControls.setVisible(false);
+            statusRow.setVisible(false);
             previewRow.setVisible(false);
             // Stop listener if running
             if (listenerToggle.isSelected()) {
@@ -780,6 +785,7 @@ public class MainPanel extends JPanel {
 
         customOobRadio.addActionListener(e -> {
             customControls.setVisible(true);
+            statusRow.setVisible(true);
             previewRow.setVisible(true);
             collaboratorManager.switchToCustomOob();
             updateOobStatus(oobStatusLabel);

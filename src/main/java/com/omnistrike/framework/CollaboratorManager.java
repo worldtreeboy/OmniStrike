@@ -170,22 +170,26 @@ public class CollaboratorManager {
         try {
             oobListener = new OobListener(address, httpPort, dnsPort);
             oobListener.setInteractionHandler(this::handleCustomOobInteraction);
+            uiLog("Starting HTTP listener on " + address + ":" + httpPort + "...");
             oobListener.startHttp();
-            uiLog("HTTP listener started on " + address + ":" + httpPort);
+            uiLog("HTTP listener started successfully on " + address + ":" + httpPort);
 
             try {
+                uiLog("Starting DNS listener on " + address + ":" + dnsPort + " (UDP)...");
                 oobListener.startDns();
-                uiLog("DNS listener started on " + address + ":" + dnsPort + " (UDP)");
-            } catch (IOException dnsEx) {
+                uiLog("DNS listener started successfully on " + address + ":" + dnsPort + " (UDP)");
+            } catch (Exception dnsEx) {
                 // DNS failure is non-fatal — HTTP still works
-                uiLog("DNS failed to start on port " + dnsPort + ": " + dnsEx.getMessage() + " (HTTP still active)");
+                uiLog("DNS FAILED on port " + dnsPort + ": " + dnsEx.getClass().getSimpleName()
+                        + ": " + dnsEx.getMessage() + " (HTTP still active)");
             }
 
             available = true;
             startCleanupTask();
             return true;
-        } catch (IOException e) {
-            uiLog("Failed to start HTTP on " + address + ":" + httpPort + ": " + e.getMessage());
+        } catch (Exception e) {
+            uiLog("FAILED to start HTTP on " + address + ":" + httpPort
+                    + ": " + e.getClass().getSimpleName() + ": " + e.getMessage());
             available = false;
             return false;
         }
