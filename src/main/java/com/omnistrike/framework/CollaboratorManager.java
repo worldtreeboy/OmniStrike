@@ -105,7 +105,11 @@ public class CollaboratorManager {
         if (client == null) {
             initialize();
         } else {
-            available = (client != null);
+            available = true;
+            // Restart polling — it was shut down by switchToCustomOob()
+            if (poller == null) {
+                startPolling(5);
+            }
         }
     }
 

