@@ -588,6 +588,10 @@ public class MainPanel extends JPanel {
                     "Prerequisite Request Chain");
         }
 
+        // Register OmniMap as a framework tool (manual-trigger only via context menu)
+        moduleListPanel.addFrameworkEntry("omnimap-exploiter", "OmniMap Exploiter",
+                "SQL Injection Exploitation Engine");
+
         // Register Bypass URL Parser as a framework tool (manual-trigger only)
         moduleListPanel.addFrameworkEntry("bypass-url-parser", "Bypass URL Parser",
                 "403/401 Bypass via URL Manipulation");
