@@ -238,31 +238,32 @@ public class MainPanel extends JPanel {
         row1.add(glowCheckbox);
 
         // Theme combo listener — wired after scope radios and glow checkbox exist
-        // Once a theme is selected, "Default" cannot be re-selected (reload extension to revert).
-        final int[] lastThemeIndex = {0}; // track last valid selection
+        // Once a theme is selected, "Default" is removed from the dropdown (reload extension to revert).
+        final boolean[] defaultRemoved = {false};
         themeCombo.addActionListener(e -> {
             int idx = themeCombo.getSelectedIndex();
-            if (idx < 0 || idx >= GlobalThemeManager.ALL_THEMES.length) return;
+            if (idx < 0) return;
 
-            ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
-            if (palette == null && lastThemeIndex[0] != 0) {
-                // User tried to switch back to Default after using a theme — block it
-                themeCombo.setSelectedIndex(lastThemeIndex[0]);
-                return;
+            // After "Default" is removed, all indices shift down by 1
+            int paletteIdx = defaultRemoved[0] ? idx + 1 : idx;
+            if (paletteIdx < 0 || paletteIdx >= GlobalThemeManager.ALL_THEMES.length) return;
+
+            ThemePalette palette = GlobalThemeManager.ALL_THEMES[paletteIdx];
+
+            // First time selecting a real theme — remove "Default" from dropdown
+            if (palette != null && !defaultRemoved[0]) {
+                defaultRemoved[0] = true;
+                themeCombo.removeItemAt(0); // remove "Default"
+                // removeItemAt fires another action event, but defaultRemoved is already true
+                // so it won't recurse. The selection auto-adjusts.
             }
-            lastThemeIndex[0] = idx;
 
-            boolean isDefault = (palette == null);
-            scopeLocalRadio.setVisible(!isDefault);
-            scopeGlobalRadio.setVisible(!isDefault);
-            if (isDefault) {
-                glowCheckbox.setSelected(false);
-                GlobalThemeManager.stopBreathing();
-            }
-            glowCheckbox.setEnabled(!isDefault);
-
-            GlobalThemeManager.applyTheme(palette);
             if (palette != null) {
+                scopeLocalRadio.setVisible(true);
+                scopeGlobalRadio.setVisible(true);
+                glowCheckbox.setEnabled(true);
+
+                GlobalThemeManager.applyTheme(palette);
                 reapplyTheme();
             }
         });
