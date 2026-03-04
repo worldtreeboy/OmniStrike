@@ -757,7 +757,7 @@ public final class CyberTheme {
      * Only touches bg/fg — borders and fonts are left alone to avoid breaking
      * FlatLaf rendering and hit-testing.
      */
-    private static void resetColorsRecursive(Component comp) {
+    static void resetColorsRecursive(Component comp) {
         if (comp instanceof JComponent jc) {
             jc.setBackground(null);
             jc.setForeground(null);
@@ -785,7 +785,7 @@ public final class CyberTheme {
         }
     }
 
-    private static void stripWalk(Component comp) {
+    static void stripWalk(Component comp) {
         // Reset JTable custom renderers
         if (comp instanceof JTable table) {
             table.setDefaultRenderer(Object.class, null);

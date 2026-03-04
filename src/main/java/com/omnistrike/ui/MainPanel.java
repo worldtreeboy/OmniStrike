@@ -238,26 +238,32 @@ public class MainPanel extends JPanel {
         row1.add(glowCheckbox);
 
         // Theme combo listener — wired after scope radios and glow checkbox exist
+        // Once a theme is selected, "Default" cannot be re-selected (reload extension to revert).
+        final int[] lastThemeIndex = {0}; // track last valid selection
         themeCombo.addActionListener(e -> {
             int idx = themeCombo.getSelectedIndex();
-            if (idx >= 0 && idx < GlobalThemeManager.ALL_THEMES.length) {
-                ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
-                boolean isDefault = (palette == null);
-                // Show/hide scope radios
-                scopeLocalRadio.setVisible(!isDefault);
-                scopeGlobalRadio.setVisible(!isDefault);
-                // Disable/uncheck glow when Default
-                if (isDefault) {
-                    glowCheckbox.setSelected(false);
-                    GlobalThemeManager.stopBreathing();
-                }
-                glowCheckbox.setEnabled(!isDefault);
+            if (idx < 0 || idx >= GlobalThemeManager.ALL_THEMES.length) return;
 
-                GlobalThemeManager.applyTheme(palette);
-                // Re-apply OmniStrike-specific styling after palette swap
-                if (palette != null) {
-                    reapplyTheme();
-                }
+            ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
+            if (palette == null && lastThemeIndex[0] != 0) {
+                // User tried to switch back to Default after using a theme — block it
+                themeCombo.setSelectedIndex(lastThemeIndex[0]);
+                return;
+            }
+            lastThemeIndex[0] = idx;
+
+            boolean isDefault = (palette == null);
+            scopeLocalRadio.setVisible(!isDefault);
+            scopeGlobalRadio.setVisible(!isDefault);
+            if (isDefault) {
+                glowCheckbox.setSelected(false);
+                GlobalThemeManager.stopBreathing();
+            }
+            glowCheckbox.setEnabled(!isDefault);
+
+            GlobalThemeManager.applyTheme(palette);
+            if (palette != null) {
+                reapplyTheme();
             }
         });
 
