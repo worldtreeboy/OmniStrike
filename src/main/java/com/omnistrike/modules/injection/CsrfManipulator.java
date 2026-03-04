@@ -55,13 +55,19 @@ public class CsrfManipulator implements ScanModule {
     private static final List<Pattern> CSRF_PARAM_PATTERNS = List.of(
             Pattern.compile(".*csrf.*", Pattern.CASE_INSENSITIVE),
             Pattern.compile(".*xsrf.*", Pattern.CASE_INSENSITIVE),
-            Pattern.compile(".*_token.*", Pattern.CASE_INSENSITIVE),
+            Pattern.compile("(?i)^(?!access_token$|refresh_token$|oauth_token$|api_token$|bearer_token$|id_token$).*_token.*"),
             Pattern.compile(".*authenticity.token.*", Pattern.CASE_INSENSITIVE),
             Pattern.compile(".*anti.?forgery.*", Pattern.CASE_INSENSITIVE),
             Pattern.compile(".*request.?verification.*", Pattern.CASE_INSENSITIVE),
             Pattern.compile("__RequestVerificationToken", Pattern.CASE_INSENSITIVE),
-            Pattern.compile(".*nonce.*", Pattern.CASE_INSENSITIVE)
+            // Word-boundary nonce — avoids matching "announce", "prononce", etc.
+            Pattern.compile("(?i)(^|[^a-z])nonce([^a-z]|$)")
     );
+
+    // Parameter names to explicitly exclude — these are auth tokens, not CSRF tokens
+    private static final Set<String> EXCLUDED_PARAM_NAMES = Set.of(
+            "access_token", "refresh_token", "oauth_token", "api_token",
+            "bearer_token", "id_token", "auth_token", "jwt", "authorization");
 
     // Headers that commonly carry CSRF tokens
     private static final List<Pattern> CSRF_HEADER_PATTERNS = List.of(
@@ -133,6 +139,9 @@ public class CsrfManipulator implements ScanModule {
 
         // Check URL, body, and cookie parameters
         for (ParsedHttpParameter param : request.parameters()) {
+            // Skip known auth tokens — they are NOT CSRF tokens
+            if (EXCLUDED_PARAM_NAMES.contains(param.name().toLowerCase())) continue;
+
             for (Pattern pattern : CSRF_PARAM_PATTERNS) {
                 if (pattern.matcher(param.name()).matches()) {
                     targets.add(new CsrfTarget(param.name(), param.value(), param.type(), null));
@@ -282,10 +291,18 @@ public class CsrfManipulator implements ScanModule {
                     "Last character of token flipped",
                     buildModifiedRequest(original.request(), target, flipLastChar(target.value)));
 
-            runTest(original, baseline, baselineStatus, baselineBodyLen, target, findings,
-                    "6. Different case (swapped)",
-                    "Token case swapped (upper↔lower)",
-                    buildModifiedRequest(original.request(), target, swapCase(target.value)));
+            // Test 6: Skip if token is hex-only — hex comparison is case-insensitive,
+            // so swapping case produces an equivalent token (not a real bypass)
+            String swapped = swapCase(target.value);
+            if (!swapped.equalsIgnoreCase(target.value) || !isHexOnly(target.value)) {
+                runTest(original, baseline, baselineStatus, baselineBodyLen, target, findings,
+                        "6. Different case (swapped)",
+                        "Token case swapped (upper\u2194lower)",
+                        buildModifiedRequest(original.request(), target, swapped));
+            } else {
+                api.logging().logToOutput("[CsrfManipulator]   6. Case swap SKIPPED — "
+                        + "token is hex-only (case-insensitive comparison expected)");
+            }
 
             runTest(original, baseline, baselineStatus, baselineBodyLen, target, findings,
                     "7. Static fake token",
@@ -353,7 +370,7 @@ public class CsrfManipulator implements ScanModule {
 
         int resultStatus = result.response().statusCode();
         int resultBodyLen = result.response().body().length();
-        boolean accepted = isAccepted(baselineStatus, baselineBodyLen, resultStatus, resultBodyLen);
+        boolean accepted = isAccepted(baseline, result);
 
         api.logging().logToOutput("[CsrfManipulator]   " + testName
                 + " → status=" + resultStatus + " bodyLen=" + resultBodyLen
@@ -409,9 +426,8 @@ public class CsrfManipulator implements ScanModule {
         int replay2Status = replay2.response().statusCode();
         int replay2BodyLen = replay2.response().body().length();
 
-        boolean bothAccepted = isAccepted(baselineStatus, baselineBodyLen, replay1Status,
-                replay1.response().body().length())
-                && isAccepted(baselineStatus, baselineBodyLen, replay2Status, replay2BodyLen);
+        boolean bothAccepted = isAccepted(baseline, replay1)
+                && isAccepted(baseline, replay2);
 
         api.logging().logToOutput("[CsrfManipulator]   8. Nonce reuse test"
                 + " → replay1=" + replay1Status + " replay2=" + replay2Status
@@ -447,32 +463,88 @@ public class CsrfManipulator implements ScanModule {
 
     // ==================== RESPONSE COMPARISON ====================
 
+    /** Regex for CSRF/token rejection phrases in response bodies */
+    private static final Pattern REJECTION_PHRASES = Pattern.compile(
+            "(?i)(invalid.{0,15}(csrf|token|nonce|request)|"
+            + "csrf.{0,15}(fail|invalid|mismatch|error|verification|reject)|"
+            + "request.{0,15}verification.{0,15}fail|"
+            + "forgery.{0,15}(detect|protect)|"
+            + "token.{0,15}(expired|invalid|mismatch|missing|required)|"
+            + "session.{0,15}(expired|invalid)|"
+            + "security.{0,15}(violation|error)|"
+            + "forbidden.{0,15}(request|action)|"
+            + "access.{0,15}denied)");
+
+    /** URL path fragments that indicate a login/error redirect */
+    private static final Pattern LOGIN_REDIRECT_PATTERN = Pattern.compile(
+            "(?i)(/login|/signin|/sign-in|/sso|/auth|/session/new|/unauthorized"
+            + "|[?&]error=|[?&]expired=|[?&]denied=)");
+
     /**
      * Determines if a manipulated response was "accepted" by comparing it to the baseline.
-     * A response is considered accepted if:
-     *  - Status code matches the baseline (or is in the 2xx/3xx range when baseline is too)
-     *  - Body length is within 15% of the baseline (allows for dynamic content like timestamps)
      *
-     * Returns false (rejected) if the response is 401, 403, or the body length differs
-     * dramatically from the baseline.
+     * Checks (in order):
+     *  1. Hard reject: 401, 403 status codes
+     *  2. Redirect comparison: different Location header = rejected
+     *  3. Login redirect detection: redirect targets login/error page = rejected
+     *  4. Body rejection signals: response contains CSRF error phrases = rejected
+     *  5. Status + body length comparison (within 15% tolerance)
+     *
+     * Returns false (rejected) if any check indicates the CSRF protection held.
      */
-    private boolean isAccepted(int baselineStatus, int baselineBodyLen,
-                                int resultStatus, int resultBodyLen) {
-        // Clear rejection signals
+    private boolean isAccepted(HttpRequestResponse baseline, HttpRequestResponse result) {
+        if (result == null || result.response() == null) return false;
+        if (baseline == null || baseline.response() == null) return false;
+
+        int baselineStatus = baseline.response().statusCode();
+        int resultStatus = result.response().statusCode();
+        int baselineBodyLen = baseline.response().body().length();
+        int resultBodyLen = result.response().body().length();
+
+        // 1. Hard rejection signals
         if (resultStatus == 401 || resultStatus == 403) return false;
 
-        // If baseline was successful (2xx/3xx) and result is too, check body similarity
+        // 2. Redirect comparison — different Location = different outcome
+        if (resultStatus >= 300 && resultStatus < 400) {
+            String baselineLoc = getResponseHeader(baseline.response(), "Location");
+            String resultLoc = getResponseHeader(result.response(), "Location");
+
+            if (baselineLoc != null && resultLoc != null) {
+                // Normalize before comparing (strip host, lowercase)
+                if (!normalizeRedirectUrl(baselineLoc).equals(normalizeRedirectUrl(resultLoc))) {
+                    return false; // Different redirect destination = rejected
+                }
+            }
+
+            // 3. Even if baseline didn't redirect, check if result redirects to login
+            if (resultLoc != null && LOGIN_REDIRECT_PATTERN.matcher(resultLoc).find()) {
+                return false; // Redirect to login/error page = rejected
+            }
+        }
+
+        // 4. Body rejection signal detection
+        //    Only flag as rejected if the phrase appears in the result but NOT in the baseline
+        //    (avoids false negatives on pages that legitimately mention "token" in content)
+        String resultBody = safeBodyString(result);
+        String baselineBody = safeBodyString(baseline);
+        if (resultBody != null && !resultBody.isEmpty()) {
+            boolean resultHasRejection = REJECTION_PHRASES.matcher(resultBody).find();
+            boolean baselineHasRejection = baselineBody != null && REJECTION_PHRASES.matcher(baselineBody).find();
+            if (resultHasRejection && !baselineHasRejection) {
+                return false; // New rejection phrase appeared = server rejected the manipulation
+            }
+        }
+
+        // 5. Status + body length comparison
         boolean baselineSuccess = baselineStatus >= 200 && baselineStatus < 400;
         boolean resultSuccess = resultStatus >= 200 && resultStatus < 400;
 
         if (baselineSuccess && resultSuccess) {
-            // Allow 15% body length variance for dynamic content
             if (baselineBodyLen == 0) return resultBodyLen == 0;
             double ratio = (double) resultBodyLen / baselineBodyLen;
             return ratio >= 0.85 && ratio <= 1.15;
         }
 
-        // If status codes match exactly (e.g., both 302 redirect), consider accepted
         if (resultStatus == baselineStatus) {
             if (baselineBodyLen == 0) return true;
             double ratio = (double) resultBodyLen / baselineBodyLen;
@@ -480,6 +552,38 @@ public class CsrfManipulator implements ScanModule {
         }
 
         return false;
+    }
+
+    private static String getResponseHeader(burp.api.montoya.http.message.responses.HttpResponse response, String name) {
+        for (var h : response.headers()) {
+            if (h.name().equalsIgnoreCase(name)) return h.value();
+        }
+        return null;
+    }
+
+    /** Normalize redirect URL for comparison — extract path, lowercase, strip trailing slash */
+    private static String normalizeRedirectUrl(String url) {
+        if (url == null) return "";
+        String lower = url.toLowerCase();
+        // Strip scheme + host if present
+        int idx = lower.indexOf("://");
+        if (idx > 0) {
+            int slashIdx = lower.indexOf('/', idx + 3);
+            lower = slashIdx > 0 ? lower.substring(slashIdx) : "/";
+        }
+        // Strip trailing slash for comparison
+        if (lower.length() > 1 && lower.endsWith("/")) {
+            lower = lower.substring(0, lower.length() - 1);
+        }
+        return lower;
+    }
+
+    private static String safeBodyString(HttpRequestResponse rr) {
+        try {
+            return rr.response().bodyToString();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // ==================== REQUEST BUILDERS ====================
@@ -698,6 +802,17 @@ public class CsrfManipulator implements ScanModule {
         // If nothing changed (all digits/symbols), just uppercase it
         String result = sb.toString();
         return result.equals(value) ? value.toUpperCase() : result;
+    }
+
+    /** Returns true if the string contains only hex characters (0-9, a-f, A-F) */
+    private static boolean isHexOnly(String value) {
+        if (value == null || value.isEmpty()) return false;
+        for (char c : value.toCharArray()) {
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static String getLocationName(CsrfTarget target) {

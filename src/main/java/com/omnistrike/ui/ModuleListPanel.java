@@ -108,8 +108,14 @@ public class ModuleListPanel extends JPanel {
         java.util.List<ScanModule> passiveModules = new java.util.ArrayList<>();
         ScanModule aiModule = null;
 
+        // Collect IDs registered as framework tools so they don't appear in scanner sections
+        java.util.Set<String> frameworkIds = new java.util.HashSet<>();
+        for (FrameworkTool ft : frameworkToolIds) frameworkIds.add(ft.id);
+
         for (ScanModule module : registry.getAllModules()) {
-            if (ModuleRegistry.AI_MODULE_ID.equals(module.getId())) {
+            if (frameworkIds.contains(module.getId())) {
+                continue; // shown under "Framework Tools" section instead
+            } else if (ModuleRegistry.AI_MODULE_ID.equals(module.getId())) {
                 aiModule = module;
             } else if (module.isPassive()) {
                 passiveModules.add(module);

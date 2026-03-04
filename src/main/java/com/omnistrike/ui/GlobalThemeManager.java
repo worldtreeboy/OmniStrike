@@ -27,6 +27,21 @@ public final class GlobalThemeManager {
     /** Currently active palette (null = Original / Burp defaults). */
     private static ThemePalette currentPalette;
 
+    // ── Theme Scope ──────────────────────────────────────────────────
+    /** Controls whether theming applies only to the OmniStrike tab or to all of Burp. */
+    public enum ThemeScope { OMNISTRIKE_ONLY, GLOBAL }
+
+    private static ThemeScope currentScope = ThemeScope.OMNISTRIKE_ONLY;
+    private static Container omniStrikeRoot;
+
+    /** Monotonic counter incremented on every applyTheme/revert call.
+     *  Deferred invokeLater callbacks check this to skip stale work. */
+    private static volatile int themeGeneration = 0;
+
+    public static ThemeScope getCurrentScope() { return currentScope; }
+    public static void setCurrentScope(ThemeScope scope) { currentScope = scope; }
+    public static void setOmniStrikeRoot(Container root) { omniStrikeRoot = root; }
+
     /** All available palettes. Index 0 is null (Default = Burp's native look). */
     public static final ThemePalette[] ALL_THEMES = {
             null,                              //  0 - Default (no theme, Burp native)
@@ -228,36 +243,64 @@ public final class GlobalThemeManager {
     }
 
     /**
-     * Apply a theme palette. Pass null to restore Burp's original defaults.
-     * Updates CyberTheme static fields, UIManager keys, then brute-force
-     * walks every component in every frame to physically override colors.
+     * Apply a theme palette with scope awareness.
+     * <ul>
+     *   <li>null palette → revert to Burp's native L&F (nativeMode=true)</li>
+     *   <li>Non-null + GLOBAL scope → UIManager overrides + walk all frames</li>
+     *   <li>Non-null + OMNISTRIKE_ONLY → restore UIManager defaults, theme only OmniStrike root</li>
+     * </ul>
      */
     public static void applyTheme(ThemePalette palette) {
         if (palette == null) {
-            restoreOriginal();
+            revertToNative();
             return;
         }
+        final int gen = ++themeGeneration; // invalidate any pending invokeLater
         currentPalette = palette;
-        // 1. Load palette into CyberTheme mutable static fields
+        CyberTheme.setNativeMode(false);
         CyberTheme.loadPalette(palette);
-        // 2. Apply UIManager overrides for newly-created components
-        applyUIManagerOverrides(palette);
-        // 3. Force-walk all existing components + repaint
-        forceThemeOnAllFrames(palette);
+
+        if (currentScope == ThemeScope.GLOBAL) {
+            applyUIManagerOverrides(palette);
+            forceThemeOnAllFrames(palette, gen);
+        } else {
+            // OMNISTRIKE_ONLY: restore UIManager so Burp panels stay native
+            restoreUIManagerDefaults();
+            SwingUtilities.invokeLater(() -> {
+                if (themeGeneration != gen) return; // stale — scope/theme changed since queued
+                for (Frame frame : Frame.getFrames()) {
+                    try {
+                        SwingUtilities.updateComponentTreeUI(frame);
+                        frame.repaint();
+                    } catch (Exception ignored) {}
+                }
+                // Then apply theme only to OmniStrike's tree
+                if (omniStrikeRoot != null) {
+                    CyberTheme.applyRecursive(omniStrikeRoot);
+                    omniStrikeRoot.revalidate();
+                    omniStrikeRoot.repaint();
+                }
+            });
+        }
     }
 
     /**
-     * Restore Burp's original UIManager defaults and repaint.
+     * Fully reverts to Burp's native L&F. Sets nativeMode=true, stops breathing,
+     * restores UIManager defaults, strips OmniStrike styling, and updates all frames.
      */
-    public static void restoreOriginal() {
+    public static void revertToNative() {
+        final int gen = ++themeGeneration;
         currentPalette = null;
-        if (savedDefaults != null) {
-            for (Map.Entry<String, Object> entry : savedDefaults.entrySet()) {
-                UIManager.put(entry.getKey(), entry.getValue());
-            }
-        }
-        // updateComponentTreeUI reinstalls L&F delegates which read from UIManager
+        CyberTheme.setNativeMode(true);
+        stopBreathing();
+        restoreUIManagerDefaults();
         SwingUtilities.invokeLater(() -> {
+            if (themeGeneration != gen) return; // stale
+            // Strip OmniStrike custom renderers/listeners first
+            if (omniStrikeRoot != null) {
+                CyberTheme.stripRecursive(omniStrikeRoot);
+            }
+            // Reinstall L&F delegates on all frames
             for (Frame frame : Frame.getFrames()) {
                 try {
                     SwingUtilities.updateComponentTreeUI(frame);
@@ -265,6 +308,35 @@ public final class GlobalThemeManager {
                 } catch (Exception ignored) {}
             }
         });
+    }
+
+    /**
+     * Restore Burp's original UIManager defaults (alias for revertToNative).
+     * Used by the extension unload handler.
+     */
+    public static void restoreOriginal() {
+        revertToNative();
+    }
+
+    /**
+     * Switch theme scope on the fly while a theme is active.
+     * If no theme is active (nativeMode), this is a no-op.
+     */
+    public static void changeScope(ThemeScope newScope) {
+        if (currentScope == newScope) return;
+        currentScope = newScope;
+        if (currentPalette == null) return; // no theme active, nothing to do
+        // Re-apply the current theme under the new scope
+        applyTheme(currentPalette);
+    }
+
+    /** Restores saved UIManager defaults without affecting nativeMode or palette state. */
+    private static void restoreUIManagerDefaults() {
+        if (savedDefaults != null) {
+            for (Map.Entry<String, Object> entry : savedDefaults.entrySet()) {
+                UIManager.put(entry.getKey(), entry.getValue());
+            }
+        }
     }
 
     /** Returns the currently active palette (null if Original). */
@@ -537,8 +609,9 @@ public final class GlobalThemeManager {
      * colors on every component. This is the nuclear option that guarantees
      * truly global theming even for Burp Suite's internal panels.
      */
-    private static void forceThemeOnAllFrames(ThemePalette p) {
+    private static void forceThemeOnAllFrames(ThemePalette p, int gen) {
         SwingUtilities.invokeLater(() -> {
+            if (themeGeneration != gen) return; // stale — theme/scope changed since queued
             for (Frame frame : Frame.getFrames()) {
                 try {
                     // First reinstall L&F delegates so they pick up new UIManager values

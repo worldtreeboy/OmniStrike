@@ -13,7 +13,9 @@ import com.omnistrike.ui.modules.GenericModulePanel;
 import com.omnistrike.ui.modules.OmniMapPanel;
 import com.omnistrike.ui.modules.StepperPanel;
 import com.omnistrike.ui.modules.WebSocketScannerPanel;
+import com.omnistrike.ui.modules.BypassUrlParserPanel;
 import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
+import com.omnistrike.modules.injection.BypassUrlParser;
 import com.omnistrike.modules.websocket.WebSocketScanner;
 
 import com.omnistrike.framework.OobListener;
@@ -192,25 +194,40 @@ public class MainPanel extends JPanel {
         JComboBox<String> themeCombo = new JComboBox<>(GlobalThemeManager.THEME_NAMES);
         themeCombo.setSelectedIndex(0); // Default
         styleComboBox(themeCombo);
-        themeCombo.setToolTipText("Switch the global theme for the entire Burp Suite application");
-        themeCombo.addActionListener(e -> {
-            int idx = themeCombo.getSelectedIndex();
-            if (idx >= 0 && idx < GlobalThemeManager.ALL_THEMES.length) {
-                ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
-                GlobalThemeManager.applyTheme(palette);
-                // Re-apply OmniStrike-specific styling after palette swap
-                if (palette != null) {
-                    reapplyTheme();
-                }
-            }
-        });
+        themeCombo.setToolTipText("Switch OmniStrike theme");
         row1.add(themeCombo);
 
-        // Ambient Glow toggle — subtle breathing color overlay on entire Burp UI
+        // Scope radio buttons: OmniStrike Only vs Apply Globally
+        JRadioButton scopeLocalRadio = new JRadioButton("OmniStrike Only");
+        JRadioButton scopeGlobalRadio = new JRadioButton("Apply Globally");
+        styleRadioButton(scopeLocalRadio);
+        styleRadioButton(scopeGlobalRadio);
+        scopeLocalRadio.setSelected(true);
+        scopeLocalRadio.setToolTipText("Theme applies only to the OmniStrike tab — Burp's own panels stay native");
+        scopeGlobalRadio.setToolTipText("Theme applies to the entire Burp Suite application");
+        ButtonGroup scopeGroup = new ButtonGroup();
+        scopeGroup.add(scopeLocalRadio);
+        scopeGroup.add(scopeGlobalRadio);
+        // Initially hidden (no theme selected = Default)
+        scopeLocalRadio.setVisible(false);
+        scopeGlobalRadio.setVisible(false);
+
+        scopeLocalRadio.addActionListener(e -> {
+            GlobalThemeManager.changeScope(GlobalThemeManager.ThemeScope.OMNISTRIKE_ONLY);
+            reapplyTheme();
+        });
+        scopeGlobalRadio.addActionListener(e -> {
+            GlobalThemeManager.changeScope(GlobalThemeManager.ThemeScope.GLOBAL);
+            reapplyTheme();
+        });
+        row1.add(scopeLocalRadio);
+        row1.add(scopeGlobalRadio);
+
+        // Ambient Glow toggle — subtle breathing color overlay
         JCheckBox glowCheckbox = new JCheckBox("Ambient Glow");
         styleCheckBox(glowCheckbox);
         glowCheckbox.setSelected(false);
-        glowCheckbox.setToolTipText("Toggle a subtle breathing glow effect across the entire Burp Suite UI");
+        glowCheckbox.setToolTipText("Toggle a subtle breathing glow effect on themed UI borders");
         glowCheckbox.addActionListener(e -> {
             if (glowCheckbox.isSelected()) {
                 GlobalThemeManager.startBreathing();
@@ -219,6 +236,30 @@ public class MainPanel extends JPanel {
             }
         });
         row1.add(glowCheckbox);
+
+        // Theme combo listener — wired after scope radios and glow checkbox exist
+        themeCombo.addActionListener(e -> {
+            int idx = themeCombo.getSelectedIndex();
+            if (idx >= 0 && idx < GlobalThemeManager.ALL_THEMES.length) {
+                ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
+                boolean isDefault = (palette == null);
+                // Show/hide scope radios
+                scopeLocalRadio.setVisible(!isDefault);
+                scopeGlobalRadio.setVisible(!isDefault);
+                // Disable/uncheck glow when Default
+                if (isDefault) {
+                    glowCheckbox.setSelected(false);
+                    GlobalThemeManager.stopBreathing();
+                }
+                glowCheckbox.setEnabled(!isDefault);
+
+                GlobalThemeManager.applyTheme(palette);
+                // Re-apply OmniStrike-specific styling after palette swap
+                if (palette != null) {
+                    reapplyTheme();
+                }
+            }
+        });
 
         topContainer.add(row1);
 
@@ -520,6 +561,10 @@ public class MainPanel extends JPanel {
                 panel = deserModulePanel;
             } else if ("ws-scanner".equals(module.getId()) && module instanceof WebSocketScanner wsModule) {
                 panel = new WebSocketScannerPanel(wsModule, findingsStore, collaboratorManager, api);
+            } else if ("bypass-url-parser".equals(module.getId()) && module instanceof BypassUrlParser bupModule) {
+                BypassUrlParserPanel bupPanel = new BypassUrlParserPanel(bupModule, findingsStore, api);
+                bupModule.setPanel(bupPanel);
+                panel = bupPanel;
             } else {
                 panel = new GenericModulePanel(module.getId(), module.getName(), findingsStore, api);
             }
@@ -535,6 +580,10 @@ public class MainPanel extends JPanel {
             moduleListPanel.addFrameworkEntry("stepper", "Stepper",
                     "Prerequisite Request Chain");
         }
+
+        // Register Bypass URL Parser as a framework tool (manual-trigger only)
+        moduleListPanel.addFrameworkEntry("bypass-url-parser", "Bypass URL Parser",
+                "403/401 Bypass via URL Manipulation");
 
         // Placeholder when no module selected
         JPanel placeholder = new JPanel(new GridBagLayout());
@@ -626,6 +675,9 @@ public class MainPanel extends JPanel {
             updateSessionStatus();
         });
         updateTimer.start();
+
+        // Register this panel as the OmniStrike root for scoped theming
+        GlobalThemeManager.setOmniStrikeRoot(this);
     }
 
     /**
@@ -1109,6 +1161,14 @@ public class MainPanel extends JPanel {
      */
     private void reapplyTheme() {
         SwingUtilities.invokeLater(() -> {
+            if (CyberTheme.isNativeMode()) {
+                // Strip all custom styling — return to Burp native L&F
+                CyberTheme.stripRecursive(this);
+                revalidate();
+                repaint();
+                return;
+            }
+
             // Re-style entire OmniStrike component tree with new CyberTheme colors
             CyberTheme.applyRecursive(this);
 

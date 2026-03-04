@@ -4,9 +4,9 @@
 
 ### The All-in-One Burp Suite Attack Framework
 
-**20 scanner modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
+**21 scanner modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
 
-[![Version](https://img.shields.io/badge/v1.37-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
+[![Version](https://img.shields.io/badge/v1.39-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
 [![Java](https://img.shields.io/badge/Java_17+-orange?style=for-the-badge&logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Montoya_API-E8350E?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge)](LICENSE)
@@ -29,7 +29,7 @@
 
 Most Burp extensions do one thing. You end up with 15 extensions loaded, fighting for threads, duplicating requests, and missing the gaps between them.
 
-OmniStrike replaces that entire stack with a **single extension** — 16 active scanners, 4 passive analyzers, an AI fuzzer, a SQL exploitation engine, a prerequisite request chain (Stepper), and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
+OmniStrike replaces that entire stack with a **single extension** — 17 active scanners, 4 passive analyzers, an AI fuzzer, a SQL exploitation engine, a prerequisite request chain (Stepper), and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
 
 **Drop one JAR. Get everything.**
 
@@ -48,7 +48,7 @@ OmniStrike replaces that entire stack with a **single extension** — 16 active 
 
 ## Modules
 
-### Active Scanners (16)
+### Active Scanners (17)
 
 | Module | Highlights |
 |:---|:---|
@@ -68,6 +68,7 @@ OmniStrike replaces that entire stack with a **single extension** — 16 active 
 | **HTTP Param Pollution** | Duplicate param precedence, privilege escalation patterns, WAF bypass via splitting. |
 | **Prototype Pollution** | Server-side `__proto__`/`constructor.prototype` with canary persistence verification, behavioral gadgets. |
 | **Path Traversal / LFI** | 24 Unix / 9 Windows targets with structural content validation, 26 encoding bypasses, PHP wrappers (filter/data/iconv). |
+| **Bypass URL Parser** | Comprehensive 403/401 bypass scanner. 13 modes: mid-paths, end-paths, case substitution, char encoding (single/double/triple/unicode), HTTP methods, HTTP versions, method override headers, scheme spoofing, IP spoofing, port spoofing, URL rewrite headers, user-agent rotation, combined multi-header combos. Baseline comparison with classification (BYPASS/POTENTIAL/DIFFERENT/SAME). |
 
 > **CSRF Manipulator** — right-click only module with 11 token manipulation tests (remove, empty, random, truncated, char flip, case swap, static fake, nonce reuse, Referer/Origin removal, token relocation, method change).
 
@@ -183,7 +184,7 @@ Configure via the OmniStrike tab: select network interface, set HTTP port + DNS 
 | **Static resource skip** | Active scanners skip `.js`, `.css`, `.png`, etc. — passive analyzers still run |
 | **Cross-module dedup** | Normalized URL deduplication prevents redundant findings |
 | **Session Keep-Alive** | Right-click login request → Set as Session Login Request. Auto-replays periodically. |
-| **29 UI themes** | CyberPunk, Dracula, Monokai, Nord, Solarized, and more |
+| **29 UI themes** | CyberPunk, Dracula, Monokai, Nord, Solarized, and more. Scoped theming: OmniStrike-only (default) or Apply Globally. Ambient Glow breathing effect. |
 | **Request/Response highlighting** | All modules annotate findings with byte-range markers in Burp Dashboard |
 | **OOB-first strategy** | Collaborator/Custom OOB payloads fire before time-based; if OOB confirms, remaining phases skipped |
 | **3-step timing verification** | Baseline → true delay → false must NOT delay |
@@ -228,6 +229,25 @@ Requires **JDK 17+**. Dependencies: `montoya-api 2026.2`, `gson 2.11.0`.
 ---
 
 ## Changelog
+
+<details>
+<summary><b>v1.39 (2026-03-04)</b> — Theme Scoping, Bypass URL Parser</summary>
+
+- **Theme Scoping**: Themes now default to **OmniStrike Only** — Burp's Proxy, Repeater, Intruder etc. stay native. Toggle "Apply Globally" to theme the entire Burp Suite. Selecting "Default" fully reverts to Burp's native look-and-feel with zero leftover styling.
+- **Bypass URL Parser**: New active scanner module — comprehensive 403/401 bypass tool. 13 bypass modes (mid-paths, end-paths, case substitution, char encoding, HTTP methods/versions, method override headers, scheme/IP/port spoofing, URL rewrite headers, user-agent rotation, combined multi-header combos). Baseline comparison with automatic classification (BYPASS/POTENTIAL/DIFFERENT/SAME). Custom UI panel with mode selection, results table, export to JSON, context menu integration.
+- **Native Mode Default**: OmniStrike now loads with Burp's native L&F by default — no dark/neon styling applied until a theme is explicitly selected.
+- **Mouse Listener Fix**: Fixed hover listener accumulation on theme switches (buttons no longer accumulate event handlers).
+- **Generation Counter**: Theme application uses a monotonic generation counter to prevent stale `invokeLater` callbacks from interfering with scope/theme changes.
+</details>
+
+<details>
+<summary><b>v1.38 (2026-03-03)</b> — Custom OOB improvements, bug fixes</summary>
+
+- **Custom OOB**: Replaced `com.sun.net.httpserver` with raw `ServerSocket` for broader JDK compatibility. Self-test after start. Crash reporting to Activity Log.
+- **DNS-aware template resolution**: `resolveTemplate()` now generates DNS-compatible payload IDs for Custom OOB DNS payloads in SSTI + WebSocket modules.
+- **HTTP OOB payloads**: Added HTTP OOB payloads for Custom OOB compatibility in SSTI and WebSocket scanners.
+- **Bug fixes**: Fixed Collaborator polling restart after stop/start cycle, XXE DOCTYPE/JSON injection logic, Fastjson deserialization payload encoding.
+</details>
 
 <details>
 <summary><b>v1.37 (2026-03-03)</b> — Stepper, Custom OOB DNS</summary>

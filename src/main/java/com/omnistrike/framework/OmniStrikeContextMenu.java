@@ -10,6 +10,7 @@ import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.omnistrike.model.ScanModule;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
+import com.omnistrike.modules.injection.BypassUrlParser;
 import com.omnistrike.ui.OmniMapConfigDialog;
 import com.omnistrike.ui.ScanConfigDialog;
 
@@ -120,6 +121,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
                     if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
+                    if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
                     if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
                     if (m.isPassive()) {
                         moduleIds.add(m.getId());
@@ -130,6 +132,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
                     if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
+                    if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
                     if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
                     moduleIds.add(m.getId());
                     if (m.isPassive()) passive++;
@@ -287,6 +290,28 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             items.add(omniMapItem);
         }
 
+        // ============ "Send to Bypass URL Parser" — 403/401 bypass scanner ============
+        {
+            Supplier<MainPanel> supplier = mainPanelSupplier;
+            JMenuItem bupItem = new JMenuItem("Send to Bypass URL Parser");
+            bupItem.setToolTipText("Bypass URL Parser — test 13 bypass strategies against 403/401 pages");
+            bupItem.addActionListener(e -> {
+                ScanModule mod = registry.getModule("bypass-url-parser");
+                if (mod instanceof BypassUrlParser bup) {
+                    String targetUrl = reqResp.request().url();
+                    bup.populatePanel(targetUrl);
+                    if (supplier != null) {
+                        MainPanel mp = supplier.get();
+                        if (mp != null) mp.selectModule("bypass-url-parser");
+                    }
+                    showToast("Bypass URL Parser",
+                            "Target URL loaded: " + truncate(targetUrl, 60)
+                            + "\n\nSelect bypass modes and click 'Run Scan'.");
+                }
+            });
+            items.add(bupItem);
+        }
+
         // ============ "Scan This Parameter" — targeted parameter scanning ============
         // Build module lists: one set for parameter scanning (excludes right-click-only modules),
         // another set for the per-module submenu (includes all except ws-scanner and omnimap).
@@ -297,6 +322,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         for (ScanModule m : registry.getEnabledNonAiModules()) {
             if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
             if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
+            if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
             if (m.isPassive()) {
                 passiveModulesAll.add(m);
                 passiveModules.add(m);

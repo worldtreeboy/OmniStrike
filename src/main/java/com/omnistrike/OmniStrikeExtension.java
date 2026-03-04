@@ -9,6 +9,7 @@ import com.omnistrike.framework.*;
 import com.omnistrike.framework.stepper.StepperEngine;
 import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
+import com.omnistrike.modules.injection.BypassUrlParser;
 import com.omnistrike.modules.exploit.omnimap.OmniMapModule;
 import com.omnistrike.modules.websocket.WebSocketScanner;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
@@ -19,15 +20,15 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.37 — Entry Point
+ * OmniStrike v1.39 — Entry Point
  *
- * A unified vulnerability scanning framework for Burp Suite with 20 modules:
+ * A unified vulnerability scanning framework for Burp Suite with 21 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
  *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer
  *   Injection (Active): SQLi Detector, OmniMap Exploiter, SSTI Scanner, SSRF Scanner, XSS Scanner,
  *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
- *       HTTP Parameter Pollution
+ *       HTTP Parameter Pollution, Bypass URL Parser (403/401 bypass)
  *
  * Built exclusively on the Montoya API.
  */
@@ -46,7 +47,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.37 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.39 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -157,6 +158,11 @@ public class OmniStrikeExtension implements BurpExtension {
         hpp.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(hpp);
 
+        // Bypass URL Parser — comprehensive 403/401 bypass scanner (manual trigger only)
+        BypassUrlParser bypassUrlParser = new BypassUrlParser();
+        bypassUrlParser.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(bypassUrlParser);
+
         // CSRF Manipulator (right-click only — excluded from "All Modules" scan)
         CsrfManipulator csrfManipulator = new CsrfManipulator();
         csrfManipulator.setDependencies(dedup, findingsStore, collaboratorManager);
@@ -224,7 +230,9 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== THEME SYSTEM ====================
         // Snapshot Burp's original UIManager defaults before applying any theme
         GlobalThemeManager.saveOriginalDefaults();
-        api.logging().logToOutput("Theme system initialized (29 themes available).");
+        // Default: native mode (no custom styling until user selects a theme)
+        com.omnistrike.ui.CyberTheme.setNativeMode(true);
+        api.logging().logToOutput("Theme system initialized (29 themes available, native mode default).");
 
         // ==================== UI ====================
         SwingUtilities.invokeLater(() -> {
@@ -280,12 +288,13 @@ public class OmniStrikeExtension implements BurpExtension {
                 try { persistentAudit.delete(); } catch (Exception ignored) {}
             }
             // Restore Burp's original look-and-feel
+            GlobalThemeManager.setOmniStrikeRoot(null);
             GlobalThemeManager.restoreOriginal();
             try { api.logging().logToOutput("OmniStrike unloaded. Goodbye!"); }
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.37 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.39 ready ===");
         String oobMode = collaboratorManager.getMode() == CollaboratorManager.OobMode.BURP_COLLABORATOR
                 ? "Burp Collaborator" : "Custom OOB (configure listener in UI)";
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()

@@ -9,6 +9,7 @@ import javax.swing.table.JTableHeader;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.MouseListener;
 
 /**
  * Centralized cyberpunk/neon theme for OmniStrike UI.
@@ -17,6 +18,27 @@ import java.awt.event.MouseEvent;
 public final class CyberTheme {
 
     private CyberTheme() {}
+
+    // ── Native Mode Flag ──────────────────────────────────────────────────
+    // When true, all style*() methods become no-ops so components keep Burp's native L&F.
+    private static volatile boolean nativeMode = true;
+
+    /** Returns true when OmniStrike theming is disabled (Burp native L&F). */
+    public static boolean isNativeMode() { return nativeMode; }
+
+    /**
+     * Enable/disable native mode. When switching TO native mode, the mutable
+     * color fields (BG_DARK, NEON_CYAN, etc.) are loaded from UIManager so
+     * that direct {@code setBackground(BG_DARK)} calls in constructors use
+     * Burp-native colors instead of dark/neon ones.
+     */
+    public static void setNativeMode(boolean native_) {
+        nativeMode = native_;
+        if (native_) loadNativeColors();
+    }
+
+    /** Client property key used to tag hover MouseListeners added by styleButton(). */
+    private static final String HOVER_LISTENER_KEY = "CyberTheme.hoverListener";
 
     // ── Core Backgrounds (mutable — updated by GlobalThemeManager) ─────────
     public static Color BG_DARK     = new Color(0x0D, 0x0D, 0x1A);  // near-black with blue tint
@@ -105,18 +127,70 @@ public final class CyberTheme {
         SEV_INFO     = p.sevInfo;
     }
 
+    /**
+     * Loads Burp's native UIManager colors into the mutable color fields.
+     * Called when entering native mode so that direct {@code setBackground(BG_DARK)}
+     * calls throughout constructors use Burp-native colors instead of dark/neon ones.
+     * No stripping or updateComponentTreeUI is needed — colors are simply correct
+     * from the start.
+     */
+    private static void loadNativeColors() {
+        Color bg     = uiColor("Panel.background",            0xF0F0F0);
+        Color fg     = uiColor("Panel.foreground",            0x333333);
+        Color inputBg = uiColor("TextField.background",       0xFFFFFF);
+        Color border  = uiColor("Component.borderColor",      0xCCCCCC);
+        Color sel     = uiColor("List.selectionBackground",   0x3399FF);
+        Color dim     = uiColor("Label.disabledForeground",   0x999999);
+
+        // Map all background fields to native panel background
+        BG_DARK    = bg;
+        BG_PANEL   = bg;
+        BG_INPUT   = inputBg;
+        BG_SURFACE = bg;
+        BG_HOVER   = sel;
+        BORDER     = border;
+
+        // Map all accent colors to native foreground (no neon in native mode)
+        NEON_CYAN    = fg;
+        NEON_MAGENTA = fg;
+        NEON_GREEN   = fg;
+        NEON_ORANGE  = fg;
+        NEON_RED     = fg;
+        NEON_BLUE    = fg;
+
+        // Text colors
+        FG_PRIMARY   = fg;
+        FG_SECONDARY = dim;
+        FG_DIM       = dim;
+
+        // Severity colors — all map to native foreground
+        SEV_CRITICAL = fg;
+        SEV_HIGH     = fg;
+        SEV_MEDIUM   = fg;
+        SEV_LOW      = fg;
+        SEV_INFO     = dim;
+    }
+
+    /** Safe UIManager color lookup with fallback. */
+    private static Color uiColor(String key, int fallbackRgb) {
+        Color c = UIManager.getColor(key);
+        return c != null ? c : new Color(fallbackRgb);
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     //  STYLING HELPERS
     // ═══════════════════════════════════════════════════════════════════════
 
     /** Apply dark background to a JPanel. */
     public static void stylePanel(JPanel panel) {
+        if (nativeMode) return;
         panel.setBackground(BG_DARK);
         panel.setForeground(FG_PRIMARY);
     }
 
     /** Apply dark background and neon foreground to any component. */
     public static void styleDark(JComponent comp) {
+        if (nativeMode) return;
         comp.setBackground(BG_DARK);
         comp.setForeground(FG_PRIMARY);
         comp.setOpaque(true);
@@ -124,6 +198,7 @@ public final class CyberTheme {
 
     /** Style a button with a neon border and text color. Pass null for default neon cyan. */
     public static void styleButton(JButton btn, Color neonColor) {
+        if (nativeMode) return;
         Color neon = neonColor != null ? neonColor : NEON_CYAN;
         btn.setBackground(BG_PANEL);
         btn.setForeground(neon);
@@ -135,10 +210,15 @@ public final class CyberTheme {
         btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         btn.setOpaque(true);
 
+        // Remove previous hover listener if present (prevents accumulation on theme switch)
+        MouseListener old = (MouseListener) btn.getClientProperty(HOVER_LISTENER_KEY);
+        if (old != null) btn.removeMouseListener(old);
+
         // Hover glow effect
-        btn.addMouseListener(new MouseAdapter() {
+        MouseAdapter hoverListener = new MouseAdapter() {
             @Override
             public void mouseEntered(MouseEvent e) {
+                if (nativeMode) return;
                 btn.setBackground(BG_HOVER);
                 btn.setBorder(BorderFactory.createCompoundBorder(
                         new GlowLineBorder(neon, 2),
@@ -146,16 +226,20 @@ public final class CyberTheme {
             }
             @Override
             public void mouseExited(MouseEvent e) {
+                if (nativeMode) return;
                 btn.setBackground(BG_PANEL);
                 btn.setBorder(BorderFactory.createCompoundBorder(
                         new GlowLineBorder(neon, 1),
                         BorderFactory.createEmptyBorder(4, 12, 4, 12)));
             }
-        });
+        };
+        btn.putClientProperty(HOVER_LISTENER_KEY, hoverListener);
+        btn.addMouseListener(hoverListener);
     }
 
     /** Style a filled button (solid neon background). */
     public static void styleFilledButton(JButton btn, Color neonColor) {
+        if (nativeMode) return;
         Color neon = neonColor != null ? neonColor : NEON_CYAN;
         btn.setBackground(neon);
         btn.setForeground(BG_DARK);
@@ -168,6 +252,7 @@ public final class CyberTheme {
 
     /** Style a text field with dark input bg, neon cyan caret, light text. */
     public static void styleTextField(JTextField field) {
+        if (nativeMode) return;
         field.setBackground(BG_INPUT);
         field.setForeground(FG_PRIMARY);
         field.setCaretColor(NEON_CYAN);
@@ -181,6 +266,7 @@ public final class CyberTheme {
 
     /** Style a password field. */
     public static void stylePasswordField(JPasswordField field) {
+        if (nativeMode) return;
         field.setBackground(BG_INPUT);
         field.setForeground(FG_PRIMARY);
         field.setCaretColor(NEON_CYAN);
@@ -194,6 +280,7 @@ public final class CyberTheme {
 
     /** Style a text area. */
     public static void styleTextArea(JTextArea area) {
+        if (nativeMode) return;
         area.setBackground(BG_INPUT);
         area.setForeground(FG_PRIMARY);
         area.setCaretColor(NEON_CYAN);
@@ -204,6 +291,7 @@ public final class CyberTheme {
 
     /** Style a combo box. */
     public static void styleComboBox(JComboBox<?> combo) {
+        if (nativeMode) return;
         combo.setBackground(BG_INPUT);
         combo.setForeground(FG_PRIMARY);
         combo.setFont(MONO_FONT);
@@ -214,6 +302,7 @@ public final class CyberTheme {
             public Component getListCellRendererComponent(JList<?> list, Object value,
                     int index, boolean isSelected, boolean cellHasFocus) {
                 super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+                if (nativeMode) return this;
                 if (isSelected) {
                     setBackground(BG_HOVER);
                     setForeground(NEON_CYAN);
@@ -230,6 +319,7 @@ public final class CyberTheme {
 
     /** Style a checkbox with neon coloring. */
     public static void styleCheckBox(JCheckBox cb) {
+        if (nativeMode) return;
         cb.setBackground(BG_DARK);
         cb.setForeground(FG_PRIMARY);
         cb.setFont(MONO_FONT);
@@ -238,6 +328,7 @@ public final class CyberTheme {
 
     /** Style a radio button with neon coloring. */
     public static void styleRadioButton(JRadioButton rb) {
+        if (nativeMode) return;
         rb.setBackground(BG_DARK);
         rb.setForeground(FG_PRIMARY);
         rb.setFont(MONO_FONT);
@@ -246,6 +337,7 @@ public final class CyberTheme {
 
     /** Style a JTable with dark rows, neon selection, custom header. */
     public static void styleTable(JTable table) {
+        if (nativeMode) return;
         table.setBackground(BG_PANEL);
         table.setForeground(FG_PRIMARY);
         table.setSelectionBackground(BG_HOVER);
@@ -267,6 +359,7 @@ public final class CyberTheme {
             public Component getTableCellRendererComponent(JTable t, Object value,
                     boolean isSelected, boolean hasFocus, int row, int column) {
                 super.getTableCellRendererComponent(t, value, isSelected, hasFocus, row, column);
+                if (nativeMode) return this;
                 setBackground(BG_SURFACE);
                 setForeground(NEON_CYAN);
                 setFont(MONO_BOLD);
@@ -284,6 +377,7 @@ public final class CyberTheme {
             public Component getTableCellRendererComponent(JTable t, Object value,
                     boolean isSelected, boolean hasFocus, int row, int column) {
                 super.getTableCellRendererComponent(t, value, isSelected, hasFocus, row, column);
+                if (nativeMode) return this;
                 if (isSelected) {
                     setBackground(BG_HOVER);
                     setForeground(NEON_CYAN);
@@ -300,6 +394,7 @@ public final class CyberTheme {
 
     /** Style a scroll pane with dark scrollbars. */
     public static void styleScrollPane(JScrollPane sp) {
+        if (nativeMode) return;
         sp.setBackground(BG_DARK);
         sp.getViewport().setBackground(BG_DARK);
         sp.setBorder(new GlowLineBorder(BORDER, 1));
@@ -338,6 +433,7 @@ public final class CyberTheme {
 
     /** Style a tabbed pane with dark tabs and neon selected indicator. */
     public static void styleTabbedPane(JTabbedPane tp) {
+        if (nativeMode) return;
         tp.setBackground(BG_DARK);
         tp.setForeground(FG_SECONDARY);
         tp.setFont(MONO_BOLD);
@@ -346,6 +442,7 @@ public final class CyberTheme {
 
     /** Style a split pane with dark dividers. */
     public static void styleSplitPane(JSplitPane sp) {
+        if (nativeMode) return;
         sp.setBackground(BG_DARK);
         sp.setBorder(null);
         sp.setDividerSize(4);
@@ -358,24 +455,28 @@ public final class CyberTheme {
 
     /** Style a label as a neon heading. */
     public static void styleHeading(JLabel label) {
+        if (nativeMode) return;
         label.setForeground(NEON_CYAN);
         label.setFont(MONO_BOLD.deriveFont(14f));
     }
 
     /** Style a label as primary text. */
     public static void styleLabel(JLabel label) {
+        if (nativeMode) return;
         label.setForeground(FG_PRIMARY);
         label.setFont(MONO_FONT);
     }
 
     /** Style a label as secondary/muted text. */
     public static void styleMuted(JLabel label) {
+        if (nativeMode) return;
         label.setForeground(FG_SECONDARY);
         label.setFont(MONO_SMALL);
     }
 
     /** Style a progress bar. */
     public static void styleProgressBar(JProgressBar pb) {
+        if (nativeMode) return;
         pb.setBackground(BG_INPUT);
         pb.setForeground(NEON_CYAN);
         pb.setBorder(new GlowLineBorder(BORDER, 1));
@@ -418,6 +519,7 @@ public final class CyberTheme {
             public Component getTableCellRendererComponent(JTable table, Object value,
                     boolean isSelected, boolean hasFocus, int row, int column) {
                 super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+                if (nativeMode) return this;
                 if (isSelected) {
                     setBackground(BG_HOVER);
                     setForeground(NEON_CYAN);
@@ -441,6 +543,7 @@ public final class CyberTheme {
     /** Creates a severity badge label with a neon look. */
     public static JLabel createSeverityBadge(String text, Color neonColor) {
         JLabel label = new JLabel(text);
+        if (nativeMode) return label;
         label.setOpaque(true);
         label.setBackground(darken(neonColor, 0.2f));
         label.setForeground(neonColor);
@@ -453,6 +556,7 @@ public final class CyberTheme {
 
     /** Style a titled border with neon color. */
     public static void styleTitledBorder(JComponent comp, String title, Color neonColor) {
+        if (nativeMode) return;
         Color neon = neonColor != null ? neonColor : NEON_CYAN;
         comp.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder(
@@ -510,10 +614,10 @@ public final class CyberTheme {
         }
 
         private Color computeGlowColor() {
+            if (nativeMode) return baseColor;
             float amount = GlobalThemeManager.getBreathAmount();
             if (amount <= 0f) return baseColor;
             Color accent = getAccentColor();
-            // Glow target: bright version of accent (blend with white for strong visibility)
             Color glowTarget = lerpColor(accent, Color.WHITE, 0.35f);
             return lerpColor(baseColor, glowTarget, amount);
         }
@@ -542,10 +646,10 @@ public final class CyberTheme {
         }
 
         private Color computeGlowColor() {
+            if (nativeMode) return baseColor;
             float amount = GlobalThemeManager.getBreathAmount();
             if (amount <= 0f) return baseColor;
             Color accent = getAccentColor();
-            // Glow target: bright version of accent (blend with white for strong visibility)
             Color glowTarget = lerpColor(accent, Color.WHITE, 0.35f);
             return lerpColor(baseColor, glowTarget, amount);
         }
@@ -571,6 +675,7 @@ public final class CyberTheme {
 
     /** Apply the cyberpunk theme recursively to all children of a container. */
     public static void applyRecursive(Container container) {
+        if (nativeMode) return;
         container.setBackground(BG_DARK);
         if (container instanceof JComponent jc) {
             jc.setForeground(FG_PRIMARY);
@@ -622,6 +727,109 @@ public final class CyberTheme {
                 applyRecursive(p);
             } else if (child instanceof Container c) {
                 applyRecursive(c);
+            }
+        }
+    }
+
+    /**
+     * Strips all OmniStrike custom styling from a container tree, restoring
+     * Swing's default L&F delegates. Call after setting nativeMode=true.
+     * First nullifies explicit bg/fg so L&F defaults can take over, then
+     * reinstalls delegates, then cleans up custom renderers and listeners.
+     */
+    public static void stripRecursive(Container container) {
+        // 1. Null out explicit bg/fg on every component so updateComponentTreeUI
+        //    can reinstall L&F defaults (Swing skips properties set explicitly)
+        resetColorsRecursive(container);
+
+        // 2. Reinstall L&F delegates for the entire tree
+        SwingUtilities.updateComponentTreeUI(container);
+
+        // 3. Walk tree to clean up things updateComponentTreeUI can't handle
+        stripWalk(container);
+
+        container.revalidate();
+        container.repaint();
+    }
+
+    /**
+     * Recursively set background/foreground to null so L&F defaults take over.
+     * Only touches bg/fg — borders and fonts are left alone to avoid breaking
+     * FlatLaf rendering and hit-testing.
+     */
+    private static void resetColorsRecursive(Component comp) {
+        if (comp instanceof JComponent jc) {
+            jc.setBackground(null);
+            jc.setForeground(null);
+        }
+        if (comp instanceof Container container) {
+            for (Component child : container.getComponents()) {
+                resetColorsRecursive(child);
+            }
+            if (comp instanceof JScrollPane sp) {
+                if (sp.getViewport() != null) {
+                    sp.getViewport().setBackground(null);
+                    sp.getViewport().setForeground(null);
+                    Component view = sp.getViewport().getView();
+                    if (view != null) resetColorsRecursive(view);
+                }
+                resetColorsRecursive(sp.getVerticalScrollBar());
+                resetColorsRecursive(sp.getHorizontalScrollBar());
+            }
+            if (comp instanceof JTabbedPane tp) {
+                for (int i = 0; i < tp.getTabCount(); i++) {
+                    Component tabComp = tp.getComponentAt(i);
+                    if (tabComp != null) resetColorsRecursive(tabComp);
+                }
+            }
+        }
+    }
+
+    private static void stripWalk(Component comp) {
+        // Reset JTable custom renderers
+        if (comp instanceof JTable table) {
+            table.setDefaultRenderer(Object.class, null);
+            JTableHeader header = table.getTableHeader();
+            if (header != null) header.setDefaultRenderer(null);
+        }
+
+        // Reset JComboBox custom renderer
+        if (comp instanceof JComboBox<?> combo) {
+            combo.setRenderer(new DefaultListCellRenderer());
+        }
+
+        // Remove tagged hover listeners from JButtons
+        if (comp instanceof JButton btn) {
+            MouseListener hover = (MouseListener) btn.getClientProperty(HOVER_LISTENER_KEY);
+            if (hover != null) {
+                btn.removeMouseListener(hover);
+                btn.putClientProperty(HOVER_LISTENER_KEY, null);
+            }
+        }
+
+        // Restore native scrollbar UI
+        if (comp instanceof JScrollBar scrollBar) {
+            scrollBar.updateUI();
+        }
+
+        // Recurse into containers
+        if (comp instanceof Container container) {
+            if (comp instanceof JScrollPane sp) {
+                if (sp.getViewport() != null) {
+                    Component view = sp.getViewport().getView();
+                    if (view != null) stripWalk(view);
+                }
+                stripWalk(sp.getVerticalScrollBar());
+                stripWalk(sp.getHorizontalScrollBar());
+            }
+            if (comp instanceof JTabbedPane tp) {
+                for (int i = 0; i < tp.getTabCount(); i++) {
+                    Component tabComp = tp.getComponentAt(i);
+                    if (tabComp != null) stripWalk(tabComp);
+                }
+            }
+            for (Component child : container.getComponents()) {
+                stripWalk(child);
             }
         }
     }

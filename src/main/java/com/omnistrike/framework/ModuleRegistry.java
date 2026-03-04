@@ -17,6 +17,17 @@ public class ModuleRegistry {
     /** Well-known module ID for the AI Vulnerability Analyzer. */
     public static final String AI_MODULE_ID = "ai-vuln-analyzer";
 
+    /**
+     * Modules that are manual-trigger only (right-click context menu).
+     * These are EXCLUDED from auto-scanning (TrafficInterceptor) but remain
+     * available for manual scans via scanRequest() which looks up by ID directly.
+     */
+    private static final Set<String> MANUAL_ONLY_IDS = Set.of(
+            "bypass-url-parser",   // BUP — user configures URL + modes in panel
+            "csrf-manipulator",    // CSRF — user selects token fields in panel
+            "ws-scanner"           // WebSocket — user triggers fuzzing from panel
+    );
+
     // ConcurrentLinkedHashMap preserves insertion order and is safe for concurrent reads.
     // Written at startup during registerModule(), read from proxy threads during scanning.
     // Using Collections.synchronizedMap wrapping LinkedHashMap ensures happens-before
@@ -89,17 +100,33 @@ public class ModuleRegistry {
         return filterModules(m -> true);
     }
 
+    /**
+     * Returns enabled passive modules, excluding manual-only modules.
+     * Used by TrafficInterceptor for auto-scanning proxied traffic.
+     */
     public List<ScanModule> getEnabledPassiveModules() {
-        return filterModules(ScanModule::isPassive);
+        return filterModules(m -> m.isPassive() && !MANUAL_ONLY_IDS.contains(m.getId()));
     }
 
+    /**
+     * Returns enabled active modules, excluding manual-only modules.
+     * Used by TrafficInterceptor for auto-scanning proxied traffic.
+     * Manual-only modules (BUP, CSRF, WS) are only reachable via
+     * scanRequest() which looks up modules by explicit ID.
+     */
     public List<ScanModule> getEnabledActiveModules() {
-        return filterModules(m -> !m.isPassive());
+        return filterModules(m -> !m.isPassive() && !MANUAL_ONLY_IDS.contains(m.getId()));
     }
 
-    /** Returns all enabled modules except the AI module. */
+    /** Returns all enabled modules except the AI module and manual-only modules. */
     public List<ScanModule> getEnabledNonAiModules() {
-        return filterModules(m -> !AI_MODULE_ID.equals(m.getId()));
+        return filterModules(m -> !AI_MODULE_ID.equals(m.getId())
+                && !MANUAL_ONLY_IDS.contains(m.getId()));
+    }
+
+    /** Returns true if the given module ID is manual-trigger-only (excluded from auto-scan). */
+    public boolean isManualOnly(String moduleId) {
+        return MANUAL_ONLY_IDS.contains(moduleId);
     }
 
     private List<ScanModule> filterModules(Predicate<ScanModule> filter) {
