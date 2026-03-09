@@ -226,7 +226,7 @@ public class OmniStrikeExtension implements BurpExtension {
         try {
             persistentAudit = api.scanner().startAudit(
                     AuditConfiguration.auditConfiguration(
-                            BuiltInAuditConfiguration.LEGACY_ACTIVE_AUDIT_CHECKS));
+                            BuiltInAuditConfiguration.LEGACY_PASSIVE_AUDIT_CHECKS));
             dashboardReporter.setDashboardBridge(scanCheck, persistentAudit);
             api.logging().logToOutput("Persistent Dashboard task box created.");
         } catch (Exception e) {
