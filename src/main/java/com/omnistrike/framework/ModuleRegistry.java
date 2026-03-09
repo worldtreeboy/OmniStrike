@@ -25,7 +25,8 @@ public class ModuleRegistry {
     private static final Set<String> MANUAL_ONLY_IDS = Set.of(
             "bypass-url-parser",   // BUP — user configures URL + modes in panel
             "csrf-manipulator",    // CSRF — user selects token fields in panel
-            "ws-scanner"           // WebSocket — user triggers fuzzing from panel
+            "ws-scanner",          // WebSocket — user triggers fuzzing from panel
+            "ldapi-scanner"        // LDAP Injection — right-click only, no auto-scan
     );
 
     // ConcurrentLinkedHashMap preserves insertion order and is safe for concurrent reads.

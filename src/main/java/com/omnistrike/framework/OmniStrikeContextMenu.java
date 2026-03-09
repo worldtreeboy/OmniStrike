@@ -123,6 +123,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
                     if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
                     if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
+                    if ("ldapi-scanner".equals(m.getId())) continue; // LDAP Injection is right-click only
                     if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
                     if (m.isPassive()) {
                         moduleIds.add(m.getId());
@@ -135,6 +136,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
                     if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
                     if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
+                    if ("ldapi-scanner".equals(m.getId())) continue; // LDAP Injection is right-click only
                     if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
                     moduleIds.add(m.getId());
                     if (m.isPassive()) passive++;
@@ -332,6 +334,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             } else {
                 activeModulesAll.add(m);
                 if ("csrf-manipulator".equals(m.getId())) continue; // Excluded from "Scan Parameter" + "All Modules"
+                if ("ldapi-scanner".equals(m.getId())) continue; // Excluded from "Scan Parameter" + "All Modules"
                 activeModules.add(m);
             }
         }

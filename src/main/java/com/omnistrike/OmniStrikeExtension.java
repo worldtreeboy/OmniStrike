@@ -177,6 +177,11 @@ public class OmniStrikeExtension implements BurpExtension {
         csrfManipulator.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(csrfManipulator);
 
+        // LDAP Injection Scanner (right-click only — excluded from "All Modules" scan)
+        LdapInjectionScanner ldapi = new LdapInjectionScanner();
+        ldapi.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(ldapi);
+
         // WebSocket Scanner (passive + active fuzzing)
         WebSocketScanner wsScanner = new WebSocketScanner();
         wsScanner.setDependencies(dedup, findingsStore, collaboratorManager);

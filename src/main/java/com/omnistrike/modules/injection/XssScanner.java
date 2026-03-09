@@ -128,7 +128,7 @@ public class XssScanner implements ScanModule {
             "postMessage", "event.data", "e.data", "evt.data", "msg.data",
             ".responseText", ".responseJSON", ".responseXML",
             "response.text()", "response.json()",
-            "XMLHttpRequest", ".readyState",
+            // Removed: XMLHttpRequest (constructor name, not user data) and .readyState (always 0-4, not user-controlled)
     };
 
     // LOW risk: indirect or requires specific conditions
@@ -177,7 +177,8 @@ public class XssScanner implements ScanModule {
             ".setAttribute(\"action\"", ".setAttribute('action'",
             ".setAttribute(\"data\"", ".setAttribute('data'",
             "window.location=", "self.location=",
-            "location=",
+            // Removed bare "location=" — too broad (matches "config.location = ...").
+            // Already covered by "window.location=", "self.location=", "location.href=", "location.assign(", "location.replace(".
     };
 
     // MEDIUM sinks: jQuery HTML injection
@@ -295,7 +296,9 @@ public class XssScanner implements ScanModule {
             "textContent=", "innerText=",
             "createTextNode(", "he.encode(",
             "validator.escape(", "_.escape(",
-            "$sce.trustAs", "filterXSS(",
+            // Removed $sce.trustAs — it's a security BYPASS function in AngularJS, NOT a sanitizer.
+            // Its presence indicates the developer explicitly disabled sanitization.
+            "filterXSS(",
     };
 
     // Regex patterns for variable assignment tracking
@@ -769,11 +772,11 @@ public class XssScanner implements ScanModule {
             }
         }
 
-        // If no script blocks found but body has JS-like content, analyze it
-        if (blocks.isEmpty() && (body.contains("function") || body.contains("var ")
-                || body.contains("document.") || body.contains("window."))) {
-            blocks.add(body);
-        }
+        // Previously added entire HTML body as JS when no <script> blocks found but
+        // body contained "function"/"var "/etc. This caused false positives because
+        // normal English text (e.g., "use this function to...") triggered JS-oriented
+        // source/sink analysis on HTML content. HTML-level analysis (event handlers,
+        // javascript: URLs, framework attributes) is handled by separate phases 7-9.
 
         return blocks;
     }
@@ -997,9 +1000,16 @@ public class XssScanner implements ScanModule {
                 }
             }
             // Also check if a DOM source directly feeds the chain (e.g., fetch(location.href).then(...))
+            // Tightened: find the current statement start (last ; or { or }) to avoid matching
+            // sources in comments or unrelated expressions within the 300-char lookback.
             if (!taintedVars.containsKey(paramName)) {
+                int stmtBound = Math.max(
+                        beforeCallback.lastIndexOf(';'),
+                        Math.max(beforeCallback.lastIndexOf('{'), beforeCallback.lastIndexOf('}')));
+                String currentStmt = stmtBound >= 0
+                        ? beforeCallback.substring(stmtBound + 1) : beforeCallback;
                 for (String source : DOM_SOURCES_ALL) {
-                    if (beforeCallback.contains(source)) {
+                    if (currentStmt.contains(source)) {
                         taintedVars.put(paramName, source + " → callback(" + paramName + ")");
                         break;
                     }
@@ -1047,16 +1057,14 @@ public class XssScanner implements ScanModule {
                 }
 
                 if (!found) {
-                    // Simple contains check as fallback
-                    for (String sinkBase : DOM_SINKS_ALL) {
-                        if (script.contains(sinkBase) && script.contains(varName)) {
-                            // Check proximity
-                            int sinkIdx = script.indexOf(sinkBase);
-                            int varIdx = script.indexOf(varName, sinkIdx - 200);
-                            if (varIdx >= 0 && Math.abs(varIdx - sinkIdx) < 200) {
-                                found = true;
-                                break;
-                            }
+                    // Proximity fallback — only for the CURRENT sink (not all sinks).
+                    // Previous code iterated DOM_SINKS_ALL here, which matched tainted
+                    // variables against unrelated sinks that happened to be nearby.
+                    if (script.contains(sink) && script.contains(varName)) {
+                        int sinkIdx = script.indexOf(sink);
+                        int varIdx = script.indexOf(varName, Math.max(0, sinkIdx - 150));
+                        if (varIdx >= 0 && Math.abs(varIdx - sinkIdx) < 150) {
+                            found = true;
                         }
                     }
                 }

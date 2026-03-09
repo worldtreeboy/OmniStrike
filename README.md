@@ -4,9 +4,9 @@
 
 ### The All-in-One Burp Suite Attack Framework
 
-**26 modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
+**27 modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
 
-[![Version](https://img.shields.io/badge/v1.41-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
+[![Version](https://img.shields.io/badge/v1.42-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
 [![Java](https://img.shields.io/badge/Java_17+-orange?style=for-the-badge&logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Montoya_API-E8350E?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge)](LICENSE)
@@ -29,7 +29,7 @@
 
 Most Burp extensions do one thing. You end up with 15 extensions loaded, fighting for threads, duplicating requests, and missing the gaps between them.
 
-OmniStrike replaces that entire stack with a **single extension** — 18 active scanners, 6 passive analyzers, an AI fuzzer, a SQL exploitation engine, a prerequisite request chain (Stepper), a wordlist generator, and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
+OmniStrike replaces that entire stack with a **single extension** — 19 active scanners, 6 passive analyzers, an AI fuzzer, a SQL exploitation engine, a prerequisite request chain (Stepper), a wordlist generator, and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
 
 **Drop one JAR. Get everything.**
 
@@ -48,7 +48,7 @@ OmniStrike replaces that entire stack with a **single extension** — 18 active 
 
 ## Modules
 
-### Active Scanners (18)
+### Active Scanners (19)
 
 | Module | Highlights |
 |:---|:---|
@@ -70,6 +70,7 @@ OmniStrike replaces that entire stack with a **single extension** — 18 active 
 | **Path Traversal / LFI** | 24 Unix / 9 Windows targets with structural content validation, 26 encoding bypasses, PHP wrappers (filter/data/iconv). |
 | **Bypass URL Parser** | Comprehensive 403/401 bypass scanner. 13 modes: mid-paths, end-paths, case substitution, char encoding (single/double/triple/unicode), HTTP methods, HTTP versions, method override headers, scheme spoofing, IP spoofing, port spoofing, URL rewrite headers, user-agent rotation, combined multi-header combos. Baseline comparison with classification (BYPASS/POTENTIAL/DIFFERENT/SAME). |
 | **CSRF Manipulator** | 11 token manipulation tests (remove, empty, random, truncated, char flip, case swap, static fake, nonce reuse, Referer/Origin removal, token relocation, method change). Right-click only. |
+| **LDAP Injection** | 4-phase: error-based (2+ signature requirement), boolean differential (2-round verification with baseline stability check), auth bypass (multi-signal confirmation), wildcard amplification. Targets OpenLDAP, Active Directory, Java JNDI, PHP, Python, .NET, Ruby. Right-click only. Zero false positive design. |
 
 ### Passive Analyzers (6)
 
