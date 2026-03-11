@@ -3582,17 +3582,16 @@ public class XssScanner implements ScanModule {
             } catch (Exception ignored) {}
         }
 
-        // XSS-relevant headers — commonly reflected in responses
-        String[] xssHeaders = {"User-Agent", "Referer", "X-Forwarded-For", "Origin"};
-        for (String headerName : xssHeaders) {
-            String headerValue = "";
-            for (var h : request.headers()) {
-                if (h.name().equalsIgnoreCase(headerName)) {
-                    headerValue = h.value();
-                    break;
-                }
+        // Extract ALL injectable request headers (skip non-injectable framework headers)
+        Set<String> skipHeaders = Set.of("host", "content-length", "connection", "accept-encoding",
+                "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
+                "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+                "upgrade-insecure-requests", "if-modified-since", "if-none-match",
+                "cookie"); // individual cookies already extracted as COOKIE parameters
+        for (var h : request.headers()) {
+            if (!skipHeaders.contains(h.name().toLowerCase())) {
+                targets.add(new XssTarget(h.name(), h.value(), XssTargetType.HEADER));
             }
-            targets.add(new XssTarget(headerName, headerValue, XssTargetType.HEADER));
         }
 
         // URL path segments (Improvement 3)

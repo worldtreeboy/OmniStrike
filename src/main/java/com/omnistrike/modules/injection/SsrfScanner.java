@@ -797,25 +797,25 @@ public class SsrfScanner implements ScanModule {
             } catch (Exception ignored) {}
         }
 
-        // SSRF-relevant headers — always test regardless of URL_PARAM_PATTERN
-        String[][] ssrfHeaders = {
-                {"Referer", null},
-                {"X-Forwarded-For", null},
-                {"X-Forwarded-Host", null},
-                {"X-Original-URL", null},
-                {"X-Rewrite-URL", null},
-        };
-        for (String[] headerDef : ssrfHeaders) {
-            String headerName = headerDef[0];
-            String headerValue = "";
-            // Check if header exists in the original request
-            for (var h : request.headers()) {
-                if (h.name().equalsIgnoreCase(headerName)) {
-                    headerValue = h.value();
-                    break;
-                }
+        // Extract ALL injectable request headers (skip non-injectable framework headers)
+        Set<String> skipHeaders = Set.of("host", "content-length", "connection", "accept-encoding",
+                "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
+                "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+                "upgrade-insecure-requests", "if-modified-since", "if-none-match",
+                "cookie"); // individual cookies already extracted as COOKIE parameters
+        Set<String> addedHeaders = new HashSet<>();
+        for (var h : request.headers()) {
+            if (!skipHeaders.contains(h.name().toLowerCase())) {
+                targets.add(new SsrfTarget(h.name(), h.value(), SsrfTargetType.HEADER));
+                addedHeaders.add(h.name().toLowerCase());
             }
-            targets.add(new SsrfTarget(headerName, headerValue, SsrfTargetType.HEADER));
+        }
+        // Also inject known SSRF-relevant headers even if not present in the request
+        String[] ssrfAlwaysHeaders = {"Referer", "X-Forwarded-For", "X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL"};
+        for (String headerName : ssrfAlwaysHeaders) {
+            if (!addedHeaders.contains(headerName.toLowerCase())) {
+                targets.add(new SsrfTarget(headerName, "", SsrfTargetType.HEADER));
+            }
         }
 
         return targets;

@@ -756,6 +756,18 @@ public class PathTraversalScanner implements ScanModule {
             } catch (Exception ignored) {}
         }
 
+        // Extract ALL injectable request headers (skip non-injectable framework headers)
+        Set<String> skipHeaders = Set.of("host", "content-length", "connection", "accept-encoding",
+                "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
+                "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+                "upgrade-insecure-requests", "if-modified-since", "if-none-match",
+                "cookie"); // individual cookies already extracted as COOKIE parameters
+        for (var h : request.headers()) {
+            if (!skipHeaders.contains(h.name().toLowerCase())) {
+                targets.add(new TraversalTarget(h.name(), h.value(), TargetType.HEADER));
+            }
+        }
+
         return targets;
     }
 
@@ -1132,6 +1144,9 @@ public class PathTraversalScanner implements ScanModule {
                 return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
                 return injectJsonPayload(request, target.name, payload);
+            case HEADER:
+                return request.withRemovedHeader(target.name)
+                        .withAddedHeader(target.name, payload);
             default:
                 return request;
         }
@@ -1184,7 +1199,7 @@ public class PathTraversalScanner implements ScanModule {
     public void destroy() { }
 
     // Inner types
-    private enum TargetType { QUERY, BODY, JSON, COOKIE }
+    private enum TargetType { QUERY, BODY, JSON, COOKIE, HEADER }
 
     private static class TraversalTarget {
         final String name, originalValue;

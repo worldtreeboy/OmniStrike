@@ -919,6 +919,18 @@ public class LdapInjectionScanner implements ScanModule {
             } catch (Exception ignored) {}
         }
 
+        // Extract ALL injectable request headers (skip non-injectable framework headers)
+        Set<String> skipHeaders = Set.of("host", "content-length", "connection", "accept-encoding",
+                "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
+                "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+                "upgrade-insecure-requests", "if-modified-since", "if-none-match",
+                "cookie"); // individual cookies already extracted as COOKIE parameters
+        for (var h : request.headers()) {
+            if (!skipHeaders.contains(h.name().toLowerCase())) {
+                targets.add(new LdapTarget(h.name(), h.value(), LdapTargetType.HEADER));
+            }
+        }
+
         return targets;
     }
 

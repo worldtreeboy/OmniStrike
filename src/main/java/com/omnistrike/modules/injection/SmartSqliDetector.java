@@ -2062,14 +2062,15 @@ public class SmartSqliDetector implements ScanModule {
             } catch (Exception ignored) {}
         }
 
-        // Extract injectable request headers
-        String[] headerTargets = {"User-Agent", "Referer", "X-Forwarded-For", "X-Forwarded-Host", "Origin"};
-        for (String headerName : headerTargets) {
-            for (var h : request.headers()) {
-                if (h.name().equalsIgnoreCase(headerName)) {
-                    points.add(new InjectionPoint(h.name(), h.value(), InjectionType.HEADER));
-                    break;
-                }
+        // Extract ALL injectable request headers (skip non-injectable framework headers)
+        Set<String> skipHeaders = Set.of("host", "content-length", "connection", "accept-encoding",
+                "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
+                "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+                "upgrade-insecure-requests", "if-modified-since", "if-none-match",
+                "cookie"); // individual cookies already extracted as COOKIE parameters
+        for (var h : request.headers()) {
+            if (!skipHeaders.contains(h.name().toLowerCase())) {
+                points.add(new InjectionPoint(h.name(), h.value(), InjectionType.HEADER));
             }
         }
 
