@@ -259,7 +259,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 promptArea.setLineWrap(true);
                 promptArea.setWrapStyleWord(true);
                 promptArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 13));
-                promptArea.setText("Look for authentication bypass vulnerabilities and insecure direct object references.");
+                promptArea.setText("Enter your prompt here. Example: Look for authentication bypass vulnerabilities and insecure direct object references.");
                 promptArea.selectAll();
                 JScrollPane scrollPane = new JScrollPane(promptArea);
                 scrollPane.setPreferredSize(new java.awt.Dimension(500, 200));
