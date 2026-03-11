@@ -6,7 +6,7 @@
 
 **27 modules. SQL exploitation engine. AI-powered fuzzing. Prerequisite chain automation. Custom OOB server. One JAR.**
 
-[![Version](https://img.shields.io/badge/v1.42-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
+[![Version](https://img.shields.io/badge/v1.43-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
 [![Java](https://img.shields.io/badge/Java_17+-orange?style=for-the-badge&logo=openjdk&logoColor=white)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Montoya_API-E8350E?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge)](LICENSE)
@@ -52,12 +52,12 @@ OmniStrike replaces that entire stack with a **single extension** — 19 active 
 
 | Module | Highlights |
 |:---|:---|
-| **SQLi Detector** | Auth bypass, error-based, UNION, time-based blind (3-step verification), boolean-blind (2-round), 64 OOB payloads. ~375 payloads/param across 10 database engines. |
+| **SQLi Detector** | Auth bypass, error-based, UNION, time-based blind (3-step verification), boolean-blind (2-round), 64 OOB payloads. ~375 payloads/param across 10 database engines. **REST API path segment injection** (tests `/api/users/12` style endpoints). |
 | **OmniMap Exploiter** | Post-detection SQL exploitation engine — sqlmap-equivalent. 4 techniques (UNION, Error, Boolean blind, Time blind), 5 DBMS dialects, auto boundary/DBMS detection, parallel extraction, WAF bypass tamper engine. [Details below](#-omnimap-exploiter). |
 | **XSS Scanner** | 6 reflection contexts, smart filter probing, adaptive evasion, DOM XSS flow analysis, CSTI, framework-specific payloads (Angular/Vue/React/jQuery), blind XSS via Collaborator. |
 | **SSRF Scanner** | Collaborator OOB, cloud metadata with multi-marker validation (AWS/Azure/GCP/Oracle), DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads. |
 | **SSTI Scanner** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
-| **Command Injection** | 3-step time-based, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/`%0a`/backtick/double-encoding bypasses. |
+| **Command Injection** | 3-step time-based, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/`%0a`/backtick/double-encoding bypasses. **REST API path segment injection**. |
 | **XXE Scanner** | 4-phase: XML body, XInclude, JSON→XML, Content-Type forcing. UTF-16 bypass, SAML detection, 14 OOB payloads. |
 | **Deserialization** | 6 languages, 137+ gadget chains, passive fingerprinting, OOB-first detection, blind spray mode. [Details below](#-deserialization-scanner). |
 | **WebSocket Scanner** | Passive frame analysis + OOB-first active fuzzing across 8 injection categories. [Details below](#-websocket-scanner). |
@@ -240,6 +240,14 @@ Requires **JDK 17+**. Dependencies: `montoya-api 2026.2`, `gson 2.11.0`.
 ---
 
 ## Changelog
+
+<details>
+<summary><b>v1.43 (2026-03-11)</b> — REST API Path Segment Injection for SQLi & Command Injection</summary>
+
+- **SQLi Detector — Path Segment Injection**: SQLi scanner now tests URL path segments in REST API endpoints (e.g., `/api/users/12`, `/api/orders/abc-123`). Numeric IDs, UUIDs, alphanumeric identifiers, and filenames are automatically extracted and tested with all 8 detection phases (error-based, UNION, boolean-blind, time-blind, OOB, auth bypass, fingerprinting). Enabled by default (`sqli.pathSegments.enabled`).
+- **Command Injection — Path Segment Injection**: CmdI scanner now tests URL path segments with all 3 detection phases (OOB, output-based, time-based). Same smart extraction logic — skips common route words (`api`, `v1`, `users`, etc.), targets values that look like parameters.
+- **Right-click "Scan Parameter" — Path Segments**: The context menu "Scan Parameter" submenu now lists URL path segments under a "Path Segments" section. Highlight a path value in Repeater/Proxy to auto-detect it. Full support for per-module and AI scan targeting.
+</details>
 
 <details>
 <summary><b>v1.42 (2026-03-10)</b> — LDAP Injection, URL Exclusion, Right-click-only UX</summary>

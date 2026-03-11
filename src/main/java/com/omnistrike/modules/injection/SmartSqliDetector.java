@@ -1944,8 +1944,42 @@ public class SmartSqliDetector implements ScanModule {
                 return request.withBody(newXml);
             case HEADER:
                 return request.withRemovedHeader(ip.name).withAddedHeader(ip.name, payload);
+            case PATH_SEGMENT:
+                return injectPathSegmentPayload(request, ip.name, payload);
             default:
                 return request;
+        }
+    }
+
+    /**
+     * Inject a payload into a URL path segment, replacing the segment identified by name.
+     * The target name format is "path:INDEX:ORIGINAL_VALUE".
+     */
+    private HttpRequest injectPathSegmentPayload(HttpRequest request, String targetName, String payload) {
+        try {
+            String[] parts = targetName.split(":", 3);
+            if (parts.length < 3) return request;
+            int segmentIndex = Integer.parseInt(parts[1]);
+
+            String path = extractPath(request.url());
+            String[] segments = path.split("/");
+
+            if (segmentIndex < 0 || segmentIndex >= segments.length) return request;
+
+            segments[segmentIndex] = PayloadEncoder.encode(payload);
+            String newPath = String.join("/", segments);
+
+            // Preserve query string if present
+            String fullPath = request.path();
+            int queryIdx = fullPath.indexOf('?');
+            if (queryIdx >= 0) {
+                newPath = newPath + fullPath.substring(queryIdx);
+            }
+
+            return request.withPath(newPath);
+        } catch (Exception e) {
+            api.logging().logToError("[SQLi] injectPathSegmentPayload failed: " + e.getMessage());
+            return request;
         }
     }
 
@@ -2039,6 +2073,11 @@ public class SmartSqliDetector implements ScanModule {
             }
         }
 
+        // URL path segments — API endpoints like /api/users/12 where 12 may be used in SQL queries
+        if (config.getBool("sqli.pathSegments.enabled", true)) {
+            extractPathSegmentTargets(request, points);
+        }
+
         return points;
     }
 
@@ -2088,6 +2127,57 @@ public class SmartSqliDetector implements ScanModule {
         }
     }
 
+    // Common route words to skip when extracting path segment targets
+    private static final Set<String> COMMON_ROUTE_WORDS = Set.of(
+            "api", "v1", "v2", "v3", "v4", "search", "users", "admin", "static", "assets",
+            "css", "js", "img", "public", "login", "logout", "register", "profile",
+            "settings", "dashboard", "results", "page", "index", "home", "about",
+            "contact", "auth", "oauth", "callback", "webhook", "health", "status",
+            "docs", "help", "faq", "terms", "privacy", "legal", "blog", "news",
+            "feed", "rss", "sitemap", "robots", "favicon", "manifest"
+    );
+
+    /**
+     * Extract testable URL path segments as SQL injection targets.
+     * Targets numeric IDs, UUIDs, slugs, and other values that look like
+     * user-controlled parameters in REST API paths (e.g., /api/users/12, /api/orders/abc-123).
+     */
+    private void extractPathSegmentTargets(HttpRequest request, List<InjectionPoint> points) {
+        try {
+            String path = extractPath(request.url());
+            if (path == null || path.length() < 2) return;
+
+            String[] segments = path.split("/");
+            for (int i = 0; i < segments.length; i++) {
+                String segment = segments[i].trim();
+                if (segment.isEmpty()) continue;
+
+                // Skip common route words (not user-controlled)
+                if (COMMON_ROUTE_WORDS.contains(segment.toLowerCase())) continue;
+
+                // Skip very short purely-alpha segments (likely route names like "get", "new")
+                if (segment.matches("^[a-z]+$") && segment.length() < 4) continue;
+
+                // Skip static file extensions
+                if (segment.matches(".*\\.(css|js|png|jpg|gif|svg|ico|woff|woff2|ttf|map|html)$")) continue;
+
+                // Include: numeric IDs, UUIDs, alphanumeric identifiers, slugs, filenames
+                // These are the values most likely passed to SQL queries
+                boolean isNumeric = segment.matches("^\\d+$");
+                boolean isUuid = segment.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+                boolean isAlphanumericId = segment.matches("^[a-zA-Z0-9_-]+$") && segment.length() >= 3;
+                boolean hasFileExtension = segment.matches(".*\\.[a-zA-Z0-9]{1,5}$");
+
+                if (isNumeric || isUuid || isAlphanumericId || hasFileExtension) {
+                    String targetName = "path:" + i + ":" + segment;
+                    points.add(new InjectionPoint(targetName, segment, InjectionType.PATH_SEGMENT));
+                }
+            }
+        } catch (Exception e) {
+            api.logging().logToError("[SQLi] Path segment extraction failed: " + e.getMessage());
+        }
+    }
+
     private String extractPath(String url) {
         try {
             if (url.contains("://")) {
@@ -2116,7 +2206,7 @@ public class SmartSqliDetector implements ScanModule {
     }
 
     // Inner types
-    private enum InjectionType { QUERY, BODY, COOKIE, JSON, HEADER, XML }
+    private enum InjectionType { QUERY, BODY, COOKIE, JSON, HEADER, XML, PATH_SEGMENT }
 
     private static class InjectionPoint {
         final String name;

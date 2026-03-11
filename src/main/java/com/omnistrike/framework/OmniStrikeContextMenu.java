@@ -440,7 +440,11 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 }
             }
 
-            if (!allParams.isEmpty() || !headerTargets.isEmpty()) {
+            // Extract testable URL path segments (e.g., /api/users/12 → "path:3:12")
+            LinkedHashSet<String> pathSegmentTargets = new LinkedHashSet<>();
+            extractPathSegmentNames(reqResp.request(), pathSegmentTargets);
+
+            if (!allParams.isEmpty() || !headerTargets.isEmpty() || !pathSegmentTargets.isEmpty()) {
                 JMenu scanParamMenu = new JMenu("Scan Parameter");
 
                 // Regular parameters (URL, body, cookie, + those from Referer/Origin)
@@ -456,6 +460,19 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     for (String headerName : headerTargets) {
                         scanParamMenu.add(buildParameterTargetMenu(
                                 headerName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
+                    }
+                }
+
+                // URL path segments as separate section
+                if (!pathSegmentTargets.isEmpty()) {
+                    scanParamMenu.addSeparator();
+                    scanParamMenu.add(createSectionLabel("Path Segments"));
+                    for (String pathTarget : pathSegmentTargets) {
+                        // Display as the segment value, but pass the full "path:N:value" as the parameter name
+                        String displayName = pathTarget.contains(":") ?
+                                pathTarget.substring(pathTarget.lastIndexOf(':') + 1) : pathTarget;
+                        scanParamMenu.add(buildParameterTargetMenu(
+                                pathTarget, displayName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
                     }
                 }
 
@@ -640,6 +657,20 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         for (var header : request.headers()) {
             if (header.name().equalsIgnoreCase(selectedText)) {
                 return header.name();
+            }
+        }
+
+        // 2f: Selected text matches a URL path segment value (e.g., selecting "12" in /api/users/12).
+        //     Returns the "path:INDEX:VALUE" format used by scanners.
+        {
+            LinkedHashSet<String> pathTargets = new LinkedHashSet<>();
+            extractPathSegmentNames(request, pathTargets);
+            for (String pathTarget : pathTargets) {
+                // pathTarget is "path:N:VALUE" — check if VALUE matches selected text
+                String value = pathTarget.substring(pathTarget.lastIndexOf(':') + 1);
+                if (value.equals(selectedText)) {
+                    return pathTarget;
+                }
             }
         }
 
@@ -901,6 +932,73 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         return paramMenu;
+    }
+
+    /**
+     * Overload that accepts a display name different from the internal parameter name.
+     * Used for path segments where paramName is "path:3:12" but displayName is "12".
+     */
+    private JMenu buildParameterTargetMenu(String paramName, String displayName,
+                                            HttpRequestResponse reqResp, String url,
+                                            List<ScanModule> activeModules,
+                                            AiVulnAnalyzer aiAnalyzer, boolean aiAvailable) {
+        JMenu menu = buildParameterTargetMenu(paramName, reqResp, url, activeModules, aiAnalyzer, aiAvailable);
+        menu.setText(displayName);
+        return menu;
+    }
+
+    // Common route words to skip when extracting path segment targets for the context menu
+    private static final Set<String> COMMON_ROUTE_WORDS = Set.of(
+            "api", "v1", "v2", "v3", "v4", "search", "users", "admin", "static", "assets",
+            "css", "js", "img", "public", "login", "logout", "register", "profile",
+            "settings", "dashboard", "results", "page", "index", "home", "about",
+            "contact", "auth", "oauth", "callback", "webhook", "health", "status",
+            "docs", "help", "faq", "terms", "privacy", "legal", "blog", "news",
+            "feed", "rss", "sitemap", "robots", "favicon", "manifest"
+    );
+
+    /**
+     * Extracts testable URL path segments from the request URL.
+     * Adds names in "path:INDEX:VALUE" format matching what the scanners use internally.
+     */
+    private void extractPathSegmentNames(HttpRequest request, LinkedHashSet<String> targets) {
+        try {
+            String urlStr = request.url();
+            // Extract path portion
+            String path = urlStr;
+            if (path.contains("://")) path = path.substring(path.indexOf("://") + 3);
+            int slashIdx = path.indexOf('/');
+            if (slashIdx < 0) return;
+            int queryIdx = path.indexOf('?', slashIdx);
+            path = queryIdx >= 0 ? path.substring(slashIdx, queryIdx) : path.substring(slashIdx);
+
+            if (path.length() < 2) return;
+
+            String[] segments = path.split("/");
+            for (int i = 0; i < segments.length; i++) {
+                String segment = segments[i].trim();
+                if (segment.isEmpty()) continue;
+
+                // Skip common route words
+                if (COMMON_ROUTE_WORDS.contains(segment.toLowerCase())) continue;
+
+                // Skip very short purely-alpha segments
+                if (segment.matches("^[a-z]+$") && segment.length() < 4) continue;
+
+                // Skip static file extensions
+                if (segment.matches(".*\\.(css|js|png|jpg|gif|svg|ico|woff|woff2|ttf|map|html)$")) continue;
+
+                // Include: numeric IDs, UUIDs, alphanumeric identifiers, filenames
+                boolean isNumeric = segment.matches("^\\d+$");
+                boolean isUuid = segment.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+                boolean isAlphanumericId = segment.matches("^[a-zA-Z0-9_-]+$") && segment.length() >= 3;
+                boolean hasFileExtension = segment.matches(".*\\.[a-zA-Z0-9]{1,5}$");
+
+                if (isNumeric || isUuid || isAlphanumericId || hasFileExtension) {
+                    targets.add("path:" + i + ":" + segment);
+                }
+            }
+        } catch (Exception ignored) {}
     }
 
     // ==================== Helpers ====================
