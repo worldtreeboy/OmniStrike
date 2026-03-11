@@ -3603,40 +3603,47 @@ public class XssScanner implements ScanModule {
     }
 
     /**
-     * Extracts testable URL path segments as XSS targets.
-     * Skips common route words, purely numeric IDs, and short segments.
+     * Extracts the last URL path segment as an XSS target.
+     * Only targets API-style endpoints, skips regular page URLs with file extensions.
      */
     private void extractPathSegmentTargets(HttpRequest request, List<XssTarget> targets) {
         try {
             String path = extractPath(request.url());
             if (path == null || path.length() < 2) return;
 
+            // Skip URLs that end with a page/static file extension — not API endpoints
+            if (path.matches(".*\\.(html|htm|php|asp|aspx|jsp|jspx|css|js|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|map|pdf|xml|txt)$")) return;
+
             String[] segments = path.split("/");
-            for (int i = 0; i < segments.length; i++) {
-                String segment = segments[i].trim();
-                if (segment.isEmpty()) continue;
 
-                // Skip purely numeric segments (IDs like /users/123)
-                if (segment.matches("^\\d+$")) continue;
+            // Find the last non-empty segment
+            int lastIdx = -1;
+            String lastSegment = null;
+            for (int i = segments.length - 1; i >= 0; i--) {
+                String seg = segments[i].trim();
+                if (!seg.isEmpty()) {
+                    lastIdx = i;
+                    lastSegment = seg;
+                    break;
+                }
+            }
+            if (lastIdx < 0 || lastSegment == null) return;
 
-                // Skip UUID-like segments
-                if (segment.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) continue;
+            // Skip if last segment is a common route word (not user-controlled)
+            if (COMMON_ROUTE_WORDS.contains(lastSegment.toLowerCase())) return;
 
-                // Skip segments that match common route words
-                if (COMMON_ROUTE_WORDS.contains(segment.toLowerCase())) continue;
+            // Skip very short segments (1-2 chars)
+            if (lastSegment.length() < 3) return;
 
-                // Skip very short segments (1-2 chars) — unlikely to be user-controlled
-                if (segment.length() < 3) continue;
+            // The last segment should look like a user-controlled value (slug, identifier)
+            // For XSS we skip purely numeric IDs and UUIDs — reflection is unlikely
+            if (lastSegment.matches("^\\d+$")) return;
+            if (lastSegment.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")) return;
 
-                // Skip segments that are purely lowercase alpha (likely route names)
-                if (segment.matches("^[a-z]+$") && segment.length() < 10) continue;
-
-                // Skip file extensions (e.g., "style.css", "app.js")
-                if (segment.contains(".") && segment.matches(".*\\.(css|js|png|jpg|gif|svg|ico|woff|ttf|map)$")) continue;
-
-                // This segment looks like a user-controlled value — add as target
-                String targetName = "path:" + i + ":" + segment;
-                targets.add(new XssTarget(targetName, segment, XssTargetType.PATH));
+            // Must be alphanumeric identifier (slug, username, search term, etc.)
+            if (lastSegment.matches("^[a-zA-Z0-9_-]+$")) {
+                String targetName = "path:" + lastIdx + ":" + lastSegment;
+                targets.add(new XssTarget(targetName, lastSegment, XssTargetType.PATH));
             }
         } catch (Exception e) {
             api.logging().logToError("[XSS] Path segment extraction failed: " + e.getMessage());

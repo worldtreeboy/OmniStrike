@@ -821,40 +821,44 @@ public class CommandInjectionScanner implements ScanModule {
     );
 
     /**
-     * Extract testable URL path segments as command injection targets.
-     * Targets numeric IDs, UUIDs, slugs, and other values that look like
-     * user-controlled parameters in REST API paths (e.g., /api/users/12, /api/files/report.pdf).
+     * Extract the last URL path segment as a command injection target.
+     * Only targets API-style endpoints (e.g., /api/users/12, /api/files/report).
+     * Skips regular page URLs ending in file extensions like .html, .php, .jsp, etc.
      */
     private void extractPathSegmentTargets(HttpRequest request, List<CmdiTarget> targets) {
         try {
             String path = extractPath(request.url());
             if (path == null || path.length() < 2) return;
 
+            // Skip URLs that end with a page/static file extension — not API endpoints
+            if (path.matches(".*\\.(html|htm|php|asp|aspx|jsp|jspx|css|js|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|map|pdf|xml|txt)$")) return;
+
             String[] segments = path.split("/");
-            for (int i = 0; i < segments.length; i++) {
-                String segment = segments[i].trim();
-                if (segment.isEmpty()) continue;
 
-                // Skip common route words (not user-controlled)
-                if (COMMON_ROUTE_WORDS.contains(segment.toLowerCase())) continue;
-
-                // Skip very short purely-alpha segments (likely route names like "get", "new")
-                if (segment.matches("^[a-z]+$") && segment.length() < 4) continue;
-
-                // Skip static file extensions
-                if (segment.matches(".*\\.(css|js|png|jpg|gif|svg|ico|woff|woff2|ttf|map|html)$")) continue;
-
-                // Include: numeric IDs, UUIDs, alphanumeric identifiers, slugs, filenames
-                // These are the values most likely to be passed to OS commands
-                boolean isNumeric = segment.matches("^\\d+$");
-                boolean isUuid = segment.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
-                boolean isAlphanumericId = segment.matches("^[a-zA-Z0-9_-]+$") && segment.length() >= 3;
-                boolean hasFileExtension = segment.matches(".*\\.[a-zA-Z0-9]{1,5}$");
-
-                if (isNumeric || isUuid || isAlphanumericId || hasFileExtension) {
-                    String targetName = "path:" + i + ":" + segment;
-                    targets.add(new CmdiTarget(targetName, segment, CmdiTargetType.PATH_SEGMENT));
+            // Find the last non-empty segment
+            int lastIdx = -1;
+            String lastSegment = null;
+            for (int i = segments.length - 1; i >= 0; i--) {
+                String seg = segments[i].trim();
+                if (!seg.isEmpty()) {
+                    lastIdx = i;
+                    lastSegment = seg;
+                    break;
                 }
+            }
+            if (lastIdx < 0 || lastSegment == null) return;
+
+            // Skip if last segment is a common route word (not a user-controlled value)
+            if (COMMON_ROUTE_WORDS.contains(lastSegment.toLowerCase())) return;
+
+            // The last segment should look like a parameter value (ID, UUID, slug)
+            boolean isNumeric = lastSegment.matches("^\\d+$");
+            boolean isUuid = lastSegment.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+            boolean isAlphanumericId = lastSegment.matches("^[a-zA-Z0-9_-]+$") && lastSegment.length() >= 3;
+
+            if (isNumeric || isUuid || isAlphanumericId) {
+                String targetName = "path:" + lastIdx + ":" + lastSegment;
+                targets.add(new CmdiTarget(targetName, lastSegment, CmdiTargetType.PATH_SEGMENT));
             }
         } catch (Exception e) {
             api.logging().logToError("[CmdI] Path segment extraction failed: " + e.getMessage());
