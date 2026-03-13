@@ -123,10 +123,6 @@ public class OmniStrikeExtension implements BurpExtension {
         ssrf.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(ssrf);
 
-        XssScanner xss = new XssScanner();
-        xss.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(xss);
-
         CommandInjectionScanner cmdi = new CommandInjectionScanner();
         cmdi.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(cmdi);

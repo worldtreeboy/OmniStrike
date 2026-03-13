@@ -149,14 +149,6 @@ public class CommandInjectionScanner implements ScanModule {
             {";ifconfig 2>/dev/null||ip addr;", "REGEX:inet\\s+\\d+\\.\\d+\\.\\d+\\.\\d+", "ifconfig/ip (Unix)"},
             // pwd — require a Unix-like path
             {";pwd;", "REGEX:/(?:home|root|var|tmp|usr|opt|srv|app|www)/", "pwd (Unix)"},
-            // Perl execution — unique marker
-            {";perl -e 'print 131337';", "131337", "perl eval (Unix)"},
-            // Python execution — unique marker
-            {";python3 -c 'print(131337)';", "131337", "python3 eval (Unix)"},
-            // Ruby execution — unique marker
-            {";ruby -e 'puts 131337';", "131337", "ruby eval (Unix)"},
-            // PHP execution — unique marker
-            {";php -r 'echo 131337;';", "131337", "php eval (Unix)"},
             // ls -la — Unix permission strings (drwxr-xr-x) are unmistakable
             {";ls -la /;", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / (Unix)"},
             {"|ls -la /", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / piped (Unix)"},
