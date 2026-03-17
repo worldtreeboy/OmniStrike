@@ -10,6 +10,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
@@ -397,6 +398,7 @@ public class CommandInjectionScanner implements ScanModule {
 
             // Step 1: True condition — must delay beyond baseline + 80% of expected
             TimedResult result1 = measureResponseTime(original, target, target.originalValue + truePayload);
+            if (!ResponseGuard.isTimingTrustworthy(result1.response)) { perHostDelay(); continue; }
             if (result1.elapsedMs < baselineTime + thresholdMs) {
                 perHostDelay();
                 continue;
@@ -410,6 +412,7 @@ public class CommandInjectionScanner implements ScanModule {
             // Step 2: Control condition (zero delay) — must return within baseline range
             // If control also delays, the delay is from network/server load, not command execution
             TimedResult controlResult = measureResponseTime(original, target, target.originalValue + controlPayload);
+            if (!ResponseGuard.isTimingTrustworthy(controlResult.response)) { perHostDelay(); continue; }
             long controlCeiling = baselineTime + Math.max((long)(baselineTime * 0.5), 1000);
             if (controlResult.elapsedMs > controlCeiling) {
                 // Control also slow — network jitter or WAF latency, not command injection
@@ -419,6 +422,7 @@ public class CommandInjectionScanner implements ScanModule {
 
             // Step 3: True condition again — must delay again to confirm repeatability
             TimedResult result2 = measureResponseTime(original, target, target.originalValue + truePayload);
+            if (!ResponseGuard.isTimingTrustworthy(result2.response)) { perHostDelay(); continue; }
             if (result2.elapsedMs < baselineTime + thresholdMs) {
                 perHostDelay();
                 continue;
@@ -467,6 +471,7 @@ public class CommandInjectionScanner implements ScanModule {
 
             HttpRequestResponse result = sendPayload(original, target, target.originalValue + payload);
             if (result == null || result.response() == null) continue;
+            if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
 
             // Skip small error pages — 403/404/500 with body < 500 bytes is never evidence
             // of command execution (WAF blocks, routing errors, server rejection).
@@ -491,11 +496,14 @@ public class CommandInjectionScanner implements ScanModule {
                         matchedEvidence = regexMatcher.group();
                     }
                     baselineMatched = !baselineBody.isEmpty() && regexPattern.matcher(baselineBody).find();
+                    // If baseline is empty, we can't distinguish command output from natural content → skip
+                    if (baselineBody.isEmpty()) { perHostDelay(); continue; }
                 } else {
                     // Simple string contains matching
                     matched = body.contains(expectedOutput);
                     matchedEvidence = expectedOutput;
                     baselineMatched = !baselineBody.isEmpty() && baselineBody.contains(expectedOutput);
+                    if (baselineBody.isEmpty()) { perHostDelay(); continue; }
                 }
 
                 if (matched && !baselineMatched) {
@@ -591,7 +599,9 @@ public class CommandInjectionScanner implements ScanModule {
         String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
 
         sentPayload.set(payload);
-        sentRequest.set(sendPayload(original, target, target.originalValue + payload));
+        HttpRequestResponse oobResult = sendPayload(original, target, target.originalValue + payload);
+        sentRequest.set(oobResult);
+        if (oobResult != null && !ResponseGuard.isUsableResponse(oobResult)) { perHostDelay(); return; }
 
         api.logging().logToOutput("[CmdI OOB] Sent " + technique + " payload to " + url
                 + " param=" + target.name + " collab=" + collabPayload);
@@ -638,7 +648,7 @@ public class CommandInjectionScanner implements ScanModule {
         String body = result.response().bodyToString();
         if (body == null || body.isEmpty()) return true;
         int status = result.response().statusCode();
-        return (status == 403 || status == 404 || status == 500) && body.length() < 500;
+        return (status == 403 || status == 404 || status == 429 || status == 500 || status == 503) && body.length() < 500;
     }
 
     private HttpRequest injectPayload(HttpRequest request, CmdiTarget target, String payload) {

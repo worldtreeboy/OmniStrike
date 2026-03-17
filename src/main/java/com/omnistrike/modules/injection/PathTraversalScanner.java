@@ -8,6 +8,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -795,8 +796,11 @@ public class PathTraversalScanner implements ScanModule {
         switch (checkType) {
             case "UNIX_PASSWD": {
                 Matcher m = UNIX_PASSWD_PATTERN.matcher(body);
-                if (m.find() && (baselineBody == null || !UNIX_PASSWD_PATTERN.matcher(baselineBody).find())) {
-                    return new ConfirmedRead("root:x:0:0 found in response");
+                // Never confirm file read when baseline is null — we can't distinguish
+                // legitimate content from actual file read without a comparison.
+                if (m.find() && baselineBody != null && !baselineBody.isEmpty()
+                        && !UNIX_PASSWD_PATTERN.matcher(baselineBody).find()) {
+                    return new ConfirmedRead("root:x:0:0 found in response (absent from baseline)");
                 }
                 break;
             }
@@ -828,9 +832,14 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "WIN_INI": {
-                if (WIN_INI_PATTERN.matcher(body).find()
+                // Require 2+ distinct win.ini section markers to confirm — a single [fonts] could
+                // appear in legitimate INI/config files. Requiring 2+ is definitive.
+                java.util.regex.Matcher wm = WIN_INI_PATTERN.matcher(body);
+                java.util.Set<String> winSections = new java.util.HashSet<>();
+                while (wm.find()) winSections.add(wm.group(1).toLowerCase());
+                if (winSections.size() >= 2
                         && (baselineBody == null || !WIN_INI_PATTERN.matcher(baselineBody).find())) {
-                    return new ConfirmedRead("[fonts] or [extensions] section found (win.ini)");
+                    return new ConfirmedRead("win.ini confirmed: " + winSections + " sections found");
                 }
                 break;
             }
@@ -1126,7 +1135,9 @@ public class PathTraversalScanner implements ScanModule {
     private HttpRequestResponse sendPayload(HttpRequestResponse original, TraversalTarget target, String payload) {
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }

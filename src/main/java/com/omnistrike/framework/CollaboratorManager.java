@@ -30,20 +30,20 @@ public class CollaboratorManager {
     private volatile OobMode mode = OobMode.BURP_COLLABORATOR;
 
     // --- Burp Collaborator mode ---
-    private CollaboratorClient client;
-    private ScheduledExecutorService poller;
+    private volatile CollaboratorClient client;
+    private volatile ScheduledExecutorService poller;
     private volatile boolean available = false;
     private volatile int payloadTtlMinutes = 60;
 
     // --- Custom OOB mode ---
-    private OobListener oobListener;
+    private volatile OobListener oobListener;
     private volatile String customAddress; // The IP address the target should call back to
     private volatile int customPort;       // HTTP port
     private volatile int customDnsPort;    // DNS port (UDP)
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     // Stale payload cleanup — shared by both modes
-    private ScheduledExecutorService cleanupExecutor;
+    private volatile ScheduledExecutorService cleanupExecutor;
 
     // UI Activity Log callback: (module, message)
     private volatile java.util.function.BiConsumer<String, String> uiLogger;
@@ -581,7 +581,7 @@ public class CollaboratorManager {
     /**
      * Starts the cleanup task for stale pending payloads. Shared by both modes.
      */
-    private void startCleanupTask() {
+    private synchronized void startCleanupTask() {
         if (cleanupExecutor != null) return; // Already running
         cleanupExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "OmniStrike-PayloadCleanup");

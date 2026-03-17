@@ -46,6 +46,19 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     // Track futures from manual scans (context menu) so they can be cancelled
     private final CopyOnWriteArrayList<Future<?>> manualScanFutures = new CopyOnWriteArrayList<>();
 
+    /**
+     * Global cancellation flag for manual scans. Set to true by stopManualScans().
+     * All scan task wrappers check this flag periodically. Reset to false when
+     * new manual scans are started.
+     *
+     * This is the PRIMARY stop mechanism — Future.cancel() only works for queued tasks,
+     * not tasks already executing. This flag handles the "already running" case.
+     */
+    private volatile boolean manualScansCancelled = false;
+
+    /** Returns true if manual scans have been cancelled. Modules can check this. */
+    public boolean isManualScanCancelled() { return manualScansCancelled; }
+
     public TrafficInterceptor(MontoyaApi api, ModuleRegistry registry,
                               FindingsStore findingsStore, ActiveScanExecutor executor,
                               ScopeManager scopeManager) {
@@ -199,6 +212,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             return;
         }
 
+        // Reset cancellation flag — new scan is starting
+        manualScansCancelled = false;
+
         // Clean up completed futures before adding new ones
         manualScanFutures.removeIf(Future::isDone);
 
@@ -297,18 +313,19 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                                             String targetParameter) {
         for (ScanModule module : passiveModules) {
             Future<?> f = passiveExecutor.submit(() -> {
+                if (manualScansCancelled) return; // Check before starting
                 try {
-                    // Passive modules always run full scan (no parameter targeting)
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
+                    if (manualScansCancelled) return; // Check after processing
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                     }
                 } catch (NullPointerException e) {
-                    if (running) {
+                    if (running && !manualScansCancelled) {
                         uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
                     }
                 } catch (Exception e) {
-                    if (Thread.currentThread().isInterrupted()) return; // stopped
+                    if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
                             + ": " + e.getMessage());
                 }
@@ -318,6 +335,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
         for (ScanModule module : activeModules) {
             Future<?> f = executor.submitTracked(() -> {
+                if (manualScansCancelled) return; // Check before starting
                 try {
                     uiLog(module.getId(), "Processing: " + reqResp.request().url()
                             + (targetParameter != null ? " [param: " + targetParameter + "]" : ""));
@@ -327,12 +345,13 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     } else {
                         findings = module.processHttpFlow(reqResp, api);
                     }
+                    if (manualScansCancelled) return; // Check after processing
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                         uiLog(module.getId(), "Found " + findings.size() + " issue(s)");
                     }
                 } catch (Exception e) {
-                    if (Thread.currentThread().isInterrupted()) return; // stopped
+                    if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
                     uiLog(module.getId(), "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
                 }
             });
@@ -359,15 +378,26 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
      * Returns the number of scans that were cancelled.
      */
     public int stopManualScans() {
+        // Set the global cancellation flag FIRST — running tasks check this
+        manualScansCancelled = true;
+
+        // Then cancel futures (handles queued-but-not-yet-started tasks)
         int cancelled = 0;
         for (Future<?> f : manualScanFutures) {
             if (!f.isDone() && f.cancel(true)) {
                 cancelled++;
             }
         }
+        int total = manualScanFutures.size();
         manualScanFutures.clear();
-        uiLog("ManualScan", "Stopped " + cancelled + " manual scan task(s)");
-        return cancelled;
+
+        // Also purge the active scan executor's queue — catches tasks that were
+        // submitted but haven't started executing yet
+        int purged = executor.cancelAll();
+
+        uiLog("ManualScan", "Stopped " + cancelled + " running + " + purged
+                + " queued task(s) (total tracked: " + total + ")");
+        return cancelled + purged;
     }
 
     /**

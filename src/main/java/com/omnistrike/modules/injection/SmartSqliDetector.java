@@ -10,6 +10,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
@@ -117,7 +118,8 @@ public class SmartSqliDetector implements ScanModule {
                 Pattern.compile("syntax error.*?SQL", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("unexpected end of SQL", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("SQLSTATE\\[", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("Warning.*?\\b(sql|query|fetch|num_rows)\\b", Pattern.CASE_INSENSITIVE),
+                // Tightened: require SQL function prefix to avoid matching "Warning: your query returned no results"
+                Pattern.compile("Warning.*?\\b(mysql_|mysqli_|pg_|oci_|sqlsrv_|num_rows|fetch_array|fetch_assoc|fetch_row)\\b", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("Syntax error or access violation", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("Unclosed quotation mark", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("quoted string not properly terminated", Pattern.CASE_INSENSITIVE),
@@ -893,6 +895,7 @@ public class SmartSqliDetector implements ScanModule {
             HttpRequestResponse stabCheck = sendWithPayload(original, ip, ip.originalValue);
             if (stabCheck != null && stabCheck.response() != null) {
                 String stabBody = stabCheck.response().bodyToString();
+                if (stabBody == null) stabBody = "";
                 // Check for SQL error patterns already present in fresh baseline
                 for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
                     for (Pattern p : entry.getValue()) {
@@ -921,13 +924,15 @@ public class SmartSqliDetector implements ScanModule {
 
                     HttpRequestResponse result = sendWithPayload(original, ip, payload);
                     if (result == null || result.response() == null) continue;
+                    if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
 
                     // Skip 400 Bad Request — often just input validation rejecting the quote/payload,
                     // and the error page may contain SQL-like keywords (e.g., "syntax error in query string")
                     int statusCode = result.response().statusCode();
-                    if (statusCode == 400 || statusCode == 403 || statusCode == 404) continue;
+                    if (statusCode == 400 || statusCode == 403 || statusCode == 404 || statusCode == 429) continue;
 
                     String responseBody = result.response().bodyToString();
+                    if (responseBody == null) responseBody = "";
 
                     // Check for SQL error signatures
                     for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
@@ -940,6 +945,15 @@ public class SmartSqliDetector implements ScanModule {
                             if (baselineEmpty && statusCode != 500) continue;
                             if (m.find() && !pattern.matcher(baselineBody != null ? baselineBody : "").find()) {
                                 String evidence = m.group();
+                                // Extra guard: when baseline is empty, require at least 2 DBMS-specific
+                                // error patterns in the same response to avoid FP on generic 500 pages
+                                if (baselineEmpty) {
+                                    int extraMatches = 0;
+                                    for (Pattern p2 : entry.getValue()) {
+                                        if (p2 != pattern && p2.matcher(responseBody).find()) extraMatches++;
+                                    }
+                                    if (extraMatches < 1) continue; // Require 2+ patterns total
+                                }
                                 findingsStore.addFinding(Finding.builder("sqli-detector",
                                                 "SQL Injection (Error-Based) - " + dbType,
                                                 Severity.HIGH, Confidence.FIRM)
@@ -994,10 +1008,12 @@ public class SmartSqliDetector implements ScanModule {
 
                 HttpRequestResponse result = sendWithPayload(original, ip, payload);
                 if (result == null || result.response() == null) continue;
+                if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
 
                 int resultStatus = result.response().statusCode();
-                int resultLength = result.response().bodyToString().length();
                 String resultBody = result.response().bodyToString();
+                if (resultBody == null) resultBody = "";
+                int resultLength = resultBody.length();
                 String resultLower = resultBody.toLowerCase();
 
                 // Detection signals for successful auth bypass
@@ -1197,9 +1213,12 @@ public class SmartSqliDetector implements ScanModule {
 
                     HttpRequestResponse result = sendWithPayload(original, ip, payload);
                     if (result == null || result.response() == null) break;
+                    if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
 
                     int status = result.response().statusCode();
-                    int length = result.response().bodyToString().length();
+                    String _body = result.response().bodyToString();
+                    if (_body == null) _body = "";
+                    int length = _body.length();
 
                     if (status == baselineStatus && Math.abs(length - baselineLength) < anomalyThreshold) {
                         lastGood = i;
@@ -1249,7 +1268,8 @@ public class SmartSqliDetector implements ScanModule {
                         : ip.originalValue + quoteChar + variant + nulls + "-- -";
 
                 HttpRequestResponse testResult = sendWithPayload(original, ip, testPayload);
-                if (testResult != null && testResult.response() != null) {
+                if (testResult != null && testResult.response() != null
+                        && ResponseGuard.isUsableResponse(testResult)) {
                     int testStatus = testResult.response().statusCode();
                     // Accept if status is 200 or matches baseline (WAF would return 403/400)
                     if (testStatus == 200 || testStatus == baselineStatus) {
@@ -1263,7 +1283,9 @@ public class SmartSqliDetector implements ScanModule {
 
             if (unionResult == null) return;
 
-            int unionLength = unionResult.response().bodyToString().length();
+            String _unionBody = unionResult.response().bodyToString();
+            if (_unionBody == null) _unionBody = "";
+            int unionLength = _unionBody.length();
             int unionStatus = unionResult.response().statusCode();
 
             boolean anomaly = Math.abs(unionLength - baselineLength) > anomalyThreshold
@@ -1293,8 +1315,11 @@ public class SmartSqliDetector implements ScanModule {
                         : ip.originalValue + quoteChar + workingUnion + String.join(",", cols) + "-- -";
 
                 HttpRequestResponse markerResult = sendWithPayload(original, ip, markerPayload);
-                if (markerResult != null && markerResult.response() != null) {
-                    if (markerResult.response().bodyToString().contains(UNION_MARKER)) {
+                if (markerResult != null && markerResult.response() != null
+                        && ResponseGuard.isUsableResponse(markerResult)) {
+                    String _markerBody = markerResult.response().bodyToString();
+                    if (_markerBody == null) _markerBody = "";
+                    if (_markerBody.contains(UNION_MARKER)) {
                         reflectedColumn = col + 1;
 
                         findingsStore.addFinding(Finding.builder("sqli-detector",
@@ -1332,6 +1357,7 @@ public class SmartSqliDetector implements ScanModule {
         HttpRequestResponse baselineResult = sendWithPayload(original, ip, ip.originalValue);
         String baselineBody = (baselineResult != null && baselineResult.response() != null)
                 ? baselineResult.response().bodyToString() : "";
+        if (baselineBody == null) baselineBody = "";
         int baselineLength = baselineBody.length();
         String[][] dbProbes = {
                 {"MySQL", "version()"},
@@ -1371,8 +1397,10 @@ public class SmartSqliDetector implements ScanModule {
                         : ip.originalValue + quoteChar + unionVariant + selectPart + fromPart + "-- -";
 
                 HttpRequestResponse result = sendWithPayload(original, ip, payload);
-                if (result != null && result.response() != null) {
+                if (result != null && result.response() != null
+                        && ResponseGuard.isUsableResponse(result)) {
                     String body = result.response().bodyToString();
+                    if (body == null) body = "";
                     // Look for DB-specific version strings — NOT generic x.y.z which matches
                     // JS libraries, CSS frameworks, etc. Only match if we see the UNION_MARKER
                     // was consumed (marker NOT in response = UNION worked) AND version-like data appeared.
@@ -1456,6 +1484,7 @@ public class SmartSqliDetector implements ScanModule {
                 try {
                     // Step 1: Send true-condition delay payload
                     TimedResult result1 = measureResponseTime(original, ip, payload);
+                    if (!ResponseGuard.isTimingTrustworthy(result1.response)) continue;
 
                     if (result1.elapsedMs >= baselineMax + delayThreshold) {
                         // Step 2: Build false-condition payload (replace SLEEP(18) → IF(1=2,SLEEP(18),0) etc.)
@@ -1463,6 +1492,7 @@ public class SmartSqliDetector implements ScanModule {
 
                         if (falsePayload != null) {
                             TimedResult falseResult = measureResponseTime(original, ip, falsePayload);
+                            if (!ResponseGuard.isTimingTrustworthy(falseResult.response)) continue;
 
                             // False condition must return within baseline range
                             boolean falseInRange = falseResult.elapsedMs <= baselineMax + 1000;
@@ -1470,6 +1500,7 @@ public class SmartSqliDetector implements ScanModule {
                             if (falseInRange) {
                                 // Step 3: Confirm true-condition with a second attempt
                                 TimedResult result2 = measureResponseTime(original, ip, payload);
+                                if (!ResponseGuard.isTimingTrustworthy(result2.response)) continue;
 
                                 if (result2.elapsedMs >= baselineMax + delayThreshold) {
                                     // All 3 steps passed: baseline stable, true delays, false doesn't
@@ -1496,6 +1527,7 @@ public class SmartSqliDetector implements ScanModule {
                         } else {
                             // No false-condition payload available — require 2 consistent true hits
                             TimedResult result2 = measureResponseTime(original, ip, payload);
+                            if (!ResponseGuard.isTimingTrustworthy(result2.response)) continue;
                             if (result2.elapsedMs >= baselineMax + delayThreshold) {
                                 findingsStore.addFinding(Finding.builder("sqli-detector",
                                                 "SQL Injection (Time-Based Blind) - " + dbType,
@@ -1583,12 +1615,35 @@ public class SmartSqliDetector implements ScanModule {
             HttpRequestResponse stab1 = sendWithPayload(original, ip, ip.originalValue);
             HttpRequestResponse stab2 = sendWithPayload(original, ip, ip.originalValue);
             if (stab1 != null && stab2 != null && stab1.response() != null && stab2.response() != null) {
-                int len1 = stab1.response().bodyToString().length();
-                int len2 = stab2.response().bodyToString().length();
+                String _stabBody1 = stab1.response().bodyToString();
+                if (_stabBody1 == null) _stabBody1 = "";
+                String _stabBody2 = stab2.response().bodyToString();
+                if (_stabBody2 == null) _stabBody2 = "";
+                int len1 = _stabBody1.length();
+                int len2 = _stabBody2.length();
                 if (stab1.response().statusCode() != stab2.response().statusCode()
-                        || Math.abs(len1 - len2) > 100) {
+                        || Math.abs(len1 - len2) > 300) {
                     api.logging().logToOutput("[SQLi] Skipping boolean-based for " + ip.name
                             + " — endpoint is unstable (identical requests produce different responses)");
+                    return;
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // FP guard: check if the endpoint naturally varies responses for different input values.
+        // If sending a benign modified value (original + "xyz") produces a significantly different
+        // response from baseline, this endpoint is parameter-driven (search, filter, routing).
+        // Boolean-blind detection can't distinguish app logic from SQL boolean conditions on such endpoints.
+        try {
+            String benignProbe = ip.originalValue + "xyz";
+            HttpRequestResponse benignResult = sendWithPayload(original, ip, benignProbe);
+            if (benignResult != null && benignResult.response() != null) {
+                String _benignBody = benignResult.response().bodyToString();
+                int benignLen = _benignBody != null ? _benignBody.length() : 0;
+                if (Math.abs(benignLen - baselineLength) > 300
+                        || benignResult.response().statusCode() != baselineStatus) {
+                    api.logging().logToOutput("[SQLi] Skipping boolean-based for " + ip.name
+                            + " — endpoint varies naturally for different input values (FP risk)");
                     return;
                 }
             }
@@ -1599,18 +1654,25 @@ public class SmartSqliDetector implements ScanModule {
                 // Round 1: true + false
                 HttpRequestResponse trueResult1 = sendWithPayload(original, ip, pair[0]);
                 if (trueResult1 == null || trueResult1.response() == null) continue;
+                if (!ResponseGuard.isUsableResponse(trueResult1)) { perHostDelay(); continue; }
                 HttpRequestResponse falseResult1 = sendWithPayload(original, ip, pair[1]);
                 if (falseResult1 == null || falseResult1.response() == null) continue;
+                if (!ResponseGuard.isUsableResponse(falseResult1)) { perHostDelay(); continue; }
 
-                int trueLen1 = trueResult1.response().bodyToString().length();
-                int falseLen1 = falseResult1.response().bodyToString().length();
+                String _trueBody1 = trueResult1.response().bodyToString();
+                if (_trueBody1 == null) _trueBody1 = "";
+                String _falseBody1 = falseResult1.response().bodyToString();
+                if (_falseBody1 == null) _falseBody1 = "";
+                int trueLen1 = _trueBody1.length();
+                int falseLen1 = _falseBody1.length();
                 int trueStatus1 = trueResult1.response().statusCode();
                 int falseStatus1 = falseResult1.response().statusCode();
 
-                // True condition should be similar to baseline, false should differ
-                boolean trueMatchesBaseline = Math.abs(trueLen1 - baselineLength) < 50
+                // True condition should be similar to baseline, false should differ.
+                // 200-byte tolerance absorbs CSRF token rotation and per-request dynamic content.
+                boolean trueMatchesBaseline = Math.abs(trueLen1 - baselineLength) < 200
                         && trueStatus1 == baselineStatus;
-                boolean falseDiffers = Math.abs(falseLen1 - baselineLength) > 100
+                boolean falseDiffers = Math.abs(falseLen1 - baselineLength) > 300
                         || falseStatus1 != baselineStatus;
 
                 // If true response differs from baseline, the app is reacting to injected
@@ -1621,22 +1683,31 @@ public class SmartSqliDetector implements ScanModule {
                 // Round 2: repeat both to confirm reproducibility
                 HttpRequestResponse trueResult2 = sendWithPayload(original, ip, pair[0]);
                 if (trueResult2 == null || trueResult2.response() == null) continue;
+                if (!ResponseGuard.isUsableResponse(trueResult2)) { perHostDelay(); continue; }
                 HttpRequestResponse falseResult2 = sendWithPayload(original, ip, pair[1]);
                 if (falseResult2 == null || falseResult2.response() == null) continue;
+                if (!ResponseGuard.isUsableResponse(falseResult2)) { perHostDelay(); continue; }
 
-                int trueLen2 = trueResult2.response().bodyToString().length();
-                int falseLen2 = falseResult2.response().bodyToString().length();
+                String _trueBody2 = trueResult2.response().bodyToString();
+                if (_trueBody2 == null) _trueBody2 = "";
+                String _falseBody2 = falseResult2.response().bodyToString();
+                if (_falseBody2 == null) _falseBody2 = "";
+                int trueLen2 = _trueBody2.length();
+                int falseLen2 = _falseBody2.length();
                 int trueStatus2 = trueResult2.response().statusCode();
                 int falseStatus2 = falseResult2.response().statusCode();
 
-                // Verify Round 2 matches Round 1
-                boolean trueConsistent = Math.abs(trueLen2 - trueLen1) < 50
+                // Verify Round 2 matches Round 1.
+                // Tolerance is 200 bytes to absorb CSRF token rotation (128-256 bytes)
+                // and other per-request dynamic content (timestamps, nonces).
+                // Status code match is the primary consistency signal.
+                boolean trueConsistent = Math.abs(trueLen2 - trueLen1) < 200
                         && trueStatus2 == trueStatus1;
-                boolean falseConsistent = Math.abs(falseLen2 - falseLen1) < 50
+                boolean falseConsistent = Math.abs(falseLen2 - falseLen1) < 200
                         && falseStatus2 == falseStatus1;
-                boolean trueStillMatchesBaseline = Math.abs(trueLen2 - baselineLength) < 50
+                boolean trueStillMatchesBaseline = Math.abs(trueLen2 - baselineLength) < 200
                         && trueStatus2 == baselineStatus;
-                boolean falseStillDiffers = Math.abs(falseLen2 - baselineLength) > 100
+                boolean falseStillDiffers = Math.abs(falseLen2 - baselineLength) > 300
                         || falseStatus2 != baselineStatus;
 
                 if (trueConsistent && falseConsistent && trueStillMatchesBaseline && falseStillDiffers) {
@@ -1729,7 +1800,9 @@ public class SmartSqliDetector implements ScanModule {
                     String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
 
 
-                    sentRequest.set(sendWithPayload(original, ip, payload));
+                    HttpRequestResponse oobResult = sendWithPayload(original, ip, payload);
+                    sentRequest.set(oobResult);
+                    if (oobResult != null && !ResponseGuard.isUsableResponse(oobResult)) { perHostDelay(); continue; }
 
                     api.logging().logToOutput("[SQLi OOB] Sent " + dbType + " payload to " + url
                             + " param=" + ip.name + " collab=" + collabPayload);
@@ -1824,6 +1897,7 @@ public class SmartSqliDetector implements ScanModule {
             try {
                 HttpRequestResponse result = sendWithPayload(original, ip, probe);
                 if (result == null || result.response() == null) continue;
+                if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
 
                 int statusCode = result.response().statusCode();
                 String responseBody = result.response().bodyToString();

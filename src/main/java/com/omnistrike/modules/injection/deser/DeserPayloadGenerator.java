@@ -278,7 +278,12 @@ public final class DeserPayloadGenerator {
                 String headerValue = line.substring(colonIdx + 1).trim();
                 Language lang = detectSerialization(headerValue);
                 if (lang != null) {
-                    int offset = requestStr.indexOf(headerValue);
+                    // Use the header line's position as starting offset to avoid matching
+                    // the same value elsewhere in the request (e.g., in the body)
+                    int lineOffset = requestStr.indexOf(line);
+                    int offset = lineOffset >= 0
+                            ? requestStr.indexOf(headerValue, lineOffset)
+                            : requestStr.indexOf(headerValue);
                     locations.add(new SerializedDataLocation(
                             SerializedDataLocation.LocationType.HEADER, headerName, headerValue,
                             lang, offset, offset + headerValue.length()));

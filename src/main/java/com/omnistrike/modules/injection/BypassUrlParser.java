@@ -8,6 +8,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.ResponseGuard;
 import com.omnistrike.model.*;
 import com.omnistrike.ui.modules.BypassUrlParserPanel;
 import com.google.gson.Gson;
@@ -1020,6 +1021,7 @@ public class BypassUrlParser implements ScanModule {
             HttpRequestResponse rr = api.http().sendRequest(request);
 
             if (rr.response() == null) return null;
+            if (!ResponseGuard.isUsableResponse(rr)) return null;
 
             String body = rr.response().bodyToString();
             String ct = getHeader(rr.response().headers(), "Content-Type");
@@ -1055,7 +1057,7 @@ public class BypassUrlParser implements ScanModule {
             HttpRequest request = HttpRequest.httpRequest(service, ByteArray.byteArray(rawReq));
             HttpRequestResponse rr = api.http().sendRequest(request);
 
-            if (rr.response() == null) {
+            if (rr.response() == null || !ResponseGuard.isUsableResponse(rr)) {
                 return new BypassResult(attempt.mode, attempt.description,
                         url.fullUrl(attempt.path), attempt.method,
                         0, 0, "", 0, 0, "ERROR", null,

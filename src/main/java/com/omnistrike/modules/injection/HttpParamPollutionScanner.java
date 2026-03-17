@@ -9,6 +9,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -298,9 +299,9 @@ public class HttpParamPollutionScanner implements ScanModule {
         HttpRequestResponse probeResult = sendRequest(probeRequest);
         if (probeResult == null || probeResult.response() == null) return;
 
+        String probeBody = probeResult.response().bodyToString();
         boolean fullPayloadBlocked = probeResult.response().statusCode() >= 400
-                || (probeResult.response().bodyToString() != null
-                    && !probeResult.response().bodyToString().contains(probePayload));
+                || (probeBody != null && !probeBody.contains(probePayload));
         // If full payload was NOT blocked, there's no WAF — no point testing split bypass
         if (!fullPayloadBlocked) {
             perHostDelay();
@@ -503,7 +504,9 @@ public class HttpParamPollutionScanner implements ScanModule {
 
     private HttpRequestResponse sendRequest(HttpRequest request) {
         try {
-            return api.http().sendRequest(request);
+            HttpRequestResponse result = api.http().sendRequest(request);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }

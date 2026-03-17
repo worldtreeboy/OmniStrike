@@ -12,6 +12,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -784,7 +785,13 @@ public class XxeScanner implements ScanModule {
             String responseBody = nonExistentResult.response().bodyToString();
             if (responseBody != null
                     && DTD_PROCESSING_ERROR_PATTERN.matcher(responseBody).find()
-                    && (baselineBody == null || !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find())) {
+                    && baselineBody != null && !baselineBody.isEmpty()
+                    && !DTD_PROCESSING_ERROR_PATTERN.matcher(baselineBody).find()
+                    // Exclude DOCTYPE rejection messages — these indicate SECURITY, not vulnerability.
+                    // "DOCTYPE not allowed" means the parser correctly blocked DTDs.
+                    && !responseBody.toLowerCase().contains("doctype not allowed")
+                    && !responseBody.toLowerCase().contains("doctype is not allowed")
+                    && !responseBody.toLowerCase().contains("dtd is not allowed")) {
                 findingsStore.addFinding(Finding.builder("xxe-scanner",
                                 "XXE Error-Based: XML parser processes external entities",
                                 Severity.HIGH, Confidence.FIRM)
@@ -1313,6 +1320,7 @@ public class XxeScanner implements ScanModule {
                             .withAddedHeader("Content-Type", "application/xml; charset=utf-16le")
                             .withBody(ByteArray.byteArray(payload));
                     HttpRequestResponse result = api.http().sendRequest(modified);
+                    if (!ResponseGuard.isUsableResponse(result)) return;
                     sentUtf16Oob.set(result);
                 } catch (Exception e) {
                     api.logging().logToError("[XXE] UTF-16 OOB test error: " + e.getMessage());
@@ -1346,6 +1354,7 @@ public class XxeScanner implements ScanModule {
                     .withAddedHeader("Content-Type", "application/xml; charset=" + charsetName)
                     .withBody(ByteArray.byteArray(payload));
             HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return;
 
             if (result != null && result.response() != null) {
                 String responseBody = result.response().bodyToString();
@@ -1521,6 +1530,7 @@ public class XxeScanner implements ScanModule {
                     .withBody(winEntity);
             try {
                 HttpRequestResponse result4 = api.http().sendRequest(winBypassReq);
+                if (!ResponseGuard.isUsableResponse(result4)) { perHostDelay(); return; }
                 if (result4 != null && result4.response() != null) {
                     String body = result4.response().bodyToString();
                     if (body != null && WINDOWS_WIN_INI_EVIDENCE.matcher(body).find()
@@ -1762,6 +1772,7 @@ public class XxeScanner implements ScanModule {
             } catch (Exception e) {
                 continue;
             }
+            if (!ResponseGuard.isUsableResponse(xmlResult)) continue;
             if (xmlResult == null || xmlResult.response() == null) continue;
 
             int xmlStatus = xmlResult.response().statusCode();
@@ -1816,6 +1827,7 @@ public class XxeScanner implements ScanModule {
 
             try {
                 HttpRequestResponse result = api.http().sendRequest(xxeRequest);
+                if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
                 if (result != null && result.response() != null) {
                     String body = result.response().bodyToString();
                     if (body != null
@@ -1856,6 +1868,7 @@ public class XxeScanner implements ScanModule {
 
             try {
                 HttpRequestResponse winIniResult = api.http().sendRequest(winIniRequest);
+                if (!ResponseGuard.isUsableResponse(winIniResult)) { perHostDelay(); return; }
                 if (winIniResult != null && winIniResult.response() != null) {
                     String body = winIniResult.response().bodyToString();
                     if (body != null
@@ -1923,7 +1936,9 @@ public class XxeScanner implements ScanModule {
                         .withBody(oobPayload);
                 try {
                     HttpRequestResponse ctOobResult = api.http().sendRequest(oobRequest);
-                    sentCtConvertOob.set(ctOobResult);
+                    if (ResponseGuard.isUsableResponse(ctOobResult)) {
+                        sentCtConvertOob.set(ctOobResult);
+                    }
                 } catch (Exception ignored) {}
             }
 
@@ -1963,6 +1978,7 @@ public class XxeScanner implements ScanModule {
             } catch (Exception e) {
                 continue;
             }
+            if (!ResponseGuard.isUsableResponse(probeResult)) continue;
             if (probeResult == null || probeResult.response() == null) continue;
 
             int status = probeResult.response().statusCode();
@@ -2001,6 +2017,7 @@ public class XxeScanner implements ScanModule {
         } catch (Exception e) {
             return;
         }
+        if (!ResponseGuard.isUsableResponse(entityResult)) return;
 
         if (entityResult != null && entityResult.response() != null) {
             probeResponseBody = entityResult.response().bodyToString();
@@ -2061,6 +2078,7 @@ public class XxeScanner implements ScanModule {
 
             try {
                 HttpRequestResponse passwdResult = api.http().sendRequest(passwdRequest);
+                if (!ResponseGuard.isUsableResponse(passwdResult)) { perHostDelay(); return; }
                 if (passwdResult != null && passwdResult.response() != null) {
                     String body = passwdResult.response().bodyToString();
                     if (body != null && LINUX_PASSWD_EVIDENCE.matcher(body).find()
@@ -2098,6 +2116,7 @@ public class XxeScanner implements ScanModule {
 
             try {
                 HttpRequestResponse winIniResult = api.http().sendRequest(winIniRequest);
+                if (!ResponseGuard.isUsableResponse(winIniResult)) { perHostDelay(); return; }
                 if (winIniResult != null && winIniResult.response() != null) {
                     String body = winIniResult.response().bodyToString();
                     if (body != null && WINDOWS_WIN_INI_EVIDENCE.matcher(body).find()
@@ -2153,7 +2172,9 @@ public class XxeScanner implements ScanModule {
                         .withBody(oobDtd);
                 try {
                     HttpRequestResponse oobResult = api.http().sendRequest(oobRequest);
-                    sentForceOob1.set(oobResult);
+                    if (ResponseGuard.isUsableResponse(oobResult)) {
+                        sentForceOob1.set(oobResult);
+                    }
                 } catch (Exception ignored) {}
 
                 perHostDelay();
@@ -2185,7 +2206,9 @@ public class XxeScanner implements ScanModule {
                         .withBody(directOobDtd);
                 try {
                     HttpRequestResponse directOobResult = api.http().sendRequest(directOobRequest);
-                    sentForceOob2.set(directOobResult);
+                    if (ResponseGuard.isUsableResponse(directOobResult)) {
+                        sentForceOob2.set(directOobResult);
+                    }
                 } catch (Exception ignored) {}
 
                 perHostDelay();
@@ -2201,7 +2224,9 @@ public class XxeScanner implements ScanModule {
     private HttpRequestResponse sendRawRequest(HttpRequestResponse original, String newBody) {
         try {
             HttpRequest modified = original.request().withBody(newBody);
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }
@@ -2213,7 +2238,9 @@ public class XxeScanner implements ScanModule {
     private HttpRequestResponse sendPayload(HttpRequestResponse original, XxeTarget target, String payload) {
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }

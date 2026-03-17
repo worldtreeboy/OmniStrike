@@ -7,6 +7,7 @@ import com.google.gson.*;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.ResponseGuard;
 import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
@@ -344,7 +345,7 @@ public class GraphqlTool implements ScanModule {
         String introspectionBody = new Gson().toJson(Map.of("query", INTROSPECTION_QUERY));
         HttpRequest introspectionReq = buildGqlRequest(originalRequest, path, introspectionBody);
 
-        HttpRequestResponse result = api.http().sendRequest(introspectionReq);
+        HttpRequestResponse result = guardedSendRequest(introspectionReq);
         perHostDelay();
 
         if (result == null || result.response() == null) return null;
@@ -397,7 +398,7 @@ public class GraphqlTool implements ScanModule {
             checkInterrupted();
             String body = new Gson().toJson(Map.of("query", bypassQuery));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result != null && result.response() != null) {
@@ -441,7 +442,7 @@ public class GraphqlTool implements ScanModule {
                         + "Host: " + originalRequest.httpService().host() + "\r\n"
                         + "Accept: application/json\r\n\r\n");
 
-        HttpRequestResponse getResult = api.http().sendRequest(getReq);
+        HttpRequestResponse getResult = guardedSendRequest(getReq);
         perHostDelay();
 
         if (getResult != null && getResult.response() != null) {
@@ -485,7 +486,7 @@ public class GraphqlTool implements ScanModule {
                             + "Host: " + host + "\r\n"
                             + "Accept: text/html,application/json\r\n\r\n");
 
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result != null && result.response() != null) {
@@ -528,7 +529,7 @@ public class GraphqlTool implements ScanModule {
             checkInterrupted();
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result != null && result.response() != null) {
@@ -751,7 +752,7 @@ public class GraphqlTool implements ScanModule {
         String baselineQuery = buildQueryForArg(arg, "test123");
         String baselineBody = new Gson().toJson(Map.of("query", baselineQuery));
         HttpRequest baselineReq = buildGqlRequest(originalRequest, path, baselineBody);
-        HttpRequestResponse baselineResult = api.http().sendRequest(baselineReq);
+        HttpRequestResponse baselineResult = guardedSendRequest(baselineReq);
         perHostDelay();
 
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
@@ -769,7 +770,7 @@ public class GraphqlTool implements ScanModule {
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result == null || result.response() == null) continue;
@@ -811,11 +812,12 @@ public class GraphqlTool implements ScanModule {
                 HttpRequest req = buildGqlRequest(originalRequest, path, body);
 
                 long start = System.currentTimeMillis();
-                HttpRequestResponse result = api.http().sendRequest(req);
+                HttpRequestResponse result = guardedSendRequest(req);
                 long elapsed = System.currentTimeMillis() - start;
                 perHostDelay();
 
                 if (result == null || result.response() == null) continue;
+                if (!ResponseGuard.isTimingTrustworthy(result)) continue;
                 String respBody = result.response().bodyToString();
                 if (respBody == null) continue;
 
@@ -825,9 +827,10 @@ public class GraphqlTool implements ScanModule {
                     long measuredBaselineTime = 0;
                     try {
                         long bstart = System.currentTimeMillis();
-                        api.http().sendRequest(buildGqlRequest(originalRequest, path,
+                        HttpRequestResponse timingBaseline = guardedSendRequest(buildGqlRequest(originalRequest, path,
                                 new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
                         measuredBaselineTime = System.currentTimeMillis() - bstart;
+                        if (timingBaseline != null && !ResponseGuard.isTimingTrustworthy(timingBaseline)) continue;
                     } catch (Exception ignored) {}
 
                     if (elapsed > measuredBaselineTime + 14000) {
@@ -840,9 +843,10 @@ public class GraphqlTool implements ScanModule {
                         String falseBody = new Gson().toJson(Map.of("query", falseQuery));
                         HttpRequest falseReq = buildGqlRequest(originalRequest, path, falseBody);
                         long fstart = System.currentTimeMillis();
-                        api.http().sendRequest(falseReq);
+                        HttpRequestResponse falseResult = guardedSendRequest(falseReq);
                         long falseElapsed = System.currentTimeMillis() - fstart;
                         perHostDelay();
+                        if (falseResult != null && !ResponseGuard.isTimingTrustworthy(falseResult)) continue;
 
                         // False condition must NOT delay (within baseline + 5s tolerance)
                         if (falseElapsed < measuredBaselineTime + 5000) {
@@ -877,7 +881,7 @@ public class GraphqlTool implements ScanModule {
         String baselineQuery = buildQueryForArg(arg, "test123");
         String baselineBody = new Gson().toJson(Map.of("query", baselineQuery));
         HttpRequest baselineReq = buildGqlRequest(originalRequest, path, baselineBody);
-        HttpRequestResponse baselineResult = api.http().sendRequest(baselineReq);
+        HttpRequestResponse baselineResult = guardedSendRequest(baselineReq);
         perHostDelay();
 
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
@@ -891,7 +895,7 @@ public class GraphqlTool implements ScanModule {
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result == null || result.response() == null) continue;
@@ -924,7 +928,7 @@ public class GraphqlTool implements ScanModule {
         String baselineQuery = buildQueryForArg(arg, "test123");
         String baselineBody = new Gson().toJson(Map.of("query", baselineQuery));
         HttpRequest baselineReq = buildGqlRequest(originalRequest, path, baselineBody);
-        HttpRequestResponse baselineResult = api.http().sendRequest(baselineReq);
+        HttpRequestResponse baselineResult = guardedSendRequest(baselineReq);
         perHostDelay();
 
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
@@ -942,7 +946,7 @@ public class GraphqlTool implements ScanModule {
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result == null || result.response() == null) continue;
@@ -990,11 +994,12 @@ public class GraphqlTool implements ScanModule {
                 HttpRequest req = buildGqlRequest(originalRequest, path, body);
 
                 long start = System.currentTimeMillis();
-                HttpRequestResponse result = api.http().sendRequest(req);
+                HttpRequestResponse result = guardedSendRequest(req);
                 long elapsed = System.currentTimeMillis() - start;
                 perHostDelay();
 
                 if (result == null || result.response() == null) continue;
+                if (!ResponseGuard.isTimingTrustworthy(result)) continue;
                 String respBody = result.response().bodyToString();
                 if (respBody == null) continue;
 
@@ -1007,9 +1012,10 @@ public class GraphqlTool implements ScanModule {
                     long measuredBaselineTime = 0;
                     try {
                         long bstart = System.currentTimeMillis();
-                        api.http().sendRequest(buildGqlRequest(originalRequest, path,
+                        HttpRequestResponse timingBaseline = guardedSendRequest(buildGqlRequest(originalRequest, path,
                                 new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
                         measuredBaselineTime = System.currentTimeMillis() - bstart;
+                        if (timingBaseline != null && !ResponseGuard.isTimingTrustworthy(timingBaseline)) continue;
                     } catch (Exception ignored) {}
 
                     if (elapsed > measuredBaselineTime + 14000) {
@@ -1021,9 +1027,10 @@ public class GraphqlTool implements ScanModule {
                         String falseBody = new Gson().toJson(Map.of("query", falseQuery));
                         HttpRequest falseReq = buildGqlRequest(originalRequest, path, falseBody);
                         long fstart = System.currentTimeMillis();
-                        api.http().sendRequest(falseReq);
+                        HttpRequestResponse falseResult = guardedSendRequest(falseReq);
                         long falseElapsed = System.currentTimeMillis() - fstart;
                         perHostDelay();
+                        if (falseResult != null && !ResponseGuard.isTimingTrustworthy(falseResult)) continue;
 
                         // False condition must NOT delay (within baseline + 5s tolerance)
                         if (falseElapsed < measuredBaselineTime + 5000) {
@@ -1058,7 +1065,7 @@ public class GraphqlTool implements ScanModule {
         String baselineQuery = buildQueryForArg(arg, "test123");
         String baselineBody = new Gson().toJson(Map.of("query", baselineQuery));
         HttpRequest baselineReq = buildGqlRequest(originalRequest, path, baselineBody);
-        HttpRequestResponse baselineResult = api.http().sendRequest(baselineReq);
+        HttpRequestResponse baselineResult = guardedSendRequest(baselineReq);
         perHostDelay();
 
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
@@ -1073,7 +1080,7 @@ public class GraphqlTool implements ScanModule {
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result == null || result.response() == null) continue;
@@ -1108,7 +1115,7 @@ public class GraphqlTool implements ScanModule {
         String baselineQuery = buildQueryForArg(arg, "test123");
         String baselineBody = new Gson().toJson(Map.of("query", baselineQuery));
         HttpRequest baselineReq = buildGqlRequest(originalRequest, path, baselineBody);
-        HttpRequestResponse baselineResult = api.http().sendRequest(baselineReq);
+        HttpRequestResponse baselineResult = guardedSendRequest(baselineReq);
         perHostDelay();
 
         String baselineRespBody = (baselineResult != null && baselineResult.response() != null)
@@ -1123,7 +1130,7 @@ public class GraphqlTool implements ScanModule {
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result == null || result.response() == null) continue;
@@ -1196,7 +1203,7 @@ public class GraphqlTool implements ScanModule {
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            sentRequest.set(api.http().sendRequest(req));
+            sentRequest.set(guardedSendRequest(req));
             perHostDelay();
         }
 
@@ -1232,7 +1239,7 @@ public class GraphqlTool implements ScanModule {
                 String query = buildQueryForArg(arg, payload);
                 String body = new Gson().toJson(Map.of("query", query));
                 HttpRequest req = buildGqlRequest(originalRequest, path, body);
-                sentRequest.set(api.http().sendRequest(req));
+                sentRequest.set(guardedSendRequest(req));
                 perHostDelay();
             }
         }
@@ -1297,7 +1304,7 @@ public class GraphqlTool implements ScanModule {
                     + (selectionSet.isEmpty() ? "" : " { " + selectionSet + " }") + " }";
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result != null && result.response() != null) {
@@ -1353,7 +1360,7 @@ public class GraphqlTool implements ScanModule {
         }
         String body = new Gson().toJson(batch);
         HttpRequest req = buildGqlRequest(originalRequest, path, body);
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
@@ -1382,7 +1389,7 @@ public class GraphqlTool implements ScanModule {
         String deepQuery = "{ __schema { types { fields { type { fields { type { fields { type { name } } } } } } } } }";
         String body = new Gson().toJson(Map.of("query", deepQuery));
         HttpRequest req = buildGqlRequest(originalRequest, path, body);
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
@@ -1412,7 +1419,7 @@ public class GraphqlTool implements ScanModule {
 
         String body = new Gson().toJson(Map.of("query", sb.toString()));
         HttpRequest req = buildGqlRequest(originalRequest, path, body);
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
@@ -1441,7 +1448,7 @@ public class GraphqlTool implements ScanModule {
         String query = "query { __typename ...A } fragment A on Query { __typename ...B } fragment B on Query { __typename ...A }";
         String body = new Gson().toJson(Map.of("query", query));
         HttpRequest req = buildGqlRequest(originalRequest, path, body);
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result != null && result.response() != null) {
@@ -1477,7 +1484,7 @@ public class GraphqlTool implements ScanModule {
 
         String body = new Gson().toJson(Map.of("query", sb.toString()));
         HttpRequest req = buildGqlRequest(originalRequest, path, body);
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
@@ -1511,7 +1518,7 @@ public class GraphqlTool implements ScanModule {
                         + "Host: " + originalRequest.httpService().host() + "\r\n"
                         + "Accept: application/json\r\n\r\n");
 
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
@@ -1547,7 +1554,7 @@ public class GraphqlTool implements ScanModule {
                         + "Content-Length: " + formBody.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + "\r\n\r\n"
                         + formBody);
 
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
@@ -1603,7 +1610,7 @@ public class GraphqlTool implements ScanModule {
                         + "Content-Length: " + body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + "\r\n\r\n"
                         + body);
 
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result != null && result.response() != null) {
@@ -1648,7 +1655,7 @@ public class GraphqlTool implements ScanModule {
             checkInterrupted();
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = guardedSendRequest(req);
             perHostDelay();
 
             if (result == null || result.response() == null) continue;
@@ -1692,7 +1699,7 @@ public class GraphqlTool implements ScanModule {
         String query = "{ __typename }";
         String body = new Gson().toJson(Map.of("query", query));
         HttpRequest req = buildGqlRequest(originalRequest, path, body);
-        HttpRequestResponse result = api.http().sendRequest(req);
+        HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
         if (result == null || result.response() == null) return;
@@ -1742,9 +1749,9 @@ public class GraphqlTool implements ScanModule {
         HttpRequest goodReq = buildGqlRequest(originalRequest, path, goodBody);
         HttpRequest badReq = buildGqlRequest(originalRequest, path, badBody);
 
-        HttpRequestResponse goodResult = api.http().sendRequest(goodReq);
+        HttpRequestResponse goodResult = guardedSendRequest(goodReq);
         perHostDelay();
-        HttpRequestResponse badResult = api.http().sendRequest(badReq);
+        HttpRequestResponse badResult = guardedSendRequest(badReq);
         perHostDelay();
 
         Set<String> detected = new LinkedHashSet<>();
@@ -2120,6 +2127,20 @@ public class GraphqlTool implements ScanModule {
             }
         } catch (Exception ignored) {}
         return url;
+    }
+
+    /**
+     * Wrapper around api.http().sendRequest() that filters out WAF/infrastructure responses.
+     * Returns null if the response is not usable (WAF block, rate limit, etc.).
+     */
+    private HttpRequestResponse guardedSendRequest(HttpRequest request) {
+        try {
+            HttpRequestResponse result = api.http().sendRequest(request);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void perHostDelay() throws InterruptedException {

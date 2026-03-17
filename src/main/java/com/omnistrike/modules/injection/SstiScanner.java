@@ -9,6 +9,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -189,7 +190,8 @@ public class SstiScanner implements ScanModule {
 
     // Error patterns that indicate template engine presence
     private static final Map<String, Pattern> ENGINE_ERROR_PATTERNS = Map.ofEntries(
-            Map.entry("Jinja2", Pattern.compile("jinja2\\.exceptions|UndefinedError|TemplateSyntaxError", Pattern.CASE_INSENSITIVE)),
+            // Tightened: require jinja2 namespace or full class name to avoid FP on generic Python "UndefinedError"
+            Map.entry("Jinja2", Pattern.compile("jinja2\\.exceptions|jinja2.*?UndefinedError|jinja2.*?TemplateSyntaxError", Pattern.CASE_INSENSITIVE)),
             Map.entry("Twig", Pattern.compile("Twig_Error|Twig\\\\Error|twig\\.error", Pattern.CASE_INSENSITIVE)),
             Map.entry("Freemarker", Pattern.compile("freemarker\\.core|FreeMarker|ParseException.*freemarker", Pattern.CASE_INSENSITIVE)),
             Map.entry("Velocity", Pattern.compile("org\\.apache\\.velocity|VelocityException", Pattern.CASE_INSENSITIVE)),
@@ -402,6 +404,7 @@ public class SstiScanner implements ScanModule {
         HttpRequestResponse errorResult = sendPayload(original, target, POLYGLOT_ERROR);
         if (errorResult != null && errorResult.response() != null) {
             String errorBody = errorResult.response().bodyToString();
+            if (errorBody == null) errorBody = "";
             int errorStatus = errorResult.response().statusCode();
 
             // Check for template engine error messages
@@ -447,6 +450,7 @@ public class SstiScanner implements ScanModule {
             if (responseStatus >= 400) continue;
 
             String responseBody = result.response().bodyToString();
+            if (responseBody == null) responseBody = "";
 
             // Special case: Spring EL returns random number
             if (payload.contains("T(java.lang.Math).random()")) {
@@ -687,7 +691,9 @@ public class SstiScanner implements ScanModule {
     private HttpRequestResponse sendPayload(HttpRequestResponse original, InjectionTarget target, String payload) {
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }

@@ -1,306 +1,229 @@
 <div align="center">
 
+<img src="https://img.shields.io/badge/OmniStrike-v1.51-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+
 # OmniStrike
 
-### The All-in-One Burp Suite Attack Framework
+**The last Burp extension you'll ever install.**
 
-**26 modules. SQL exploitation engine. AI-powered fuzzing. Technology profiling. Prerequisite chain automation. Custom OOB server. One JAR.**
+18 active scanners. 6 passive analyzers. SQL exploitation engine. AI-powered fuzzing.<br/>
+Technology profiling. Session automation. Custom OOB server. Zero false positives.<br/>
+**One JAR. One click. Everything.**
 
-[![Version](https://img.shields.io/badge/v1.50-blue?style=for-the-badge)](https://github.com/worldtreeboy/OmniStrike/releases)
-[![Java](https://img.shields.io/badge/Java_17+-orange?style=for-the-badge&logo=openjdk&logoColor=white)](https://adoptium.net/)
-[![Burp Suite](https://img.shields.io/badge/Montoya_API-E8350E?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=)](https://portswigger.net/burp)
-[![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/worldtreeboy/OmniStrike?style=for-the-badge&color=yellow)](https://github.com/worldtreeboy/OmniStrike/stargazers)
-[![Downloads](https://img.shields.io/github/downloads/worldtreeboy/OmniStrike/total?style=for-the-badge&color=brightgreen)](https://github.com/worldtreeboy/OmniStrike/releases)
+<br/>
 
-[**Download**](https://github.com/worldtreeboy/OmniStrike/releases/latest) ·
-[Modules](#-modules) ·
-[OmniMap](#-omnimap-exploiter) ·
-[AI Scanning](#-ai-scanning) ·
-[Stepper](#-stepper--prerequisite-chain) ·
-[Custom OOB](#-custom-oob-server) ·
-[Build](#-building-from-source)
+[![Java](https://img.shields.io/badge/Java_17+-ED8B00?style=flat-square&logo=openjdk&logoColor=white)](https://adoptium.net/)
+[![Montoya API](https://img.shields.io/badge/Montoya_API-E8350E?style=flat-square)](https://portswigger.net/burp)
+[![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square&color=blue)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/worldtreeboy/OmniStrike?style=flat-square&color=yellow)](https://github.com/worldtreeboy/OmniStrike/stargazers)
+[![Downloads](https://img.shields.io/github/downloads/worldtreeboy/OmniStrike/total?style=flat-square&color=brightgreen)](https://github.com/worldtreeboy/OmniStrike/releases)
+[![Last Commit](https://img.shields.io/github/last-commit/worldtreeboy/OmniStrike?style=flat-square)](https://github.com/worldtreeboy/OmniStrike/commits/main)
+
+<br/>
+
+[**Download JAR**](https://github.com/worldtreeboy/OmniStrike/releases/latest)&ensp;&ensp;|&ensp;&ensp;[Quick Start](#-quick-start)&ensp;&ensp;|&ensp;&ensp;[Modules](#-what-it-scans)&ensp;&ensp;|&ensp;&ensp;[OmniMap](#-omnimap--sql-exploitation-engine)&ensp;&ensp;|&ensp;&ensp;[Build](#-build-from-source)
 
 </div>
 
 ---
 
-## Why OmniStrike?
+## The Problem
 
-Most Burp extensions do one thing. You end up with 15 extensions loaded, fighting for threads, duplicating requests, and missing the gaps between them.
+You install Burp Suite. Then you install 15 extensions. They fight for threads, duplicate requests, miss the gaps between them, and half of them haven't been updated since 2021. Your Burp is slow, your findings are fragmented, and you're still missing bugs.
 
-OmniStrike replaces that entire stack with a **single extension** — 18 active scanners, 6 passive analyzers, an AI fuzzer, a SQL exploitation engine, a technology profiling engine, a prerequisite request chain (Stepper), a wordlist generator, and a built-in OOB callback server. Everything shares one thread pool, one deduplication store, one findings database, and one Collaborator pipeline.
+## The Solution
 
-**Drop one JAR. Get everything.**
+**OmniStrike replaces your entire extension stack with a single JAR.** Every scanner shares one thread pool, one deduplication engine, one findings database, and one Collaborator pipeline. No conflicts. No duplicates. No gaps.
+
+```
+Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
+```
+
+---
+
+## What It Scans
+
+### 18 Active Injection Scanners
+
+| Scanner | What It Does |
+|:--------|:-------------|
+| **SQL Injection** | 6-phase detection: error-based + UNION + boolean-blind (2-round) + time-blind (3-step) + OOB (64 payloads) + auth bypass. ~375 payloads/param across 10 DBMS. REST path segment injection. |
+| **Command Injection** | 3-step time verification, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/backtick/encoding bypasses. |
+| **SSRF** | Collaborator OOB, cloud metadata with multi-marker validation (AWS/Azure/GCP/Oracle), DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads. |
+| **SSTI** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
+| **XXE** | 4-phase: XML body + XInclude + JSON-to-XML + Content-Type forcing. UTF-16 bypass, SAML detection, 14 OOB payloads. |
+| **Deserialization** | 6 languages, 137+ gadget chains (Java/PHP/.NET/Python/Ruby/Node.js). Jackson Tier 2 gadgets with PTV bypass probes. Passive fingerprinting + OOB-first detection. |
+| **Path Traversal** | 24 Unix + 9 Windows targets, 26 encoding bypasses, PHP wrappers, structural content validation with multi-marker confirmation. |
+| **GraphQL** | 7-phase: introspection (4 bypasses), schema analysis, injection testing, IDOR, DoS config, HTTP-level, error disclosure. |
+| **CORS** | Reflected origin, null trust, subdomain trust, scheme downgrade, wildcard+credentials, preflight bypass. |
+| **Cache Poisoning** | 30 unkeyed header vectors, 29 unkeyed query params, cacheability analysis, canary-based poison confirmation. |
+| **Host Header** | Password reset poisoning via Collaborator, routing SSRF, duplicate Host, override headers. |
+| **HTTP Param Pollution** | Duplicate param precedence, privilege escalation patterns, WAF bypass via splitting. |
+| **Prototype Pollution** | Server-side `__proto__`/`constructor.prototype` with canary persistence verification, behavioral gadgets. |
+| **LDAP Injection** | 4-phase: error-based (2+ signature requirement), boolean differential (2-round), auth bypass (multi-signal), wildcard amplification. Zero FP design. |
+| **Bypass URL Parser** | 13 modes for 403/401 bypass: path manipulation, encoding variants, method override, IP spoofing, rewrite headers, user-agent rotation. |
+| **CSRF Manipulator** | 11 token manipulation tests: remove, empty, random, truncated, char flip, case swap, nonce reuse, Referer/Origin removal. |
+| **WebSocket** | Passive frame analysis + OOB-first active fuzzing across 8 injection categories (CSWSH, SQLi, CmdI, SSRF, SSTI, XSS, IDOR, AuthZ). |
+| **OmniMap** | Post-detection SQL exploitation engine. [Details below](#-omnimap--sql-exploitation-engine). |
+
+### 6 Passive Analyzers
+
+| Analyzer | What It Finds |
+|:---------|:--------------|
+| **Client-Side** | DOM XSS source-to-sink, prototype pollution, hardcoded secrets (entropy-validated), postMessage, open redirects. Auto-skips minified libraries. |
+| **Endpoint Finder** | Extracts API endpoints and paths from JS/HTML/JSON via 13+ regex patterns. |
+| **Subdomain Collector** | Discovers subdomains from CSP, CORS, redirects, and response bodies. |
+| **Security Headers** | HSTS, CSP, CORS, cookie flags, X-Frame-Options, server version disclosure. Consolidated per host. |
+| **Tech Fingerprinter** | Detects servers, languages, frameworks, CMS, JS libraries, WAF/CDN, caches, cloud platforms. |
+| **Sensitive Data** | Credit cards (Luhn), SSNs (range-validated), emails, phones, internal IPs, JWTs, DB connection strings, AWS ARNs, crypto addresses, IBANs. All values redacted. |
+
+### 2 Framework Tools
+
+| Tool | What It Does |
+|:-----|:-------------|
+| **AI Vulnerability Analyzer** | LLM-powered security analysis with smart fuzzing, WAF bypass generation, and adaptive multi-round scanning. Supports Claude Code, Gemini CLI, Codex CLI, OpenCode CLI. No API keys needed. Disabled by default. |
+| **Wordlist Generator** | Passive word harvester from proxied traffic. Builds domain-specific wordlists for fuzzing/brute-forcing. |
 
 ---
 
 ## Quick Start
 
 ```
-1.  Download omnistrike.jar from Releases
-2.  Burp Suite → Extensions → Add → Java → select omnistrike.jar
-3.  Set target scope → click Start → browse normally
-4.  Or right-click any request → Send to OmniStrike
+1.  Download omnistrike.jar from Releases (or build from source)
+2.  Burp Suite  -->  Extensions  -->  Add  -->  Java  -->  select omnistrike.jar
+3.  Enter target domain in "Target Scope"
+4.  Click "Start Auto-Scan" and browse normally
+5.  Or right-click any request  -->  "Send to OmniStrike"
 ```
 
----
-
-## Modules
-
-### Active Scanners (18)
-
-| Module | Highlights |
-|:---|:---|
-| **SQLi Detector** | Auth bypass, error-based, UNION, time-based blind (3-step verification), boolean-blind (2-round), 64 OOB payloads. ~375 payloads/param across 10 database engines. REST API path segment injection. |
-| **OmniMap Exploiter** | Post-detection SQL exploitation engine — sqlmap-equivalent. 4 techniques (UNION, Error, Boolean blind, Time blind), 5 DBMS dialects, auto boundary/DBMS detection, parallel extraction, WAF bypass tamper engine. [Details below](#-omnimap-exploiter). |
-| **SSRF Scanner** | Collaborator OOB, cloud metadata with multi-marker validation (AWS/Azure/GCP/Oracle), DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads. |
-| **SSTI Scanner** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
-| **Command Injection** | 3-step time-based, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/`%0a`/backtick/double-encoding bypasses. REST API path segment injection. |
-| **XXE Scanner** | 4-phase: XML body, XInclude, JSON→XML, Content-Type forcing. UTF-16 bypass, SAML detection, 14 OOB payloads. |
-| **Deserialization** | 6 languages, 137+ gadget chains, Jackson-specific Tier 2 gadgets with PTV bypass probes, XML/YAML format variants, classpath inference, passive fingerprinting, OOB-first detection. [Details below](#-deserialization-scanner). |
-| **WebSocket Scanner** | Passive frame analysis + OOB-first active fuzzing across 8 injection categories. [Details below](#-websocket-scanner). |
-| **GraphQL Tool** | 7-phase: introspection (4 bypasses), schema analysis, injection (SQLi/NoSQLi/CMDi/SSTI/traversal), IDOR, DoS config, HTTP-level, error disclosure. |
-| **CORS Misconfiguration** | Reflected origin, null trust, subdomain trust, scheme downgrade, wildcard+credentials, preflight bypass. |
-| **Cache Poisoning** | 30 unkeyed header vectors, 29 unkeyed query params, cacheability analysis, poison confirmation. |
-| **Host Header Injection** | Password reset poisoning via Collaborator, routing SSRF, duplicate Host, override headers. |
-| **HTTP Param Pollution** | Duplicate param precedence, privilege escalation patterns, WAF bypass via splitting. |
-| **Prototype Pollution** | Server-side `__proto__`/`constructor.prototype` with canary persistence verification, behavioral gadgets. |
-| **Path Traversal / LFI** | 24 Unix / 9 Windows targets with structural content validation, 26 encoding bypasses, PHP wrappers (filter/data/iconv). |
-| **Bypass URL Parser** | Comprehensive 403/401 bypass scanner. 13 modes: mid-paths, end-paths, case substitution, char encoding (single/double/triple/unicode), HTTP methods, HTTP versions, method override headers, scheme spoofing, IP spoofing, port spoofing, URL rewrite headers, user-agent rotation, combined multi-header combos. Right-click only. |
-| **CSRF Manipulator** | 11 token manipulation tests (remove, empty, random, truncated, char flip, case swap, static fake, nonce reuse, Referer/Origin removal, token relocation, method change). Right-click only. |
-| **LDAP Injection** | 4-phase: error-based (2+ signature requirement), boolean differential (2-round verification), auth bypass (multi-signal confirmation), wildcard amplification. Targets OpenLDAP, Active Directory, Java JNDI, PHP, Python, .NET, Ruby. Right-click only. |
-
-### Passive Analyzers (6)
-
-| Module | Highlights |
-|:---|:---|
-| **Client-Side Analyzer** | DOM XSS source-to-sink, prototype pollution, hardcoded secrets with entropy validation, postMessage, open redirects, endpoint extraction. Auto-skips minified libraries. |
-| **Hidden Endpoint Finder** | Extracts API endpoints and paths from JS/HTML/JSON via 13+ regex patterns. |
-| **Subdomain Collector** | Discovers subdomains from CSP, CORS, redirects, and response bodies. |
-| **Security Header Analyzer** | HSTS, CSP, CORS, cookie flags, X-Frame-Options, Referrer-Policy, server version disclosure. Consolidated findings per host. JWT-in-Cookie detection. |
-| **Technology Fingerprinter** | Detects web servers, languages, frameworks, CMS, JS libraries, WAF/CDN, caches, and cloud platforms from headers, cookies, body patterns, and error pages. Version disclosure flagged. |
-| **Sensitive Data Exposure** | Scans responses for credit cards (Luhn-validated), SSNs (range-validated), bulk emails/phones, internal IPs, JWTs, database connection strings, AWS ARNs, crypto addresses, IBANs. All values redacted in findings. |
-
-### Framework Tools (2)
-
-| Module | Highlights |
-|:---|:---|
-| **AI Vulnerability Analyzer** | AI-powered security analysis with smart fuzzing, WAF bypass, and adaptive multi-round scanning. CLI-based — supports Claude Code, Gemini CLI, Codex CLI, OpenCode CLI. Disabled by default. |
-| **Wordlist Generator** | Passive word harvester — collects words from proxied traffic for building domain-specific wordlists. History scraping support. |
+That's it. OmniStrike handles the rest.
 
 ---
 
-## OmniMap Exploiter
+## Zero False Positives
 
-Post-detection SQL injection exploitation engine — extracts databases, tables, columns, and data from confirmed injection points. All payloads sourced from sqlmap.
+This is the design principle behind every detection method in OmniStrike. We'd rather miss a real bug than report a fake one.
 
-| Technique | Speed | Method |
-|:---|:---|:---|
-| **UNION** | Fastest | Full row per request. NEGATIVE WHERE mode, DBMS-aware hex markers. |
-| **Error-based** | Fast | Data inside DBMS error messages. MySQL (EXTRACTVALUE, UPDATEXML, FLOOR, etc), PostgreSQL (CAST), MSSQL (IN/CONVERT), Oracle (XMLType, UTL_INADDR). Inference fallback. |
-| **Boolean blind** | Medium | Bisection via true/false page comparison. Parallel multi-threaded extraction. Adaptive tiers (a-z > 0-9 > full ASCII). |
-| **Time-based blind** | Slowest | DBMS-agnostic — tries ALL 5 DBMS sleep functions. Zero-sleep validation + consistency checks. |
+**How it works:**
 
-**Capabilities**: 5 DBMS dialects (MySQL, PostgreSQL, MSSQL, Oracle, SQLite) · Auto boundary detection · 3-strategy DBMS fingerprinting · Level/Risk system · WAF bypass (9 tamper transforms) · Database tree view · CSV export
-
----
-
-## Deserialization Scanner
-
-**6 languages, 137+ gadget chains**, OOB-first Collaborator detection.
-
-| Language | Chains | Highlights |
-|:---|:---:|:---|
-| **Java** | 34 | Full ysoserial coverage (CommonsCollections 1-7, Spring, Hibernate, Groovy, C3P0, ROME, etc). Jackson-specific: 10 Tier 2 gadgets, PTV bypass probes, XML/YAML format variants, classpath-aware gadget prioritization. |
-| **.NET** | 32 × 9 | Gadget + Formatter dropdowns (ysoserial.net-style) |
-| **PHP** | 47 | phpggc port — Laravel, Symfony, Monolog, Guzzle, WordPress, Doctrine, CodeIgniter4, ThinkPHP |
-| **Python** | 26 | Pickle protocol 0/2/4, PyYAML, jsonpickle |
-| **Ruby** | 13 | Marshal binary encoding, Rails ActiveSupport, Oj library |
-| **Node.js** | 17 | node-serialize, js-yaml, cryo, funcster, prototype pollution |
-
-**Payload Generator** — standalone tool (replaces ysoserial/ysoserial.net/phpggc). 4 output encodings, terminal-style preview, one-click copy.
+| Layer | Method |
+|:------|:-------|
+| **OOB-First** | Collaborator/Custom OOB payloads fire before everything else. HTTP callback = CERTAIN. DNS callback = FIRM (continues scanning). |
+| **Multi-Step Verification** | Time-based: 3-step (baseline + true delay + false must NOT delay). Boolean-blind: 2-round with benign variation pre-check. Error-based: requires 2+ DBMS-specific patterns when baseline is empty. |
+| **Structural Evidence** | Path traversal requires multi-marker file signatures (`[fonts]` AND `[extensions]`, not just one). Passwd requires non-null baseline comparison. |
+| **WAF Filtering** | `ResponseGuard` rejects 429, 503, 406, 413, 502, 504, Cloudflare 520-530, and WAF block pages (Cloudflare, Imperva, Sucuri, AWS WAF, ModSecurity) before any module analyzes the response. |
+| **Auto-Throttle** | Detects rate limiting in real-time and backs off automatically (500ms to 15s exponential). Cools down when traffic flows normally. |
 
 ---
 
-## WebSocket Scanner
+## OmniMap -- SQL Exploitation Engine
 
-| Category | Detection Strategy | Confidence |
-|:---|:---|:---:|
-| CSWSH | Binary accept/reject origin validation | CERTAIN |
-| SQL Injection | OOB (xp_dirtree, extractvalue) → Error-based fallback | CERTAIN / FIRM |
-| Command Injection | OOB (nslookup, curl) → Time-based (3x statistical, >=4s delta) | CERTAIN / FIRM |
-| SSRF | Collaborator URLs in URL params | CERTAIN |
-| SSTI | Multi-engine OOB → Math eval ({{7*7}}→49) | CERTAIN / FIRM |
-| XSS | OOB (img onerror fetch) → Canary reflection | CERTAIN / FIRM |
-| IDOR | ID substitution + response diff | TENTATIVE |
-| AuthZ Bypass | Auth vs unauth response comparison | FIRM |
+Found a SQL injection? OmniMap extracts the data. It's sqlmap built into your Burp tab.
 
----
+| Technique | Speed | How |
+|:----------|:------|:----|
+| **UNION** | Fastest | Full row per request. DBMS-aware hex markers. |
+| **Error-Based** | Fast | Data inside error messages. MySQL EXTRACTVALUE/UPDATEXML, PostgreSQL CAST, MSSQL CONVERT, Oracle XMLType. |
+| **Boolean Blind** | Medium | Parallel multi-threaded bisection. Adaptive character tiers. |
+| **Time-Based** | Slowest | DBMS-agnostic sleep probing with zero-sleep validation. |
 
-## AI Scanning
-
-Right-click any request to trigger AI analysis. **Never auto-fires** — zero wasted tokens.
-
-**Capabilities**: Smart fuzzing · WAF fingerprinting + bypass · Adaptive multi-round scanning (up to 5 rounds with full response feedback) · Cross-file batch analysis · Payload learning from confirmed findings · Collaborator data exfiltration · Fuzz history (remembers every payload per URL/param/vuln type) · Multi-step exploitation
-
-| CLI Tool | Binary | Description |
-|:---|:---|:---|
-| **Claude Code** | `claude` | Anthropic's CLI agent |
-| **Gemini CLI** | `gemini` | Google's CLI agent |
-| **Codex CLI** | `codex` | OpenAI's CLI agent |
-| **OpenCode CLI** | `opencode` | Open-source CLI agent |
-
-All CLI tools read prompts from stdin to prevent command injection. No API keys needed — uses your existing CLI authentication.
+**5 DBMS dialects** (MySQL, PostgreSQL, MSSQL, Oracle, SQLite) with auto-detection, boundary analysis, 11 WAF tamper transforms, database tree view, and CSV export.
 
 ---
 
 ## Technology Profiling Engine
 
-Weighted-evidence technology detection with cross-module feedback.
+Every HTTP response is passively analyzed for technology signals. Evidence accumulates per host with calibrated weights:
 
-Every HTTP response is passively interrogated for technology signals — headers, cookies, error pages, stack traces, DBMS errors. Each signal carries a calibrated weight (Server header = 10pts, stack trace = 100pts, cookie name = 50pts). Scores accumulate per host until they cross the CONFIRMED threshold (95+).
+| Signal | Weight | Example |
+|:-------|:-------|:--------|
+| Stack trace | 100 | `at com.example.App(App.java:42)` |
+| DBMS error | 100 | `You have an error in your SQL syntax` |
+| OS path leak | 90 | `/var/www/html/index.php` |
+| Default error page | 80 | Spring Whitelabel, IIS Detailed Error |
+| Version header | 60 | `X-AspNet-Version: 4.0` |
+| Cookie name | 50 | `JSESSIONID`, `PHPSESSID` |
+| X-Powered-By | 40 | `X-Powered-By: Express` |
+| Server header | 10 | `Server: nginx` (easily spoofed) |
+| ICMP TTL | 15 | `TTL=64` (Linux), `TTL=128` (Windows) |
 
-**Tie-Breaker Probes**: When two technologies are neck-and-neck (e.g., Java vs .NET at 50/45), differential probes fire automatically — a single payload whose error response structurally distinguishes one tech from the other. A tech is only CONFIRMED when it passes a positive probe AND fails the competing tech's negative probe.
+When two technologies are neck-and-neck, **tie-breaker probes** fire automatically. Liar-proxy detection resolves contradictions (e.g., `Server: nginx` but `X-AspNet-Version` present).
 
-**Liar-Proxy Detection**: When `Server: nginx` contradicts `X-AspNet-Version: 4.0`, the engine marks the host as proxy-masked and trusts the stronger evidence.
-
-**Adaptive Routing**: All scanner modules receive the host's tech profile and prioritize payloads accordingly. CONFIRMED tech → matching payloads first. PROBABLE → second. Generic/polyglot → third. Non-matching → last (still tested for coverage).
+All scanner modules receive the host's tech profile and **prioritize payloads accordingly** -- matching payloads first, generic second, non-matching last.
 
 ---
 
-## Stepper — Prerequisite Chain
+## Stepper -- Session Automation
 
-Multi-step web flows (login → CSRF token → session refresh → form load) produce single-use tokens that expire immediately. Testing the final request requires replaying the entire chain first.
+Multi-step auth flows (login, CSRF token, session refresh) produce single-use tokens. Testing the final request requires replaying the entire chain first.
 
-**Stepper automates this.** Send each prerequisite request to Stepper, define extraction rules (regex, header, cookie, JSON path), and every outgoing HTTP request — Repeater, Intruder, OmniStrike active scans — automatically triggers the full chain first, extracting fresh tokens and patching them into the outgoing request.
+**Stepper automates this.** Define the chain once, and every outgoing request -- Repeater, Intruder, OmniStrike scans -- automatically replays the prerequisites, extracts fresh tokens, and patches them in.
 
-- **Automatic cookie jar** — captures all `Set-Cookie` headers from chain responses and injects them into subsequent requests
-- **Variable substitution** — use `{{variable_name}}` placeholders in any request header or body
-- **4 extraction types** — Body Regex, Header, Cookie, JSON Path
-- **Token cache with TTL** — prevents redundant chain re-runs during high-throughput active scanning
-- **Recursion-safe** — Stepper's own prerequisite requests don't re-trigger the chain
-- **Serialized execution** — concurrent requests share one chain run, then all use cached results
+- Automatic cookie jar from chain responses
+- `{{variable}}` placeholder substitution in headers/body
+- 4 extraction types: Body Regex, Header, Cookie, JSON Path
+- Token cache with TTL (prevents redundant re-runs)
+- Recursion-safe and serialized execution
 
 ---
 
 ## Custom OOB Server
 
-Built-in Out-of-Band callback server — no Burp Professional required, no internet required. Works on air-gapped intranets.
+No Burp Professional? No internet? No problem.
 
-- **HTTP listener** — catches `http://<your-ip>:<port>/<payload-id>` callbacks
-- **DNS listener** — catches DNS queries where the first subdomain label is the payload ID
-- **Transparent** — all modules automatically use Custom OOB when enabled (same `CollaboratorManager` API as Burp Collaborator)
-- **AI Analyzer included** — AI-generated OOB payloads route through the custom listener too
+OmniStrike includes a built-in Out-of-Band callback server with HTTP and DNS listeners. Works on air-gapped networks.
 
-Configure via the OmniStrike tab: select network interface, set HTTP port + DNS port, click Start.
+All modules use it transparently through the same `CollaboratorManager` API -- switch between Burp Collaborator and Custom OOB with one click.
 
 ---
 
-## Framework Features
+## Scope Control
 
 | Feature | Description |
-|:---|:---|
-| **Scope filtering** | Only scans in-scope hosts — never touches third-party traffic |
-| **Include/Exclude lists** | Add specific URLs or endpoints to scan (Include Only) or skip (Exclude). Mutual exclusion — only one list active at a time. Query parameters are ignored in matching. |
-| **Static resource skip** | Active scanners skip `.js`, `.css`, `.png`, etc. — passive analyzers still run |
-| **Technology profiling** | Weighted-evidence tech detection with cross-module feedback, tie-breaker probes, and liar-proxy detection. Drives adaptive payload routing for all modules. |
-| **Cross-module dedup** | Normalized URL deduplication prevents redundant findings |
-| **Inter-module data sharing** | SharedDataBus lets modules share discovered endpoints, subdomains, and parameters |
-| **Session Keep-Alive** | Right-click login request → Set as Session Login Request. Auto-replays periodically. |
-| **Wordlist Generator** | Passive word harvester with history scraping — builds domain-specific wordlists from proxied traffic |
-| **29 UI themes** | CyberPunk, Dracula, Monokai, Nord, Solarized, and more. Scoped theming: OmniStrike-only (default) or Apply Globally. Ambient Glow breathing effect. |
-| **Request/Response highlighting** | All modules annotate findings with byte-range markers in Burp Dashboard |
-| **OOB-first strategy** | Collaborator/Custom OOB payloads fire before time-based; HTTP OOB confirms → remaining phases skipped |
-| **3-step timing verification** | Baseline → true delay → false must NOT delay |
-| **Smart filter probing** | Probes which characters survive filtering, then sends only viable payloads |
-| **Burp Dashboard integration** | Findings appear as native scan issues in the Dashboard task box |
+|:--------|:------------|
+| **Target Scope** | Comma-separated domains. Only in-scope traffic is processed. |
+| **Include / Exclude Lists** | Add specific URLs or endpoints. Mutual exclusion -- only one list active at a time. Supports both `/api/v1/users` paths and full `https://target.com/admin` URLs. Query params ignored. |
+| **Static Resource Skip** | Active scanners skip `.js`, `.css`, `.png`, etc. Passive analyzers still run. |
+| **Throttle Modes** | None (fastest), Auto (backs off on WAF), Manual (fixed ms delay). |
 
 ---
 
-## Detection Philosophy
+## 29 UI Themes
 
-OmniStrike is built around **zero false positives**. Every finding requires structural proof — not just response differences.
-
-1. **OOB-first** — Collaborator/Custom OOB payloads fire before anything else. HTTP OOB interaction confirms and skips remaining phases. DNS-only OOB reports the finding but continues scanning for additional coverage.
-2. **Multi-step verification** — Time-based uses 3-step validation. Boolean-blind uses 2-round confirmation. Error-based requires regex-validated error strings.
-3. **Smart payload selection** — Probes which characters survive WAF/filtering, then generates only viable payloads. No shotgun approach.
-4. **Structural evidence** — Every finding includes the request, response, matched pattern, and byte-range highlighting. No guesswork.
+CyberPunk, Dracula, Monokai, Nord, Solarized, One Dark, Gruvbox, and more. Scoped to OmniStrike only by default -- or apply globally to the entire Burp Suite.
 
 ---
 
-## Building from Source
+## Build From Source
 
 ```bash
 git clone https://github.com/worldtreeboy/OmniStrike.git
 cd OmniStrike
 ./gradlew shadowJar
-# → build/libs/omnistrike.jar
+# Output: build/libs/omnistrike.jar
 ```
 
-Requires **JDK 17+**. Dependencies: `montoya-api 2026.2`, `gson 2.11.0`.
+Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chain libraries (Commons Collections, Javassist, ROME, Groovy, C3P0, BeanShell).
 
 ---
 
 ## Contributing
 
 1. Fork and create a feature branch
-2. `./gradlew shadowJar` must compile cleanly
+2. `./gradlew shadowJar` must compile with zero errors
 3. Test against [DVWA](https://github.com/digininja/DVWA), [Juice Shop](https://github.com/juice-shop/juice-shop), or [PortSwigger Academy](https://portswigger.net/web-security)
 4. Open a PR
 
-[GitHub Issues](https://github.com/worldtreeboy/OmniStrike/issues) for bugs and feature requests.
+[Issues](https://github.com/worldtreeboy/OmniStrike/issues) for bugs and feature requests.
 
 ---
 
-## Changelog
+## Legal
 
-<details>
-<summary><b>v1.50 (2026-03-17)</b> — Technology Profiling Engine, Jackson-databind expansion, Include/Exclude scope lists</summary>
-
-- **Technology Profiling Engine** (`TechProfiler`, `TechRegistry`, `TechContext`): Weighted-evidence tech detection with Bayesian-style score accumulation. Passive interrogation of every response (headers, cookies, stack traces, DBMS errors, default error pages). Liar-proxy detection resolves Server header contradictions. Tie-breaker differential probes fire when two technologies are ambiguous. ICMP TTL OS fingerprinting. Cross-module feedback loop — any scanner that discovers a tech signal (e.g., MySQL error) broadcasts to all other modules instantly. Adaptive payload routing reorders module payloads by relevance to the target's confirmed/probable tech stack.
-- **Jackson-databind expansion**: 10 Tier 2 gadgets (XBean, HikariCP, Logback DBAppender, Caucho Resin, iBatis JNDI, EhCache JNDI, LdapAttribute, Spring OXM, C3P0 WrapperCPDS, Arrow). Jackson-XML and Jackson-YAML payload variants. PolymorphicTypeValidator bypass probes (array wrapping, Object wrapper, natural types, Map wrapper, Spring CPXAC). Classpath inference maps response headers to high-probability gadgets. Strict error classification: TYPE_RESOLVED vs PTV_DENIED with differentiated severity. `@class` property passive detection. Jackson XML type attribute detection in XML responses.
-- **Include/Exclude scope lists**: New UI with proper list panels (text input + Add/Remove/Clear buttons). Mutual exclusion — only one list can be active at a time (the other locks when one has entries). Supports both endpoints (`/api/v1/users`) and full URLs (`https://target.com/admin`). Query parameters stripped automatically — `fdsfds.php?x=1` matches `fdsfds.php` regardless of parameters.
-- **ScanModule interface**: New `processHttpFlow()` overload accepts `TechContext` and `TechRegistry` for tech-aware modules. Backward compatible — default delegates to existing method.
-</details>
-
-<details>
-<summary><b>v1.49 (2026-03-14)</b> — Fix deser payload generator, UI crash, chain filtering</summary>
-
-- **Fix binary payload corruption**: RAW encoding corrupted Java/Ruby Marshal/Python Pickle v2/v4 payloads via UTF-8 String conversion. Binary chains now use BASE64 only.
-- **Fix UI crash**: `getGeneratableChains()` catches `Throwable` to handle `ExceptionInInitializerError` from ReflectionUtils/Javassist init.
-- **Chain filtering**: Broken chains (Jdk7u21, unsupported Spring/Hibernate/etc) auto-filtered from UI and scanner.
-- **Async chain loading**: SwingWorker prevents EDT blocking during Javassist compilation.
-</details>
-
-<details>
-<summary><b>v1.48 (2026-03-13)</b> — Refactor deser OOB to use DeserPayloadGenerator</summary>
-
-- **Deser OOB refactor**: `activeTestOob` now uses `DeserPayloadGenerator` for dynamic gadget chain payloads instead of hardcoded binary builders. Works with both Burp Collaborator and custom OOB.
-- **Remove blind OOB spray**: No longer fires OOB payloads at every parameter — only tests parameters where serialized data was passively detected.
-</details>
-
-<details>
-<summary><b>v1.47 (2026-03-13)</b> — Remove XSS scanner, remove inaccurate cmdi payloads</summary>
-
-- **Remove XSS Scanner**: Entire module removed.
-- **Remove inaccurate CmdI payloads**: Removed print-only payloads that only prove output injection, not command execution.
-</details>
-
-<details>
-<summary><b>v1.46 and earlier</b></summary>
-
-See [Releases](https://github.com/worldtreeboy/OmniStrike/releases) for full changelog.
-</details>
-
----
-
-## Security Notice
-
-OmniStrike is for **authorized penetration testing** and **security research** only. Use exclusively against systems you have written permission to test.
+OmniStrike is for **authorized penetration testing** and **security research** only. Use exclusively on systems you have written permission to test. The authors are not responsible for misuse.
 
 ---
 
 <div align="center">
-<sub>Built with the Montoya API. No legacy interfaces.</sub>
+<sub>Built on the Montoya API. No legacy interfaces. No external servers. No API keys. Just one JAR.</sub>
 </div>

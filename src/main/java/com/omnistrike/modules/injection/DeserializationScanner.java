@@ -11,6 +11,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 import com.omnistrike.framework.TimingLock;
 import com.omnistrike.modules.injection.deser.DeserPayloadGenerator;
 
@@ -1563,6 +1564,7 @@ public class DeserializationScanner implements ScanModule {
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             int status = result.response().statusCode();
 
             if (isDotNetDeserError(body)) {
@@ -1593,12 +1595,15 @@ public class DeserializationScanner implements ScanModule {
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             int status = result.response().statusCode();
 
             // Type resolution errors confirm TypeNameHandling is active
+            // Tightened: removed "could not be resolved" (matches .NET assembly load errors)
+            // and "Unexpected token" (matches any JSON parser). Kept JSON.NET-specific patterns.
             if (body.contains("JsonSerializationException") || body.contains("Type specified in JSON")
-                    || body.contains("could not be resolved") || body.contains("$type")
-                    || body.contains("Error resolving type") || body.contains("Unexpected token")
+                    || (body.contains("could not be resolved") && body.contains("$type"))
+                    || body.contains("Error resolving type")
                     || body.contains("Type is an interface or abstract class")) {
                 findingsStore.addFinding(Finding.builder("deser-scanner",
                                 ".NET JSON.NET Type Injection - " + chainName,
@@ -1684,6 +1689,7 @@ public class DeserializationScanner implements ScanModule {
      *  FormatException, InvalidOperationException, SecurityException, TypeInitializationException,
      *  FileLoadException, MissingMethodException) that can appear in non-deserialization contexts. */
     private boolean isDotNetDeserError(String body) {
+        if (body == null) return false;
         return body.contains("BinaryFormatter") || body.contains("SerializationException")
                 || body.contains("TypeLoadException") || body.contains("TargetInvocationException")
                 || body.contains("System.Runtime.Serialization") || body.contains("BadImageFormatException");
@@ -1699,6 +1705,7 @@ public class DeserializationScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             int status = result.response().statusCode();
 
             // PHP deserialization errors — require unserialize() function reference specifically;
@@ -1830,11 +1837,11 @@ public class DeserializationScanner implements ScanModule {
             HttpRequestResponse result = sendPayload(original, dp, payload);
             if (result != null && result.response() != null) {
                 String body = result.response().bodyToString();
-                if (body.contains("Marshal") || body.contains("TypeError")
+                if (body != null && (body.contains("Marshal") || body.contains("TypeError")
                         || body.contains("ArgumentError") || body.contains("dump format error")
                         || body.contains("incompatible marshal file format")
                         || body.contains("Psych::DisallowedClass")
-                        || body.contains("Tried to load unspecified class")) {
+                        || body.contains("Tried to load unspecified class"))) {
                     findingsStore.addFinding(Finding.builder("deser-scanner",
                                     "Ruby Deserialization Error - " + desc,
                                     Severity.HIGH, Confidence.FIRM)
@@ -1900,12 +1907,12 @@ public class DeserializationScanner implements ScanModule {
             HttpRequestResponse result = sendPayload(original, dp, payload);
             if (result != null && result.response() != null) {
                 String body = result.response().bodyToString();
-                if (body.contains("SyntaxError") || body.contains("ReferenceError")
+                if (body != null && (body.contains("SyntaxError") || body.contains("ReferenceError")
                         || body.contains("require is not defined")
                         || body.contains("child_process") || body.contains("_$$ND_FUNC$$_")
                         || body.contains("FUNCTION_PLACEHOLDER")
                         || body.contains("Cannot read property")
-                        || body.contains("is not a function")) {
+                        || body.contains("is not a function"))) {
                     findingsStore.addFinding(Finding.builder("deser-scanner",
                                     "Node.js Deserialization Error - " + desc,
                                     Severity.HIGH, Confidence.FIRM)
@@ -1937,6 +1944,7 @@ public class DeserializationScanner implements ScanModule {
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             if (body.contains("autoType") || body.contains("com.alibaba.fastjson")
                     || body.contains("JSONException") || body.contains("not support")
                     || body.contains("autoType is not support")
@@ -2106,6 +2114,7 @@ public class DeserializationScanner implements ScanModule {
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             if (body.contains("XStreamException") || body.contains("ConversionException")
                     || body.contains("ForbiddenClassException")
                     || body.contains("Security framework") || body.contains("not allowed")
@@ -2135,6 +2144,7 @@ public class DeserializationScanner implements ScanModule {
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             if (body.contains("SnakeYaml") || body.contains("YAMLException")
                     || body.contains("could not determine a constructor")
                     || body.contains("Unable to find property")
@@ -2169,6 +2179,7 @@ public class DeserializationScanner implements ScanModule {
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             int status = result.response().statusCode();
 
             // Confirmed deserialization processing — report and stop immediately
@@ -2763,7 +2774,9 @@ public class DeserializationScanner implements ScanModule {
                     return null;
             }
 
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }
@@ -2771,8 +2784,10 @@ public class DeserializationScanner implements ScanModule {
 
     private long measureTime(HttpRequestResponse original, DeserPoint dp, String payload) {
         long start = System.currentTimeMillis();
-        sendPayload(original, dp, payload);
-        return System.currentTimeMillis() - start;
+        HttpRequestResponse result = sendPayload(original, dp, payload);
+        long elapsed = System.currentTimeMillis() - start;
+        if (result != null && !ResponseGuard.isTimingTrustworthy(result)) return -1;
+        return elapsed;
     }
 
     private void reportPassiveFinding(List<Finding> findings, String url, String param,
@@ -3179,7 +3194,7 @@ public class DeserializationScanner implements ScanModule {
 
             // Base64-encode the payload if the original field value was base64-encoded
             String injectedValue;
-            if (dp.encoding.contains("base64")) {
+            if (dp.encoding != null && dp.encoding.contains("base64")) {
                 injectedValue = isAlreadyBase64(payload)
                         ? payload
                         : Base64.getEncoder().encodeToString(payload.getBytes(StandardCharsets.UTF_8));

@@ -45,6 +45,11 @@ public class OmniMapEngine {
     public void exploit(HttpRequestResponse request, OmniMapConfig config, OmniMapCallback callback) {
         cancelled = false;
 
+        // Shut down previous pool if still running (prevents thread pool leak on rapid re-exploit)
+        if (enginePool != null && !enginePool.isShutdown()) {
+            enginePool.shutdownNow();
+        }
+
         // Reset stale extractors from any previous run
         unionExtractor = null;
         blindExtractor = null;
@@ -281,6 +286,8 @@ public class OmniMapEngine {
                 if (trueRr.response() != null && falseRr.response() != null) {
                     String trueBody = trueRr.response().bodyToString();
                     String falseBody = falseRr.response().bodyToString();
+                    if (trueBody == null) trueBody = "";
+                    if (falseBody == null) falseBody = "";
 
                     // Signal 1: Status code difference (strong)
                     int trueStatus = trueRr.response().statusCode();

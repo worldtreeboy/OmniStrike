@@ -14,7 +14,8 @@ public class ActiveScanExecutor {
 
     private volatile ExecutorService executor;
     private volatile int threadPoolSize;
-    private volatile int rateLimitMs = 0;
+    private volatile int rateLimitMs = 0; // Legacy — used only if no ThrottleController is set
+    private volatile ThrottleController throttleController;
     private final Object resizeLock = new Object();
     private final AtomicLong discardedTaskCount = new AtomicLong(0);
     private volatile java.util.function.Consumer<String> logger;
@@ -109,7 +110,10 @@ public class ActiveScanExecutor {
                 }
             }
 
-            int delay = rateLimitMs;
+            // Query throttle controller for the current delay (respects NONE/AUTO/MANUAL mode).
+            // Falls back to legacy rateLimitMs if no controller is set.
+            ThrottleController tc = throttleController;
+            int delay = tc != null ? tc.getCurrentDelay() : rateLimitMs;
             if (delay > 0) {
                 try {
                     Thread.sleep(delay);
@@ -139,6 +143,15 @@ public class ActiveScanExecutor {
 
     public void setRateLimitMs(int ms) {
         this.rateLimitMs = Math.max(0, ms);
+    }
+
+    /** Set the ThrottleController for NONE/AUTO/MANUAL throttle modes. */
+    public void setThrottleController(ThrottleController controller) {
+        this.throttleController = controller;
+    }
+
+    public ThrottleController getThrottleController() {
+        return throttleController;
     }
 
     public void resize(int newSize) {

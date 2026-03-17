@@ -60,6 +60,10 @@ public class OmniStrikeExtension implements BurpExtension {
         findingsStore.addListener(findingsBundler); // Bundler delegates to DashboardReporter
         DeduplicationStore dedup = new DeduplicationStore();
         executor = new ActiveScanExecutor(5);
+        ThrottleController throttleController = new ThrottleController();
+        throttleController.setLogger(msg -> api.logging().logToOutput(msg));
+        executor.setThrottleController(throttleController);
+        ResponseGuard.setThrottleController(throttleController);
         ScopeManager scopeManager = new ScopeManager();
         SharedDataBus dataBus = new SharedDataBus();
         registry = new ModuleRegistry();

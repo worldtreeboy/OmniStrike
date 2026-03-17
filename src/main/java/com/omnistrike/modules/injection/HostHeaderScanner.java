@@ -6,6 +6,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -156,7 +157,9 @@ public class HostHeaderScanner implements ScanModule {
                     .withRemovedHeader("Host")
                     .withAddedHeader("Host", collabPayload);
             HttpRequestResponse result = api.http().sendRequest(modified);
-            sentRequest.set(result);
+            if (ResponseGuard.isUsableResponse(result)) {
+                sentRequest.set(result);
+            }
         } catch (Exception e) {
             api.logging().logToError("Password reset poisoning test failed: " + e.getMessage());
         }
@@ -172,6 +175,7 @@ public class HostHeaderScanner implements ScanModule {
                         .withRemovedHeader("Host")
                         .withAddedHeader("Host", internalHost);
                 HttpRequestResponse result = api.http().sendRequest(modified);
+                if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result == null || result.response() == null) continue;
 
                 // Structural proof: the injected host must appear in a security-sensitive location
@@ -277,7 +281,7 @@ public class HostHeaderScanner implements ScanModule {
         String baselineBody = "";
         try {
             HttpRequestResponse baseline = api.http().sendRequest(original.request());
-            if (baseline != null && baseline.response() != null) {
+            if (ResponseGuard.isUsableResponse(baseline) && baseline != null && baseline.response() != null) {
                 baselineBody = baseline.response().bodyToString();
                 if (baselineBody == null) baselineBody = "";
             }
@@ -289,6 +293,7 @@ public class HostHeaderScanner implements ScanModule {
             HttpRequest modified = original.request()
                     .withAddedHeader("Host", attackerHost);
             HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
             if (result == null || result.response() == null) return;
 
             // Structural proof: injected host must appear in security-sensitive location
@@ -327,7 +332,7 @@ public class HostHeaderScanner implements ScanModule {
         String baselineBody = "";
         try {
             HttpRequestResponse baseline = api.http().sendRequest(original.request());
-            if (baseline != null && baseline.response() != null) {
+            if (ResponseGuard.isUsableResponse(baseline) && baseline != null && baseline.response() != null) {
                 baselineBody = baseline.response().bodyToString();
                 if (baselineBody == null) baselineBody = "";
             }
@@ -344,6 +349,7 @@ public class HostHeaderScanner implements ScanModule {
                         .withRemovedHeader(header)
                         .withAddedHeader(header, headerValue);
                 HttpRequestResponse result = api.http().sendRequest(modified);
+                if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result != null && result.response() != null && result.response().statusCode() < 400) {
                     // Structural proof: injected value must appear in security-sensitive location
                     String sensitiveLocation = findHostInSensitiveLocation(result, attackerValue);
@@ -398,7 +404,10 @@ public class HostHeaderScanner implements ScanModule {
                         HttpRequest oobModified = original.request()
                                 .withRemovedHeader(header)
                                 .withAddedHeader(header, oobHeaderValue);
-                        oobSent.set(api.http().sendRequest(oobModified));
+                        HttpRequestResponse oobResult = api.http().sendRequest(oobModified);
+                        if (ResponseGuard.isUsableResponse(oobResult)) {
+                            oobSent.set(oobResult);
+                        }
                         perHostDelay();
                     }
                 }

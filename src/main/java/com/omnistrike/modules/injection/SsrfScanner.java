@@ -10,6 +10,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -161,7 +162,9 @@ public class SsrfScanner implements ScanModule {
     private static final Pattern INTERNAL_RESPONSE_PATTERNS = Pattern.compile(
             "root:x:0:0:|ami-[0-9a-f]+|instance-id|AccessKeyId|SecretAccessKey|" +
                     "vmId|accountId|\\[extensions\\]|\\[fonts\\]|Linux version \\d|" +
-                    "APIResourceList|local-ipv4|access_token",
+                    // Removed "access_token" — too generic, appears in OAuth responses.
+                    // Kept cloud-specific patterns only.
+                    "APIResourceList|local-ipv4|compute\\.internal|metadata\\.google\\.internal",
             Pattern.CASE_INSENSITIVE
     );
 
@@ -359,7 +362,9 @@ public class SsrfScanner implements ScanModule {
                         .withRemovedHeader("Host")
                         .withAddedHeader("Host", headerCollab);
                 HttpRequestResponse hostResult = api.http().sendRequest(modified);
-                hostSentRequest.set(hostResult);
+                if (ResponseGuard.isUsableResponse(hostResult)) {
+                    hostSentRequest.set(hostResult);
+                }
                 perHostDelay();
             } catch (Exception e) {
                 api.logging().logToError("Host header SSRF test failed: " + e.getMessage());
@@ -397,6 +402,7 @@ public class SsrfScanner implements ScanModule {
         HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
         String baselineBody = baseline != null && baseline.response() != null
                 ? baseline.response().bodyToString() : "";
+        if (baselineBody == null) baselineBody = "";
 
         for (String[] meta : CLOUD_METADATA) {
             String metaUrl = meta[0];
@@ -408,6 +414,7 @@ public class SsrfScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             int status = result.response().statusCode();
 
             // Check if response contains expected cloud metadata patterns
@@ -432,10 +439,13 @@ public class SsrfScanner implements ScanModule {
                         }
                         if (allFound && required.length >= 2) {
                             // Also verify these markers were NOT in the baseline response
-                            boolean allNewToBaseline = false;
+                            // Require ALL markers to be absent from baseline (not just one).
+                            // Previous logic broke on first new marker — allowed FP when
+                            // one marker existed in baseline but another didn't.
+                            boolean allNewToBaseline = true;
                             for (String marker : required) {
-                                if (!baselineBody.contains(marker.trim())) {
-                                    allNewToBaseline = true;  // At least one marker is new
+                                if (baselineBody.contains(marker.trim())) {
+                                    allNewToBaseline = false; // Marker already in baseline
                                     break;
                                 }
                             }
@@ -488,6 +498,7 @@ public class SsrfScanner implements ScanModule {
         HttpRequestResponse imdsv2Result = sendPayload(original, target, imdsv2Url);
         if (imdsv2Result != null && imdsv2Result.response() != null) {
             String imdsv2Body = imdsv2Result.response().bodyToString();
+            if (imdsv2Body == null) imdsv2Body = "";
             int imdsv2Status = imdsv2Result.response().statusCode();
             // IMDSv2 returns 401 if token not provided, which still confirms SSRF
             if (imdsv2Status == 401 && !baselineBody.contains("401")) {
@@ -535,6 +546,7 @@ public class SsrfScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             int status = result.response().statusCode();
 
             if (status == 200 && !body.equals(baselineBody) && body.length() > 10) {
@@ -562,6 +574,7 @@ public class SsrfScanner implements ScanModule {
         HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
         String baselineBody = baseline != null && baseline.response() != null
                 ? baseline.response().bodyToString() : "";
+        if (baselineBody == null) baselineBody = "";
         int baselineLen = baselineBody.length();
 
         for (String bypass : LOCALHOST_BYPASSES) {
@@ -570,6 +583,7 @@ public class SsrfScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             int status = result.response().statusCode();
 
             // If response is significantly different from baseline and appears to contain server data
@@ -599,6 +613,7 @@ public class SsrfScanner implements ScanModule {
         HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
         String baselineBody = baseline != null && baseline.response() != null
                 ? baseline.response().bodyToString() : "";
+        if (baselineBody == null) baselineBody = "";
 
         for (String payload : PROTOCOL_SMUGGLING) {
     
@@ -606,6 +621,7 @@ public class SsrfScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             int status = result.response().statusCode();
 
             if (status == 200 && !body.equals(baselineBody) && body.length() > 10) {
@@ -641,6 +657,7 @@ public class SsrfScanner implements ScanModule {
         HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
         String baselineBody = baseline != null && baseline.response() != null
                 ? baseline.response().bodyToString() : "";
+        if (baselineBody == null) baselineBody = "";
 
         for (String[] rebind : rebindingDomains) {
             String domain = rebind[0];
@@ -657,6 +674,7 @@ public class SsrfScanner implements ScanModule {
                 if (result == null || result.response() == null) continue;
 
                 String body = result.response().bodyToString();
+                if (body == null) body = "";
                 int status = result.response().statusCode();
 
                 if (status == 200 && !body.equals(baselineBody) && body.length() > 10) {
@@ -687,7 +705,9 @@ public class SsrfScanner implements ScanModule {
     private HttpRequestResponse sendPayload(HttpRequestResponse original, SsrfTarget target, String payload) {
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }

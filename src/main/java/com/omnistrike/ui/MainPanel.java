@@ -73,6 +73,9 @@ public class MainPanel extends JPanel {
     // Custom module panel for deserializer (exposed for context menu "Send to Deserializer")
     private DeserModulePanel deserModulePanel;
 
+    // Credit label pulse timer — tracked for cleanup on unload
+    private Timer creditPulseTimer;
+
     // Custom module panel for OmniMap (SQL injection exploitation)
     private OmniMapPanel omniMapPanel;
 
@@ -175,22 +178,71 @@ public class MainPanel extends JPanel {
         });
         row1.add(threadField);
 
-        JLabel rateLimitLabel = new JLabel("Rate Limit (ms):");
-        rateLimitLabel.setForeground(NEON_CYAN);
-        rateLimitLabel.setFont(MONO_LABEL);
-        row1.add(rateLimitLabel);
-        rateLimitField = new JTextField("0", 4);
+        // ── Throttle mode: No Throttle / Auto / Manual ─────────────────────
+        JLabel throttleLabel = new JLabel("Throttle:");
+        throttleLabel.setForeground(NEON_CYAN);
+        throttleLabel.setFont(MONO_LABEL);
+        row1.add(throttleLabel);
+
+        JRadioButton noThrottleRadio = new JRadioButton("None");
+        JRadioButton autoThrottleRadio = new JRadioButton("Auto");
+        JRadioButton manualThrottleRadio = new JRadioButton("Manual:");
+        styleRadioButton(noThrottleRadio);
+        styleRadioButton(autoThrottleRadio);
+        styleRadioButton(manualThrottleRadio);
+        noThrottleRadio.setToolTipText("No delay between requests (fastest, noisiest)");
+        autoThrottleRadio.setToolTipText("Automatically backs off when WAF/rate-limiting is detected. Cools down when traffic flows normally.");
+        manualThrottleRadio.setToolTipText("Fixed delay between requests in milliseconds");
+        noThrottleRadio.setSelected(true); // Default: no throttle
+
+        ButtonGroup throttleGroup = new ButtonGroup();
+        throttleGroup.add(noThrottleRadio);
+        throttleGroup.add(autoThrottleRadio);
+        throttleGroup.add(manualThrottleRadio);
+
+        rateLimitField = new JTextField("500", 4);
         styleTextField(rateLimitField);
-        rateLimitField.setToolTipText("Global delay (ms) before each scan task. 0 = no limit. Applies to all modules. Per-module delays stack on top of this.");
+        rateLimitField.setToolTipText("Delay in milliseconds between each scan request (Manual mode only)");
+        rateLimitField.setEnabled(false); // Disabled until Manual is selected
+
+        // Throttle mode change handler
+        java.awt.event.ActionListener throttleModeListener = e -> {
+            com.omnistrike.framework.ThrottleController tc = executor.getThrottleController();
+            if (tc == null) return;
+            if (noThrottleRadio.isSelected()) {
+                tc.setMode(com.omnistrike.framework.ThrottleController.ThrottleMode.NONE);
+                rateLimitField.setEnabled(false);
+            } else if (autoThrottleRadio.isSelected()) {
+                tc.setMode(com.omnistrike.framework.ThrottleController.ThrottleMode.AUTO);
+                rateLimitField.setEnabled(false);
+            } else if (manualThrottleRadio.isSelected()) {
+                tc.setMode(com.omnistrike.framework.ThrottleController.ThrottleMode.MANUAL);
+                rateLimitField.setEnabled(true);
+                applyManualThrottle();
+            }
+        };
+        noThrottleRadio.addActionListener(throttleModeListener);
+        autoThrottleRadio.addActionListener(throttleModeListener);
+        manualThrottleRadio.addActionListener(throttleModeListener);
+
+        // Manual delay field — live-sync to ThrottleController
         rateLimitField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
             @Override
-            public void insertUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { applyManualThrottle(); }
             @Override
-            public void removeUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+            public void removeUpdate(javax.swing.event.DocumentEvent e) { applyManualThrottle(); }
             @Override
-            public void changedUpdate(javax.swing.event.DocumentEvent e) { applyRateLimit(); }
+            public void changedUpdate(javax.swing.event.DocumentEvent e) { applyManualThrottle(); }
         });
+
+        row1.add(noThrottleRadio);
+        row1.add(autoThrottleRadio);
+        row1.add(manualThrottleRadio);
         row1.add(rateLimitField);
+        JLabel msLabel = new JLabel("ms");
+        msLabel.setForeground(FG_SECONDARY);
+        msLabel.setFont(MONO_LABEL);
+        row1.add(msLabel);
 
         // Theme selector dropdown
         JLabel themeLabel = new JLabel("Theme:");
@@ -521,10 +573,8 @@ public class MainPanel extends JPanel {
         stopScansBtn.setToolTipText("Stop all scans launched via right-click context menu");
         stopScansBtn.addActionListener(e -> {
             int stopped = interceptor.stopManualScans();
-            int purged = executor.cancelAll();
-            if (stopped > 0 || purged > 0) {
-                logPanel.log("INFO", "Framework",
-                        "Stopped " + stopped + " scan task(s), purged " + purged + " queued.");
+            if (stopped > 0) {
+                logPanel.log("INFO", "Framework", "Stopped " + stopped + " scan task(s).");
             } else {
                 logPanel.log("INFO", "Framework", "No scans running.");
             }
@@ -696,6 +746,7 @@ public class MainPanel extends JPanel {
             });
             {
                 pulseTimer.start();
+                creditPulseTimer = pulseTimer; // Store reference for cleanup
             }
             @Override
             protected void paintComponent(Graphics g) {
@@ -1217,17 +1268,19 @@ public class MainPanel extends JPanel {
     }
 
     /**
-     * Applies the global rate limit from the UI field to the executor.
+     * Applies the manual throttle delay from the UI field to the ThrottleController.
      */
-    private void applyRateLimit() {
+    private void applyManualThrottle() {
+        com.omnistrike.framework.ThrottleController tc = executor.getThrottleController();
+        if (tc == null) return;
         String text = rateLimitField.getText().trim();
         if (text.isEmpty()) {
-            executor.setRateLimitMs(0);
+            tc.setManualDelay(0);
             return;
         }
         try {
             int value = Integer.parseInt(text);
-            executor.setRateLimitMs(value);
+            tc.setManualDelay(value);
         } catch (NumberFormatException ignored) {
             // Invalid input — keep current value
         }
@@ -1370,6 +1423,10 @@ public class MainPanel extends JPanel {
     public void stopTimers() {
         if (updateTimer != null) {
             updateTimer.stop();
+        }
+        // Stop credit label pulse animation
+        if (creditPulseTimer != null) {
+            creditPulseTimer.stop();
         }
         // Stop ambient breathing glow if active
         GlobalThemeManager.stopBreathing();

@@ -6,6 +6,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -235,6 +236,7 @@ public class PrototypePollutionScanner implements ScanModule {
         try {
             baseline = api.http().sendRequest(original.request());
         } catch (Exception e) { return; }
+        if (!ResponseGuard.isUsableResponse(baseline)) return;
         if (baseline == null || baseline.response() == null) return;
         int baselineStatus = baseline.response().statusCode();
 
@@ -253,6 +255,7 @@ public class PrototypePollutionScanner implements ScanModule {
         // Send clean probe to check if status changed globally
         try {
             HttpRequestResponse probe = api.http().sendRequest(original.request());
+            if (!ResponseGuard.isUsableResponse(probe)) { perHostDelay(); return; }
             if (probe != null && probe.response() != null && probe.response().statusCode() == 510
                     && baselineStatus != 510) {
                 findingsStore.addFinding(Finding.builder("proto-pollution",
@@ -287,7 +290,7 @@ public class PrototypePollutionScanner implements ScanModule {
         String baselineContentType = null;
         try {
             HttpRequestResponse baselineProbe = api.http().sendRequest(original.request());
-            if (baselineProbe != null && baselineProbe.response() != null) {
+            if (ResponseGuard.isUsableResponse(baselineProbe) && baselineProbe != null && baselineProbe.response() != null) {
                 for (var h : baselineProbe.response().headers()) {
                     if (h.name().equalsIgnoreCase("Content-Type")) {
                         baselineContentType = h.value();
@@ -311,6 +314,7 @@ public class PrototypePollutionScanner implements ScanModule {
         // Check if follow-up response has the modified content-type
         try {
             HttpRequestResponse probe = api.http().sendRequest(original.request());
+            if (!ResponseGuard.isUsableResponse(probe)) { perHostDelay(); return; }
             if (probe != null && probe.response() != null) {
                 for (var h : probe.response().headers()) {
                     if (h.name().equalsIgnoreCase("Content-Type") && h.value().contains(marker)) {
@@ -348,6 +352,7 @@ public class PrototypePollutionScanner implements ScanModule {
         try {
             baseline = api.http().sendRequest(original.request());
         } catch (Exception e) { return; }
+        if (!ResponseGuard.isUsableResponse(baseline)) return;
         if (baseline == null || baseline.response() == null) return;
         String baselineBody = baseline.response().bodyToString();
         if (baselineBody == null || !baselineBody.trim().startsWith("{")) return; // Only test JSON responses
@@ -368,6 +373,7 @@ public class PrototypePollutionScanner implements ScanModule {
         // Check if subsequent JSON response has altered indentation
         try {
             HttpRequestResponse probe = api.http().sendRequest(original.request());
+            if (!ResponseGuard.isUsableResponse(probe)) { perHostDelay(); return; }
             if (probe != null && probe.response() != null) {
                 String probeBody = probe.response().bodyToString();
                 if (probeBody != null && probeBody.trim().startsWith("{")) {
@@ -451,6 +457,7 @@ public class PrototypePollutionScanner implements ScanModule {
             }
 
             HttpRequestResponse result = api.http().sendRequest(probe);
+            if (!ResponseGuard.isUsableResponse(result)) return false;
             if (result != null && result.response() != null) {
                 String body = result.response().bodyToString();
                 if (body != null && body.contains(canary)) return true;
@@ -486,7 +493,9 @@ public class PrototypePollutionScanner implements ScanModule {
     private HttpRequestResponse sendWithBody(HttpRequestResponse original, String body) {
         try {
             HttpRequest modified = original.request().withBody(body);
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }

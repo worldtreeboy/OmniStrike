@@ -2476,8 +2476,9 @@ public class AiVulnAnalyzer implements ScanModule {
                         .withAddedHeader("Pragma", "no-cache");
                 effectiveReqResp = api.http().sendRequest(freshReq);
                 if (effectiveReqResp.response() != null) {
+                    String aiBody = effectiveReqResp.response().bodyToString();
                     logInfo("Manual scan: Got response — status " + effectiveReqResp.response().statusCode()
-                            + ", body size: " + effectiveReqResp.response().bodyToString().length() + " chars");
+                            + ", body size: " + (aiBody != null ? aiBody.length() : 0) + " chars");
                 } else {
                     logError("Manual scan: Request sent but response is null");
                 }

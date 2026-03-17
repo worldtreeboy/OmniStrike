@@ -9,6 +9,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.ResponseGuard;
 import com.omnistrike.model.*;
 
 import java.security.SecureRandom;
@@ -760,7 +761,9 @@ public class CsrfManipulator implements ScanModule {
 
     private HttpRequestResponse sendRequest(HttpRequest request) {
         try {
-            return api.http().sendRequest(request);
+            HttpRequestResponse result = api.http().sendRequest(request);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             api.logging().logToError("[CsrfManipulator] Request failed: " + e.getMessage());
             return null;

@@ -6,6 +6,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -325,6 +326,7 @@ public class CorsMisconfScanner implements ScanModule {
                     .withAddedHeader("Origin", attackerOrigin);
 
             HttpRequestResponse result = api.http().sendRequest(simpleGet);
+            if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
             if (result == null || result.response() == null) { perHostDelay(); return; }
 
             String acao = extractAcao(result);
@@ -494,6 +496,7 @@ public class CorsMisconfScanner implements ScanModule {
                     .withAddedHeader("Origin", attackerOrigin);
 
             HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
             if (result == null || result.response() == null) { perHostDelay(); return; }
 
             String acao = extractAcao(result);
@@ -731,6 +734,7 @@ public class CorsMisconfScanner implements ScanModule {
             try {
                 HttpRequest req = HttpRequest.httpRequestFromUrl(testUrl);
                 HttpRequestResponse result = api.http().sendRequest(req);
+                if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result == null || result.response() == null) { perHostDelay(); continue; }
 
                 int status = result.response().statusCode();
@@ -797,6 +801,7 @@ public class CorsMisconfScanner implements ScanModule {
                 }
 
                 HttpRequestResponse result = api.http().sendRequest(modified);
+                if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result == null || result.response() == null) { perHostDelay(); continue; }
 
                 String acao = extractAcao(result);
@@ -891,7 +896,9 @@ public class CorsMisconfScanner implements ScanModule {
             HttpRequest modified = original.request()
                     .withRemovedHeader("Origin")
                     .withAddedHeader("Origin", origin);
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }

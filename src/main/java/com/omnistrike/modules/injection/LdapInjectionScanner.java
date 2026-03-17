@@ -8,6 +8,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 import com.omnistrike.model.*;
 
 import java.util.*;
@@ -335,6 +336,7 @@ public class LdapInjectionScanner implements ScanModule {
 
         // Get baseline response to compare against
         String baselineBody = original.response() != null ? original.response().bodyToString() : "";
+        if (baselineBody == null) baselineBody = "";
         String baselineBodyLower = baselineBody.toLowerCase();
 
         // Track matched signatures across all error payloads
@@ -352,6 +354,7 @@ public class LdapInjectionScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             String body = result.response().bodyToString();
+            if (body == null) body = "";
             String bodyLower = body.toLowerCase();
 
             for (String[] sig : LDAP_ERROR_SIGNATURES) {
@@ -449,7 +452,9 @@ public class LdapInjectionScanner implements ScanModule {
                 || baseline1.response() == null || baseline2.response() == null) return false;
 
         String baseBody1 = baseline1.response().bodyToString();
+        if (baseBody1 == null) baseBody1 = "";
         String baseBody2 = baseline2.response().bodyToString();
+        if (baseBody2 == null) baseBody2 = "";
 
         // Calculate baseline variance — if responses differ significantly with the
         // same input, the endpoint is too unstable for boolean-based detection
@@ -478,7 +483,9 @@ public class LdapInjectionScanner implements ScanModule {
                     || trueResult1.response() == null || falseResult1.response() == null) continue;
 
             String trueBody1 = trueResult1.response().bodyToString();
+            if (trueBody1 == null) trueBody1 = "";
             String falseBody1 = falseResult1.response().bodyToString();
+            if (falseBody1 == null) falseBody1 = "";
 
             double round1Diff = 1.0 - similarity(trueBody1, falseBody1);
 
@@ -500,7 +507,9 @@ public class LdapInjectionScanner implements ScanModule {
                     || trueResult2.response() == null || falseResult2.response() == null) continue;
 
             String trueBody2 = trueResult2.response().bodyToString();
+            if (trueBody2 == null) trueBody2 = "";
             String falseBody2 = falseResult2.response().bodyToString();
+            if (falseBody2 == null) falseBody2 = "";
 
             double round2Diff = 1.0 - similarity(trueBody2, falseBody2);
 
@@ -579,6 +588,7 @@ public class LdapInjectionScanner implements ScanModule {
 
         int failureStatus = failureBaseline.response().statusCode();
         String failureBody = failureBaseline.response().bodyToString();
+        if (failureBody == null) failureBody = "";
         int failureLen = failureBody.length();
 
         for (String[] authEntry : AUTH_BYPASS_PAYLOADS) {
@@ -592,6 +602,7 @@ public class LdapInjectionScanner implements ScanModule {
 
             int resultStatus = result.response().statusCode();
             String resultBody = result.response().bodyToString();
+            if (resultBody == null) resultBody = "";
             int resultLen = resultBody.length();
 
             // Auth bypass signals:
@@ -697,9 +708,15 @@ public class LdapInjectionScanner implements ScanModule {
                 || baseline.response() == null || control.response() == null
                 || wildcard.response() == null) return;
 
-        int baselineLen = baseline.response().bodyToString().length();
-        int controlLen = control.response().bodyToString().length();
-        int wildcardLen = wildcard.response().bodyToString().length();
+        String _baselineBody = baseline.response().bodyToString();
+        if (_baselineBody == null) _baselineBody = "";
+        int baselineLen = _baselineBody.length();
+        String _controlBody = control.response().bodyToString();
+        if (_controlBody == null) _controlBody = "";
+        int controlLen = _controlBody.length();
+        String _wildcardBody = wildcard.response().bodyToString();
+        if (_wildcardBody == null) _wildcardBody = "";
+        int wildcardLen = _wildcardBody.length();
 
         // Wildcard must be significantly larger than both baseline and control
         int minAmplification = config.getInt("ldapi.wildcard.minAmplificationBytes", 500);
@@ -719,7 +736,9 @@ public class LdapInjectionScanner implements ScanModule {
             perHostDelay();
 
             if (verify == null || verify.response() == null) return;
-            int verifyLen = verify.response().bodyToString().length();
+            String _verifyBody = verify.response().bodyToString();
+            if (_verifyBody == null) _verifyBody = "";
+            int verifyLen = _verifyBody.length();
 
             // Verification response must be similar size to first wildcard response
             if (Math.abs(verifyLen - wildcardLen) > wildcardLen * 0.1) {
@@ -852,7 +871,9 @@ public class LdapInjectionScanner implements ScanModule {
                 default:
                     return null;
             }
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             api.logging().logToError("[LDAPI] sendPayload failed: " + e.getMessage());
             return null;

@@ -7,6 +7,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
+import com.omnistrike.framework.ResponseGuard;
 
 import com.omnistrike.model.*;
 
@@ -317,7 +318,8 @@ public class CachePoisonScanner implements ScanModule {
             HttpRequest poisonRequest = busteredRequest
                     .withRemovedHeader(headerName)
                     .withAddedHeader(headerName, confirmCanary);
-            api.http().sendRequest(poisonRequest);
+            HttpRequestResponse poisonResult = api.http().sendRequest(poisonRequest);
+            if (!ResponseGuard.isUsableResponse(poisonResult)) return false;
         } catch (Exception e) {
             return false;
         }
@@ -326,6 +328,7 @@ public class CachePoisonScanner implements ScanModule {
         // Send clean request (no injected header, same cache buster)
         try {
             HttpRequestResponse cleanResult = api.http().sendRequest(busteredRequest);
+            if (!ResponseGuard.isUsableResponse(cleanResult)) return false;
             if (cleanResult != null && cleanResult.response() != null) {
                 return isCanaryReflected(cleanResult, confirmCanary);
             }
@@ -427,7 +430,9 @@ public class CachePoisonScanner implements ScanModule {
             HttpRequest modified = original.request()
                     .withRemovedHeader(headerName)
                     .withAddedHeader(headerName, value);
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }
@@ -438,7 +443,9 @@ public class CachePoisonScanner implements ScanModule {
             HttpRequest modified = original.request()
                     .withUpdatedParameters(
                             burp.api.montoya.http.message.params.HttpParameter.urlParameter(paramName, PayloadEncoder.encode(value)));
-            return api.http().sendRequest(modified);
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (!ResponseGuard.isUsableResponse(result)) return null;
+            return result;
         } catch (Exception e) {
             return null;
         }
