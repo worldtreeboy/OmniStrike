@@ -142,6 +142,11 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 return ProxyResponseReceivedAction.continueWith(interceptedResponse);
             }
 
+            // URL inclusion — if inclusion list is active, only scan matching URLs
+            if (!scopeManager.isIncludedPath(url)) {
+                return ProxyResponseReceivedAction.continueWith(interceptedResponse);
+            }
+
             // Compute module lists once per request
             List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
             boolean isStatic = isStaticResource(url);

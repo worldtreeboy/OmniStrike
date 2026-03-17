@@ -16,6 +16,12 @@ public class ScopeManager {
     // (both active AND passive scanning). Volatile reference swap like targetDomains.
     private volatile List<String> excludedPaths = Collections.emptyList();
 
+    // URL inclusion list — when non-empty, ONLY URLs matching at least one entry are scanned.
+    // Entries can be full paths (/api/v1/users) or path prefixes (/api/v1/).
+    // Matching is substring-based on the URL path component (same as excludedPaths).
+    // Priority: exclusions ALWAYS win over inclusions (safety first).
+    private volatile List<String> includedPaths = Collections.emptyList();
+
     public void setTargetDomains(String commaSeparated) {
         if (commaSeparated == null || commaSeparated.isBlank()) {
             targetDomains = Collections.emptySet();
@@ -64,19 +70,63 @@ public class ScopeManager {
     }
 
     /**
-     * Sets the list of excluded URL path patterns.
-     * Each entry is a path substring (e.g., "/logout", "/admin/delete").
-     * Whitespace-separated or newline-separated in the input string.
+     * Sets the list of included URLs and/or endpoints.
+     * When non-empty, ONLY URLs matching at least one entry will be scanned.
+     * When empty, all in-scope URLs are scanned (default behaviour).
+     *
+     * Entries can be:
+     *   - Endpoints (paths):  /api/v1/users, /admin/settings, fdsfds.php
+     *     → matched against the URL's path component (substring match)
+     *   - Full URLs:          https://example.com/api/v1/users
+     *     → matched against the full URL (substring match, scheme+host+path)
+     *
+     * Query parameters are stripped from entries — matching focuses on the endpoint/path.
+     * Example: entering "fdsfds.php?fds=fds" is treated as "fdsfds.php",
+     * so it matches fdsfds.php regardless of what parameters it has.
+     *
+     * Comma or newline separated.
+     */
+    public void setIncludedPaths(String text) {
+        if (text == null || text.isBlank()) {
+            includedPaths = Collections.emptyList();
+            return;
+        }
+        List<String> entries = Arrays.stream(text.split("[\\n\\r,]+"))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .map(String::toLowerCase)
+                .map(ScopeManager::stripQueryParams)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toUnmodifiableList());
+        includedPaths = entries;
+    }
+
+    public List<String> getIncludedPaths() {
+        return includedPaths;
+    }
+
+    /**
+     * Sets the list of excluded URLs and/or endpoints.
+     * Each entry is a path substring (e.g., "/logout", "/admin/delete")
+     * or a full URL (e.g., "https://example.com/api/health").
+     *
+     * Query parameters are stripped — matching focuses on the endpoint/path.
+     * Example: "logout.php?action=bye" becomes "logout.php" and excludes
+     * that endpoint regardless of parameters.
+     *
+     * Comma or newline separated.
      */
     public void setExcludedPaths(String text) {
         if (text == null || text.isBlank()) {
             excludedPaths = Collections.emptyList();
             return;
         }
-        List<String> paths = Arrays.stream(text.split("[\\s,]+"))
+        List<String> paths = Arrays.stream(text.split("[\\n\\r,]+"))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .map(String::toLowerCase)
+                .map(ScopeManager::stripQueryParams)
+                .filter(s -> !s.isEmpty())
                 .collect(Collectors.toUnmodifiableList());
         excludedPaths = paths;
     }
@@ -87,12 +137,97 @@ public class ScopeManager {
 
     /**
      * Returns true if the given URL should be excluded from ALL scanning (active + passive).
-     * Matches if any excluded path is a substring of the URL's path component.
+     *
+     * Each exclusion entry is tested as:
+     *   - Full URL match: if the entry starts with http:// or https://, match against full URL
+     *   - Endpoint match: otherwise, match against the URL's path component
+     *
+     * Match is substring-based — "/api" excludes "/api/v1/users", "/api/health", etc.
      */
     public boolean isExcludedPath(String url) {
-        List<String> paths = excludedPaths;
-        if (paths.isEmpty() || url == null) return false;
-        // Extract path from URL (strip scheme+host, keep path before query)
+        List<String> entries = excludedPaths;
+        if (entries.isEmpty() || url == null) return false;
+        String lowerUrl = url.toLowerCase();
+        String path = extractUrlPath(url);
+
+        for (String entry : entries) {
+            if (matchEntry(entry, lowerUrl, path)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if the URL is allowed by the inclusion list.
+     * If the inclusion list is empty → everything is allowed (default).
+     * If the inclusion list is non-empty → the URL must match at least one entry.
+     *
+     * Each inclusion entry is tested as:
+     *   - Full URL match: if the entry starts with http:// or https://, match against full URL
+     *   - Endpoint match: otherwise, match against the URL's path component
+     *
+     * Exclusions always take priority over inclusions. A URL matching both will be EXCLUDED.
+     */
+    public boolean isIncludedPath(String url) {
+        List<String> entries = includedPaths;
+        if (entries.isEmpty()) return true; // No inclusion list → everything allowed
+        if (url == null) return false;
+        String lowerUrl = url.toLowerCase();
+        String path = extractUrlPath(url);
+
+        for (String entry : entries) {
+            if (matchEntry(entry, lowerUrl, path)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Combined scope check for a URL: must pass domain check, inclusion filter,
+     * and exclusion filter.
+     *
+     * @return true if the URL should be scanned
+     */
+    public boolean isUrlInScope(String url, String host) {
+        if (!isInScope(host)) return false;
+        if (isExcludedPath(url)) return false;
+        if (!isIncludedPath(url)) return false;
+        return true;
+    }
+
+    /**
+     * Match a single include/exclude entry against a URL.
+     * Query params are already stripped from entries at set-time, so matching
+     * is always path-focused regardless of what parameters the URL has.
+     *
+     * @param entry    the user-specified pattern (lowercase, query-stripped)
+     * @param lowerUrl the full URL being tested (lowercase)
+     * @param path     the extracted path component of the URL (lowercase, no query string)
+     * @return true if the entry matches
+     */
+    private static boolean matchEntry(String entry, String lowerUrl, String path) {
+        if (entry.startsWith("http://") || entry.startsWith("https://")) {
+            // Full URL entry — match against the complete URL without query string
+            String urlNoQuery = lowerUrl;
+            int q = urlNoQuery.indexOf('?');
+            if (q >= 0) urlNoQuery = urlNoQuery.substring(0, q);
+            return urlNoQuery.contains(entry);
+        } else {
+            // Endpoint/path entry — match against the path component only
+            return path.contains(entry);
+        }
+    }
+
+    /**
+     * Strip query parameters from a user-entered entry.
+     * "fdsfds.php?fds=fds" → "fdsfds.php"
+     * "https://example.com/api?key=val" → "https://example.com/api"
+     */
+    private static String stripQueryParams(String entry) {
+        int q = entry.indexOf('?');
+        return q >= 0 ? entry.substring(0, q) : entry;
+    }
+
+    /** Extract the path component from a URL (lowercase, no query string). */
+    private static String extractUrlPath(String url) {
         String lower = url.toLowerCase();
         String path;
         int schemeEnd = lower.indexOf("://");
@@ -102,14 +237,9 @@ public class ScopeManager {
         } else {
             path = lower;
         }
-        // Strip query string for matching
         int qIdx = path.indexOf('?');
         if (qIdx >= 0) path = path.substring(0, qIdx);
-
-        for (String excluded : paths) {
-            if (path.contains(excluded)) return true;
-        }
-        return false;
+        return path;
     }
 
     /**

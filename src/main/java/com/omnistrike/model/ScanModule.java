@@ -2,6 +2,8 @@ package com.omnistrike.model;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
+import com.omnistrike.framework.techprofile.TechContext;
+import com.omnistrike.framework.techprofile.TechRegistry;
 
 import java.util.List;
 
@@ -33,6 +35,19 @@ public interface ScanModule {
      *                 then add findings to the FindingsStore asynchronously.
      */
     List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api);
+
+    /**
+     * Tech-context-aware variant. Modules that leverage adaptive routing should
+     * override this to receive the host's TechContext for payload prioritization.
+     * The TechRegistry is also provided so modules can report discovered tech
+     * signals back (cross-module feedback loop).
+     *
+     * Default delegates to the non-TechContext variant for backward compatibility.
+     */
+    default List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api,
+                                           TechContext techContext, TechRegistry techRegistry) {
+        return processHttpFlow(requestResponse, api);
+    }
 
     /**
      * Process only a specific parameter. Active scanners should override this

@@ -277,35 +277,222 @@ public class MainPanel extends JPanel {
 
         topContainer.add(row1);
 
-        // --- Row 1b: URL Exclusion ---
-        JPanel exclusionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
-        exclusionRow.setBackground(BG_DARK);
+        // --- Row 1b: Scope Filtering (Include / Exclude lists) ---
+        // Mutual exclusion: only ONE list can be populated at a time.
+        // When one has entries, the other is locked (greyed out) until cleared.
+        JPanel filterPanel = new JPanel(new GridLayout(1, 2, 10, 0));
+        filterPanel.setBackground(BG_DARK);
 
-        JLabel excludeLabel = new JLabel("Exclude Paths:");
-        excludeLabel.setForeground(NEON_CYAN);
-        excludeLabel.setFont(MONO_LABEL);
-        exclusionRow.add(excludeLabel);
-        JTextField excludeField = new JTextField(50);
-        styleTextField(excludeField);
-        excludeField.setToolTipText("Space-separated URL paths to exclude from ALL scanning (active + passive). E.g.: /logout /admin/delete /api/health");
-        excludeField.putClientProperty("JTextField.placeholderText",
-                "e.g. /logout /admin/delete /api/health");
-        exclusionRow.add(excludeField);
+        // ── Include list (left side) ──────────────────────────────────────
+        DefaultListModel<String> includeListModel = new DefaultListModel<>();
+        JList<String> includeList = new JList<>(includeListModel);
+        includeList.setBackground(BG_PANEL);
+        includeList.setForeground(FG_PRIMARY);
+        includeList.setFont(MONO_FONT);
+        includeList.setSelectionBackground(NEON_CYAN.darker().darker());
+        includeList.setSelectionForeground(Color.WHITE);
+        includeList.setVisibleRowCount(4);
 
-        // Live-sync exclusion field to ScopeManager
-        excludeField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
-            @Override
-            public void insertUpdate(javax.swing.event.DocumentEvent e) { syncExclude(); }
-            @Override
-            public void removeUpdate(javax.swing.event.DocumentEvent e) { syncExclude(); }
-            @Override
-            public void changedUpdate(javax.swing.event.DocumentEvent e) { syncExclude(); }
-            private void syncExclude() {
-                scopeManager.setExcludedPaths(excludeField.getText().trim());
+        JTextField includeInput = new JTextField(25);
+        styleTextField(includeInput);
+        includeInput.putClientProperty("JTextField.placeholderText",
+                "/api/v1/users or https://target.com/admin");
+
+        JButton includeAddBtn = new JButton("+");
+        JButton includeRemoveBtn = new JButton("-");
+        JButton includeClearBtn = new JButton("Clear");
+        for (JButton btn : new JButton[]{includeAddBtn, includeRemoveBtn, includeClearBtn}) {
+            btn.setBackground(BG_PANEL);
+            btn.setForeground(NEON_CYAN);
+            btn.setFocusPainted(false);
+            btn.setFont(MONO_BOLD);
+            btn.setBorder(BorderFactory.createCompoundBorder(
+                    new CyberTheme.GlowLineBorder(NEON_CYAN, 1),
+                    BorderFactory.createEmptyBorder(2, 8, 2, 8)));
+        }
+
+        // ── Exclude list (right side) ─────────────────────────────────────
+        DefaultListModel<String> excludeListModel = new DefaultListModel<>();
+        JList<String> excludeList = new JList<>(excludeListModel);
+        excludeList.setBackground(BG_PANEL);
+        excludeList.setForeground(FG_PRIMARY);
+        excludeList.setFont(MONO_FONT);
+        excludeList.setSelectionBackground(NEON_RED.darker().darker());
+        excludeList.setSelectionForeground(Color.WHITE);
+        excludeList.setVisibleRowCount(4);
+
+        JTextField excludeInput = new JTextField(25);
+        styleTextField(excludeInput);
+        excludeInput.putClientProperty("JTextField.placeholderText",
+                "/logout or /admin/delete");
+
+        JButton excludeAddBtn = new JButton("+");
+        JButton excludeRemoveBtn = new JButton("-");
+        JButton excludeClearBtn = new JButton("Clear");
+        for (JButton btn : new JButton[]{excludeAddBtn, excludeRemoveBtn, excludeClearBtn}) {
+            btn.setBackground(BG_PANEL);
+            btn.setForeground(NEON_RED);
+            btn.setFocusPainted(false);
+            btn.setFont(MONO_BOLD);
+            btn.setBorder(BorderFactory.createCompoundBorder(
+                    new CyberTheme.GlowLineBorder(NEON_RED, 1),
+                    BorderFactory.createEmptyBorder(2, 8, 2, 8)));
+        }
+
+        // ── Mutual exclusion lock logic ───────────────────────────────────
+        // Collect all include/exclude interactive components for enable/disable toggling
+        JComponent[] includeControls = {includeInput, includeAddBtn, includeRemoveBtn, includeList};
+        JComponent[] excludeControls = {excludeInput, excludeAddBtn, excludeRemoveBtn, excludeList};
+        JLabel includeLockLabel = new JLabel("");
+        JLabel excludeLockLabel = new JLabel("");
+        includeLockLabel.setForeground(FG_DIM);
+        includeLockLabel.setFont(MONO_SMALL);
+        excludeLockLabel.setForeground(FG_DIM);
+        excludeLockLabel.setFont(MONO_SMALL);
+
+        // This runnable checks both models and locks/unlocks the opposite side.
+        // Called after every add/remove/clear action on either list.
+        Runnable updateLockState = () -> {
+            boolean includeHasEntries = !includeListModel.isEmpty();
+            boolean excludeHasEntries = !excludeListModel.isEmpty();
+
+            // Lock exclude side if include has entries
+            for (JComponent c : excludeControls) c.setEnabled(!includeHasEntries);
+            excludeClearBtn.setEnabled(!includeHasEntries || excludeHasEntries);
+            excludeLockLabel.setText(includeHasEntries ? "(locked — clear Include first)" : "");
+
+            // Lock include side if exclude has entries
+            for (JComponent c : includeControls) c.setEnabled(!excludeHasEntries);
+            includeClearBtn.setEnabled(!excludeHasEntries || includeHasEntries);
+            includeLockLabel.setText(excludeHasEntries ? "(locked — clear Exclude first)" : "");
+        };
+
+        // ── Include actions ───────────────────────────────────────────────
+        Runnable includeAddAction = () -> {
+            String text = includeInput.getText().trim();
+            if (!text.isEmpty() && !includeListModel.contains(text)) {
+                includeListModel.addElement(text);
+                includeInput.setText("");
+                syncListToScope(includeListModel, true);
+                updateLockState.run();
+            }
+        };
+        includeAddBtn.addActionListener(e -> includeAddAction.run());
+        includeInput.addActionListener(e -> includeAddAction.run());
+
+        includeRemoveBtn.addActionListener(e -> {
+            int idx = includeList.getSelectedIndex();
+            if (idx >= 0) {
+                includeListModel.remove(idx);
+                syncListToScope(includeListModel, true);
+                updateLockState.run();
             }
         });
 
-        topContainer.add(exclusionRow);
+        includeClearBtn.addActionListener(e -> {
+            includeListModel.clear();
+            syncListToScope(includeListModel, true);
+            updateLockState.run();
+        });
+
+        // ── Exclude actions ───────────────────────────────────────────────
+        Runnable excludeAddAction = () -> {
+            String text = excludeInput.getText().trim();
+            if (!text.isEmpty() && !excludeListModel.contains(text)) {
+                excludeListModel.addElement(text);
+                excludeInput.setText("");
+                syncListToScope(excludeListModel, false);
+                updateLockState.run();
+            }
+        };
+        excludeAddBtn.addActionListener(e -> excludeAddAction.run());
+        excludeInput.addActionListener(e -> excludeAddAction.run());
+
+        excludeRemoveBtn.addActionListener(e -> {
+            int idx = excludeList.getSelectedIndex();
+            if (idx >= 0) {
+                excludeListModel.remove(idx);
+                syncListToScope(excludeListModel, false);
+                updateLockState.run();
+            }
+        });
+
+        excludeClearBtn.addActionListener(e -> {
+            excludeListModel.clear();
+            syncListToScope(excludeListModel, false);
+            updateLockState.run();
+        });
+
+        // ── Build Include panel ───────────────────────────────────────────
+        JPanel includePanel = new JPanel(new BorderLayout(4, 4));
+        includePanel.setBackground(BG_DARK);
+        includePanel.setBorder(BorderFactory.createTitledBorder(
+                new CyberTheme.GlowLineBorder(NEON_CYAN, 1),
+                "Include Only (empty = scan all)",
+                javax.swing.border.TitledBorder.LEFT,
+                javax.swing.border.TitledBorder.TOP,
+                MONO_LABEL, NEON_CYAN));
+
+        JPanel includeInputRow = new JPanel(new BorderLayout(4, 0));
+        includeInputRow.setBackground(BG_DARK);
+        includeInputRow.add(includeInput, BorderLayout.CENTER);
+        JPanel includeButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        includeButtons.setBackground(BG_DARK);
+        includeButtons.add(includeAddBtn);
+        includeButtons.add(includeRemoveBtn);
+        includeButtons.add(includeClearBtn);
+        includeButtons.add(includeLockLabel);
+        includeInputRow.add(includeButtons, BorderLayout.EAST);
+
+        includePanel.add(includeInputRow, BorderLayout.NORTH);
+        JScrollPane includeScroll = new JScrollPane(includeList);
+        includeScroll.setPreferredSize(new Dimension(0, 80));
+        includeScroll.setBorder(BorderFactory.createEmptyBorder());
+        includePanel.add(includeScroll, BorderLayout.CENTER);
+
+        includePanel.setToolTipText(
+                "<html>When non-empty, ONLY matching URLs/endpoints are scanned.<br>"
+                        + "<b>Endpoints:</b> /api/v1/users (matched against URL path)<br>"
+                        + "<b>Full URLs:</b> https://target.com/admin (matched against full URL)<br>"
+                        + "Query parameters are ignored.<br>"
+                        + "Cannot be used at the same time as Exclude — clear one to use the other.</html>");
+
+        filterPanel.add(includePanel);
+
+        // ── Build Exclude panel ───────────────────────────────────────────
+        JPanel excludePanel = new JPanel(new BorderLayout(4, 4));
+        excludePanel.setBackground(BG_DARK);
+        excludePanel.setBorder(BorderFactory.createTitledBorder(
+                new CyberTheme.GlowLineBorder(NEON_RED, 1),
+                "Exclude (always skipped)",
+                javax.swing.border.TitledBorder.LEFT,
+                javax.swing.border.TitledBorder.TOP,
+                MONO_LABEL, NEON_RED));
+
+        JPanel excludeInputRow = new JPanel(new BorderLayout(4, 0));
+        excludeInputRow.setBackground(BG_DARK);
+        excludeInputRow.add(excludeInput, BorderLayout.CENTER);
+        JPanel excludeButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        excludeButtons.setBackground(BG_DARK);
+        excludeButtons.add(excludeAddBtn);
+        excludeButtons.add(excludeRemoveBtn);
+        excludeButtons.add(excludeClearBtn);
+        excludeButtons.add(excludeLockLabel);
+        excludeInputRow.add(excludeButtons, BorderLayout.EAST);
+
+        excludePanel.add(excludeInputRow, BorderLayout.NORTH);
+        JScrollPane excludeScroll = new JScrollPane(excludeList);
+        excludeScroll.setPreferredSize(new Dimension(0, 80));
+        excludeScroll.setBorder(BorderFactory.createEmptyBorder());
+        excludePanel.add(excludeScroll, BorderLayout.CENTER);
+
+        excludePanel.setToolTipText(
+                "<html>URLs/endpoints matching any entry are completely skipped.<br>"
+                        + "Query parameters are ignored.<br>"
+                        + "Cannot be used at the same time as Include — clear one to use the other.</html>");
+
+        filterPanel.add(excludePanel);
+        topContainer.add(filterPanel);
 
         // --- Row 2: Buttons, Status, Thread Status, Collaborator, Progress Bar ---
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
@@ -1092,6 +1279,23 @@ public class MainPanel extends JPanel {
                 progressBar.setVisible(false);
             }
         });
+    }
+
+    /**
+     * Sync a JList model (include or exclude) to ScopeManager.
+     * Joins all entries with commas and calls the appropriate setter.
+     */
+    private void syncListToScope(DefaultListModel<String> model, boolean isInclude) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < model.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(model.get(i));
+        }
+        if (isInclude) {
+            scopeManager.setIncludedPaths(sb.toString());
+        } else {
+            scopeManager.setExcludedPaths(sb.toString());
+        }
     }
 
     private void toggleScanning() {
