@@ -1576,6 +1576,8 @@ public class DeserializationScanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) body = "";
             int status = result.response().statusCode();
+            // Skip ALL 4xx — error detection needs app responses, not WAF/rate-limit pages
+            if (status >= 400 && status < 500) { perHostDelay(); continue; }
 
             if (isDotNetDeserError(body)) {
                 findingsStore.addFinding(Finding.builder("deser-scanner",
@@ -1720,6 +1722,7 @@ public class DeserializationScanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) body = "";
             int status = result.response().statusCode();
+            if (status >= 400 && status < 500) { perHostDelay(); continue; }
 
             // PHP deserialization errors — require unserialize() function reference specifically;
             // __wakeup, __destruct, and Serializable can appear in documentation or generic PHP error pages
@@ -1851,6 +1854,7 @@ public class DeserializationScanner implements ScanModule {
             // Error-based detection
             HttpRequestResponse result = sendPayload(original, dp, payload);
             if (result != null && result.response() != null) {
+                if (result.response().statusCode() >= 400 && result.response().statusCode() < 500) { perHostDelay(); continue; }
                 String body = result.response().bodyToString();
                 if (body != null && (body.contains("Marshal") || body.contains("TypeError")
                         || body.contains("ArgumentError") || body.contains("dump format error")
@@ -1922,6 +1926,7 @@ public class DeserializationScanner implements ScanModule {
             // Error-based detection
             HttpRequestResponse result = sendPayload(original, dp, payload);
             if (result != null && result.response() != null) {
+                if (result.response().statusCode() >= 400 && result.response().statusCode() < 500) { perHostDelay(); continue; }
                 String body = result.response().bodyToString();
                 if (body != null && (body.contains("SyntaxError") || body.contains("ReferenceError")
                         || body.contains("require is not defined")
@@ -2134,6 +2139,7 @@ public class DeserializationScanner implements ScanModule {
 
             HttpRequestResponse result = sendPayload(original, dp, payload);
             if (result == null || result.response() == null) { perHostDelay(); continue; }
+            if (result.response().statusCode() >= 400 && result.response().statusCode() < 500) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
             if (body == null) body = "";
@@ -2205,6 +2211,7 @@ public class DeserializationScanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) body = "";
             int status = result.response().statusCode();
+            if (status >= 400 && status < 500) { perHostDelay(); continue; }
 
             // Confirmed deserialization processing — report and stop immediately
             if (body.contains("unserialize()") || body.contains("__wakeup")

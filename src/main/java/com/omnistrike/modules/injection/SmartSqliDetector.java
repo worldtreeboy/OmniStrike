@@ -932,7 +932,7 @@ public class SmartSqliDetector implements ScanModule {
                     // Skip 400 Bad Request — often just input validation rejecting the quote/payload,
                     // and the error page may contain SQL-like keywords (e.g., "syntax error in query string")
                     int statusCode = result.response().statusCode();
-                    if (statusCode == 400 || statusCode == 403 || statusCode == 404 || statusCode == 429) continue;
+                    if (statusCode >= 400 && statusCode < 500) continue; // Skip ALL 4xx — WAF, rate limit, auth, not-found
 
                     String responseBody = result.response().bodyToString();
                     if (responseBody == null) responseBody = "";

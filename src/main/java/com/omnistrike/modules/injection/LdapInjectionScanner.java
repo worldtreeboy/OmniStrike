@@ -355,6 +355,8 @@ public class LdapInjectionScanner implements ScanModule {
 
             HttpRequestResponse result = sendPayload(original, target, payload);
             if (result == null || result.response() == null) continue;
+            // Skip ALL 4xx responses — error detection needs application responses, not WAF/rate-limit pages
+            if (result.response().statusCode() >= 400 && result.response().statusCode() < 500) continue;
 
             String body = result.response().bodyToString();
             if (body == null) body = "";
@@ -606,6 +608,9 @@ public class LdapInjectionScanner implements ScanModule {
             if (result == null || result.response() == null) continue;
 
             int resultStatus = result.response().statusCode();
+            // Skip ALL 4xx — auth bypass produces 200/302, not error codes
+            if (resultStatus >= 400 && resultStatus < 500) continue;
+
             String resultBody = result.response().bodyToString();
             if (resultBody == null) resultBody = "";
             int resultLen = resultBody.length();

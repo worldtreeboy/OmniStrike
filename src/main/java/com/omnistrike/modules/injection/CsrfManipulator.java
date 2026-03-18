@@ -505,7 +505,7 @@ public class CsrfManipulator implements ScanModule {
         int resultBodyLen = result.response().body().length();
 
         // 1. Hard rejection signals
-        if (resultStatus == 401 || resultStatus == 403) return false;
+        if (resultStatus >= 400 && resultStatus < 500) return false; // ALL 4xx = not accepted
 
         // 2. Redirect comparison — different Location = different outcome
         if (resultStatus >= 300 && resultStatus < 400) {

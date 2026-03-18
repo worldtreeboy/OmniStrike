@@ -478,10 +478,10 @@ public class CommandInjectionScanner implements ScanModule {
             HttpRequestResponse result = sendPayload(original, target, target.originalValue + payload);
             if (result == null || result.response() == null) continue;
             if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
+            // Skip ALL 4xx responses — command execution produces 200, not error codes
+            if (result.response().statusCode() >= 400 && result.response().statusCode() < 500) continue;
 
-            // Skip small error pages — 403/404/500 with body < 500 bytes is never evidence
-            // of command execution (WAF blocks, routing errors, server rejection).
-            // Larger error pages may still contain genuine command output.
+            // Skip small error pages (5xx with body < 500 bytes)
             if (isSmallErrorPage(result)) continue;
 
             String body = result.response().bodyToString();
