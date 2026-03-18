@@ -267,6 +267,7 @@ public class LdapInjectionScanner implements ScanModule {
     private void runTargets(HttpRequestResponse requestResponse,
                              List<LdapTarget> targets, String urlPath) {
         for (LdapTarget target : targets) {
+            if (Thread.currentThread().isInterrupted()) return;
             if (!dedup.markIfNew("ldapi-scanner", urlPath, target.name)) {
                 api.logging().logToOutput("[LDAPI] Skipping '" + target.name + "' — already tested");
                 continue;
@@ -347,6 +348,7 @@ public class LdapInjectionScanner implements ScanModule {
         String bestError = null;
 
         for (String[] errorEntry : ERROR_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String payload = errorEntry[0];
             String payloadDesc = errorEntry[1];
 
@@ -469,6 +471,7 @@ public class LdapInjectionScanner implements ScanModule {
         }
 
         for (String[] pair : BOOLEAN_PAIRS) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String truePayload = pair[0];
             String falsePayload = pair[1];
             String pairDesc = pair[2];
@@ -592,6 +595,7 @@ public class LdapInjectionScanner implements ScanModule {
         int failureLen = failureBody.length();
 
         for (String[] authEntry : AUTH_BYPASS_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String payload = authEntry[0];
             String desc = authEntry[1];
 

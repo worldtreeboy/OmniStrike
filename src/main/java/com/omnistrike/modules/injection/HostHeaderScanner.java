@@ -170,6 +170,7 @@ public class HostHeaderScanner implements ScanModule {
 
     private void testRoutingSsrf(HttpRequestResponse original, String url) throws InterruptedException {
         for (String internalHost : INTERNAL_HOSTS) {
+            if (Thread.currentThread().isInterrupted()) return;
             try {
                 HttpRequest modified = original.request()
                         .withRemovedHeader("Host")
@@ -339,6 +340,7 @@ public class HostHeaderScanner implements ScanModule {
         } catch (Exception e) { /* proceed with empty baseline */ }
 
         for (String header : OVERRIDE_HEADERS) {
+            if (Thread.currentThread().isInterrupted()) return;
             try {
                 // Test 1: Simple reflection test
                 String headerValue = header.equals("Forwarded")

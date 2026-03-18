@@ -101,6 +101,7 @@ public class PathTraversalScanner implements ScanModule {
     private List<Finding> runTraversalTargets(HttpRequestResponse requestResponse,
                                                List<TraversalTarget> targets, String urlPath) {
         for (TraversalTarget target : targets) {
+            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
             if (!dedup.markIfNew("path-traversal", urlPath, target.name)) continue;
 
             try {
@@ -166,6 +167,7 @@ public class PathTraversalScanner implements ScanModule {
         };
 
         for (String[] pathDef : absolutePaths) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String absPath = pathDef[0];
             String checkType = pathDef[1];
 
@@ -231,10 +233,12 @@ public class PathTraversalScanner implements ScanModule {
         };
 
         for (String[] fileDef : unixFiles) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String targetFile = fileDef[0];
             String checkType = fileDef[1];
 
             for (int depth = 1; depth <= maxDepth; depth++) {
+                if (Thread.currentThread().isInterrupted()) return false;
                 String traversal = "../".repeat(depth) + targetFile;
                 HttpRequestResponse result = sendPayload(original, target, traversal);
                 if (result == null || result.response() == null) continue;
@@ -286,10 +290,12 @@ public class PathTraversalScanner implements ScanModule {
         };
 
         for (String[] fileDef : winFiles) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String targetFile = fileDef[0];
             String checkType = fileDef[1];
 
             for (int depth = 1; depth <= maxDepth; depth++) {
+                if (Thread.currentThread().isInterrupted()) return false;
                 String traversal = "..\\".repeat(depth) + targetFile;
                 HttpRequestResponse result = sendPayload(original, target, traversal);
                 if (result == null || result.response() == null) continue;
@@ -401,6 +407,7 @@ public class PathTraversalScanner implements ScanModule {
         };
 
         for (String[] bypass : bypasses) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String payload = bypass[0];
             String checkType = bypass[1];
             String technique = bypass[2];
@@ -443,6 +450,7 @@ public class PathTraversalScanner implements ScanModule {
                                   String url, String baselineBody, int baselineLen) throws InterruptedException {
         // php://filter base64 encoding — reads source code
         // Structural validation: response must contain valid base64 that decodes to readable PHP/HTML
+        if (Thread.currentThread().isInterrupted()) return;
         String filterPayload = "php://filter/convert.base64-encode/resource=index";
         HttpRequestResponse filterResult = sendPayload(original, target, filterPayload);
         if (filterResult != null && filterResult.response() != null
@@ -471,6 +479,7 @@ public class PathTraversalScanner implements ScanModule {
 
         // data:// wrapper (code execution)
         // Structural validation: response must contain phpinfo() structural output (multiple markers)
+        if (Thread.currentThread().isInterrupted()) return;
         String dataPayload = "data://text/plain,<?php phpinfo();?>";
         HttpRequestResponse dataResult = sendPayload(original, target, dataPayload);
         if (dataResult != null && dataResult.response() != null) {
@@ -496,6 +505,7 @@ public class PathTraversalScanner implements ScanModule {
 
         // php://filter chain variant (read specific file)
         // Structural validation: decoded base64 must contain /etc/passwd structural content
+        if (Thread.currentThread().isInterrupted()) return;
         String filterChainPayload = "php://filter/read=convert.base64-encode/resource=/etc/passwd";
         HttpRequestResponse filterChainResult = sendPayload(original, target, filterChainPayload);
         if (filterChainResult != null && filterChainResult.response() != null) {
@@ -530,6 +540,7 @@ public class PathTraversalScanner implements ScanModule {
 
         // expect:// wrapper (command execution)
         // Structural validation: response must contain uid=N(username) gid=N(groupname) format
+        if (Thread.currentThread().isInterrupted()) return;
         String expectPayload = "expect://id";
         HttpRequestResponse expectResult = sendPayload(original, target, expectPayload);
         if (expectResult != null && expectResult.response() != null) {
@@ -560,6 +571,7 @@ public class PathTraversalScanner implements ScanModule {
 
         // php://filter with ROT13
         // Structural validation: decoded ROT13 must contain PHP markers (<?php, <html, etc.)
+        if (Thread.currentThread().isInterrupted()) return;
         String rot13Payload = "php://filter/read=string.rot13/resource=index";
         HttpRequestResponse rot13Result = sendPayload(original, target, rot13Payload);
         if (rot13Result != null && rot13Result.response() != null
@@ -587,6 +599,7 @@ public class PathTraversalScanner implements ScanModule {
 
         // php://filter with iconv UTF-8 to UTF-7 encoding
         // Structural validation: UTF-7 markers (+ADw- for <, +AD4- for >) confirm filter chain worked
+        if (Thread.currentThread().isInterrupted()) return;
         String iconvPayload = "php://filter/convert.iconv.UTF-8.UTF-7/resource=index";
         HttpRequestResponse iconvResult = sendPayload(original, target, iconvPayload);
         if (iconvResult != null && iconvResult.response() != null
@@ -624,6 +637,7 @@ public class PathTraversalScanner implements ScanModule {
 
         // data:// with base64 encoded PHP
         // Structural validation: same as plain data:// — require confirmed phpinfo output
+        if (Thread.currentThread().isInterrupted()) return;
         String dataB64Payload = "data://text/plain;base64,PD9waHAgcGhwaW5mbygpOyA/Pg==";
         HttpRequestResponse dataB64Result = sendPayload(original, target, dataB64Payload);
         if (dataB64Result != null && dataB64Result.response() != null) {

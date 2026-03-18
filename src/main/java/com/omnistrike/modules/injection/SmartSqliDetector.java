@@ -793,6 +793,7 @@ public class SmartSqliDetector implements ScanModule {
     private List<Finding> runInjectionPoints(HttpRequestResponse requestResponse,
                                               List<InjectionPoint> injectionPoints, String urlPath) {
         for (InjectionPoint ip : injectionPoints) {
+            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
             String dedupKey = "sqli:" + urlPath + ":" + ip.name;
             // Atomic mark-before-test: putIfAbsent returns null only on first caller,
             // preventing both the TOCTOU race (containsKey/put) and the retry-on-exception
@@ -912,6 +913,7 @@ public class SmartSqliDetector implements ScanModule {
         } catch (Exception ignored) {}
 
         for (Map.Entry<String, String[]> dbmsEntry : ERROR_PAYLOADS_BY_DBMS.entrySet()) {
+            if (Thread.currentThread().isInterrupted()) return;
             String payloadDbms = dbmsEntry.getKey();
 
             // DBMS filtering: if fingerprint identified a DBMS, skip payloads for other DBMSes
@@ -920,6 +922,7 @@ public class SmartSqliDetector implements ScanModule {
             }
 
             for (String payload : dbmsEntry.getValue()) {
+                if (Thread.currentThread().isInterrupted()) return;
                 try {
 
                     HttpRequestResponse result = sendWithPayload(original, ip, payload);
@@ -1003,6 +1006,7 @@ public class SmartSqliDetector implements ScanModule {
         }
 
         for (String payloadTemplate : AUTH_BYPASS_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             try {
                 String payload = payloadTemplate.replace("ORIGINAL_VALUE", ip.originalValue);
 
@@ -1203,10 +1207,12 @@ public class SmartSqliDetector implements ScanModule {
         HttpRequestResponse lastOrderByResult = null;
 
         for (String q : new String[]{"'", "\"", ""}) {
+            if (Thread.currentThread().isInterrupted()) return;
             int lastGood = 0;
             for (int i = 1; i <= maxColumns; i++) {
+                if (Thread.currentThread().isInterrupted()) return;
                 try {
-        
+
                     String payload = q.isEmpty()
                             ? ip.originalValue + " ORDER BY " + i + "-- -"
                             : ip.originalValue + q + " ORDER BY " + i + "-- -";
@@ -1263,6 +1269,7 @@ public class SmartSqliDetector implements ScanModule {
             HttpRequestResponse unionResult = null;
 
             for (String variant : unionVariants) {
+                if (Thread.currentThread().isInterrupted()) return;
                 String testPayload = quoteChar.isEmpty()
                         ? ip.originalValue + variant + nulls + "-- -"
                         : ip.originalValue + quoteChar + variant + nulls + "-- -";
@@ -1305,6 +1312,7 @@ public class SmartSqliDetector implements ScanModule {
             // Step 3: Find reflected column
             int reflectedColumn = -1;
             for (int col = 0; col < columnCount; col++) {
+                if (Thread.currentThread().isInterrupted()) return;
 
                 String[] cols = new String[columnCount];
                 Arrays.fill(cols, "NULL");
@@ -1377,6 +1385,7 @@ public class SmartSqliDetector implements ScanModule {
         };
 
         for (String[] probe : dbProbes) {
+            if (Thread.currentThread().isInterrupted()) return;
             try {
 
                 String[] cols = new String[columnCount];
@@ -1473,6 +1482,7 @@ public class SmartSqliDetector implements ScanModule {
         }
 
         for (Map.Entry<String, String[]> entry : TIME_PAYLOADS.entrySet()) {
+            if (Thread.currentThread().isInterrupted()) return;
             String dbType = entry.getKey();
 
             // DBMS filtering: if fingerprint identified a DBMS, skip time payloads for other DBMSes
@@ -1481,6 +1491,7 @@ public class SmartSqliDetector implements ScanModule {
                 continue;
             }
             for (String payload : entry.getValue()) {
+                if (Thread.currentThread().isInterrupted()) return;
                 try {
                     // Step 1: Send true-condition delay payload
                     TimedResult result1 = measureResponseTime(original, ip, payload);
@@ -1650,6 +1661,7 @@ public class SmartSqliDetector implements ScanModule {
         } catch (Exception ignored) {}
 
         for (String[] pair : BOOLEAN_PAIRS) {
+            if (Thread.currentThread().isInterrupted()) return;
             try {
                 // Round 1: true + false
                 HttpRequestResponse trueResult1 = sendWithPayload(original, ip, pair[0]);
@@ -1746,6 +1758,7 @@ public class SmartSqliDetector implements ScanModule {
         String url = original.request().url();
 
         for (Map.Entry<String, String[]> entry : OOB_PAYLOADS.entrySet()) {
+            if (Thread.currentThread().isInterrupted()) return;
             String dbType = entry.getKey();
 
             // DBMS filtering: if fingerprint identified a DBMS, skip OOB payloads for other DBMSes
@@ -1753,6 +1766,7 @@ public class SmartSqliDetector implements ScanModule {
                 continue;
             }
             for (String payloadTemplate : entry.getValue()) {
+                if (Thread.currentThread().isInterrupted()) return;
                 try {
                     // AtomicReference to capture the sent request/response for the finding
                     AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
@@ -1892,6 +1906,7 @@ public class SmartSqliDetector implements ScanModule {
         Map<String, Integer> hits = new LinkedHashMap<>();
 
         for (int i = 0; i < FINGERPRINT_PROBES.length; i++) {
+            if (Thread.currentThread().isInterrupted()) return null;
             String probe = FINGERPRINT_PROBES[i];
 
             try {

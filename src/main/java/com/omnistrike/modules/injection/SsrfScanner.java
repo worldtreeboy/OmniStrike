@@ -227,6 +227,7 @@ public class SsrfScanner implements ScanModule {
     private List<Finding> runSsrfTargets(HttpRequestResponse requestResponse,
                                           List<SsrfTarget> targets, String urlPath) {
         for (SsrfTarget target : targets) {
+            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
             if (!dedup.markIfNew("ssrf-scanner", urlPath, target.name)) continue;
 
             try {
@@ -310,6 +311,7 @@ public class SsrfScanner implements ScanModule {
         };
 
         for (String payload : oobPayloads) {
+            if (Thread.currentThread().isInterrupted()) return;
             HttpRequestResponse result = sendPayload(original, target, payload);
             httpSentRequest.compareAndSet(null, result); // Capture the first send result
             perHostDelay();
@@ -405,6 +407,7 @@ public class SsrfScanner implements ScanModule {
         if (baselineBody == null) baselineBody = "";
 
         for (String[] meta : CLOUD_METADATA) {
+            if (Thread.currentThread().isInterrupted()) return;
             String metaUrl = meta[0];
             String expectedPatterns = meta[1];
             String description = meta[2];
@@ -542,6 +545,7 @@ public class SsrfScanner implements ScanModule {
         };
 
         for (String payload : redirectPayloads) {
+            if (Thread.currentThread().isInterrupted()) return;
             HttpRequestResponse result = sendPayload(original, target, payload);
             if (result == null || result.response() == null) continue;
 
@@ -578,7 +582,8 @@ public class SsrfScanner implements ScanModule {
         int baselineLen = baselineBody.length();
 
         for (String bypass : LOCALHOST_BYPASSES) {
-    
+            if (Thread.currentThread().isInterrupted()) return;
+
             HttpRequestResponse result = sendPayload(original, target, bypass);
             if (result == null || result.response() == null) continue;
 
@@ -616,7 +621,8 @@ public class SsrfScanner implements ScanModule {
         if (baselineBody == null) baselineBody = "";
 
         for (String payload : PROTOCOL_SMUGGLING) {
-    
+            if (Thread.currentThread().isInterrupted()) return;
+
             HttpRequestResponse result = sendPayload(original, target, payload);
             if (result == null || result.response() == null) continue;
 
@@ -660,6 +666,7 @@ public class SsrfScanner implements ScanModule {
         if (baselineBody == null) baselineBody = "";
 
         for (String[] rebind : rebindingDomains) {
+            if (Thread.currentThread().isInterrupted()) return;
             String domain = rebind[0];
             String description = rebind[1];
 
@@ -670,6 +677,7 @@ public class SsrfScanner implements ScanModule {
             };
 
             for (String payload : payloads) {
+                if (Thread.currentThread().isInterrupted()) return;
                 HttpRequestResponse result = sendPayload(original, target, payload);
                 if (result == null || result.response() == null) continue;
 

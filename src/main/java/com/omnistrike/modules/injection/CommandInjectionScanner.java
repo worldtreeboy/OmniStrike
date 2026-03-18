@@ -306,6 +306,7 @@ public class CommandInjectionScanner implements ScanModule {
     private List<Finding> runCmdiTargets(HttpRequestResponse requestResponse,
                                           List<CmdiTarget> targets, String urlPath) {
         for (CmdiTarget target : targets) {
+            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
             if (!dedup.markIfNew("cmdi-scanner", urlPath, target.name)) continue;
 
             try {
@@ -390,6 +391,7 @@ public class CommandInjectionScanner implements ScanModule {
         long thresholdMs = (long)(delaySecs * 1000 * 0.8); // 80% of expected delay
 
         for (String[] payloadInfo : payloads) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
             String truePayload = payloadTemplate.replace("SLEEP_SECS", String.valueOf(delaySecs));
@@ -464,6 +466,7 @@ public class CommandInjectionScanner implements ScanModule {
             throws InterruptedException {
 
         for (String[] payloadInfo : payloads) {
+            if (Thread.currentThread().isInterrupted()) return false;
             String payload = payloadInfo[0];
             String expectedOutput = payloadInfo[1];
             String technique = payloadInfo[2];
@@ -537,6 +540,7 @@ public class CommandInjectionScanner implements ScanModule {
         // Unix OOB payloads
         if (config.getBool("cmdi.unix.enabled", true)) {
             for (String[] payloadInfo : OOB_PAYLOADS_UNIX) {
+                if (Thread.currentThread().isInterrupted()) return;
                 sendOobPayload(original, target, url, payloadInfo[0], payloadInfo[1], "Unix");
             }
         }
@@ -544,6 +548,7 @@ public class CommandInjectionScanner implements ScanModule {
         // Windows OOB payloads
         if (config.getBool("cmdi.windows.enabled", true)) {
             for (String[] payloadInfo : OOB_PAYLOADS_WINDOWS) {
+                if (Thread.currentThread().isInterrupted()) return;
                 sendOobPayload(original, target, url, payloadInfo[0], payloadInfo[1], "Windows");
             }
         }

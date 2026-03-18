@@ -116,6 +116,7 @@ public class HttpParamPollutionScanner implements ScanModule {
     private List<Finding> runHppTargets(HttpRequestResponse requestResponse,
                                          List<HppTarget> targets, String urlPath) {
         for (HppTarget target : targets) {
+            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
             if (!dedup.markIfNew("hpp", urlPath, target.name)) continue;
 
             try {
@@ -310,6 +311,7 @@ public class HttpParamPollutionScanner implements ScanModule {
         perHostDelay();
 
         for (String[] splitParts : SPLIT_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String part1 = splitParts[0];
             String part2 = splitParts[1];
             String fullPayload = part1 + part2;

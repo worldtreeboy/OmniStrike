@@ -335,6 +335,7 @@ public class XxeScanner implements ScanModule {
             List<XxeTarget> paramTargets = extractParameterTargets(request);
             paramTargets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
             for (XxeTarget target : paramTargets) {
+                if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
                 if (!dedup.markIfNew("xxe-xinclude", urlPath, target.name)) continue;
                 try {
                     testXInclude(requestResponse, target, url);
@@ -385,6 +386,7 @@ public class XxeScanner implements ScanModule {
         if (config.getBool("xxe.xinclude.enabled", true)) {
             List<XxeTarget> paramTargets = extractParameterTargets(request);
             for (XxeTarget target : paramTargets) {
+                if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
                 if (!dedup.markIfNew("xxe-xinclude", urlPath, target.name)) continue;
                 try {
                     testXInclude(requestResponse, target, url);
@@ -602,11 +604,13 @@ public class XxeScanner implements ScanModule {
                 + " Linux + " + windowsTargets.length + " Windows (OS=" + fingerprint.os + ")");
 
         for (String[] target : linuxTargets) {
+            if (Thread.currentThread().isInterrupted()) return;
             testFileReadPayloads(original, url, requestBody, baselineBody, isSoap,
                     target[0], target[1], target[2], "Linux");
         }
 
         for (String[] target : windowsTargets) {
+            if (Thread.currentThread().isInterrupted()) return;
             testFileReadPayloads(original, url, requestBody, baselineBody, isSoap,
                     target[0], target[1], target[2], "Windows");
         }
@@ -1761,6 +1765,7 @@ public class XxeScanner implements ScanModule {
         String[] xmlContentTypes = {"application/xml", "text/xml"};
 
         for (String xmlCt : xmlContentTypes) {
+            if (Thread.currentThread().isInterrupted()) return;
             HttpRequest xmlRequest = original.request()
                     .withRemovedHeader("Content-Type")
                     .withAddedHeader("Content-Type", xmlCt)
@@ -1968,6 +1973,7 @@ public class XxeScanner implements ScanModule {
         HttpRequestResponse probeResult = null;
 
         for (String ct : xmlContentTypes) {
+            if (Thread.currentThread().isInterrupted()) return;
             HttpRequest probeRequest = original.request()
                     .withRemovedHeader("Content-Type")
                     .withAddedHeader("Content-Type", ct)

@@ -40,8 +40,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             ".mp4", ".mp3", ".webm", ".pdf"
     );
 
-    // Executor for passive modules so they don't block the proxy thread
-    private final ExecutorService passiveExecutor;
+    // Executor for passive modules so they don't block the proxy thread.
+    // Not final — recreated when stopManualScans() is called to kill queued passive tasks.
+    private volatile ExecutorService passiveExecutor;
 
     // Track futures from manual scans (context menu) so they can be cancelled
     private final CopyOnWriteArrayList<Future<?>> manualScanFutures = new CopyOnWriteArrayList<>();
@@ -391,13 +392,25 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         int total = manualScanFutures.size();
         manualScanFutures.clear();
 
-        // Also purge the active scan executor's queue — catches tasks that were
-        // submitted but haven't started executing yet
+        // Purge the active scan executor's queue
         int purged = executor.cancelAll();
 
+        // CRITICAL: Also kill and recreate the passive executor.
+        // Without this, passive module tasks continue running after stop.
+        ExecutorService oldPassive = this.passiveExecutor;
+        int passivePurged = 0;
+        if (oldPassive != null) {
+            passivePurged = oldPassive.shutdownNow().size();
+        }
+        this.passiveExecutor = java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
+            Thread t = new Thread(r, "OmniStrike-Passive");
+            t.setDaemon(true);
+            return t;
+        });
+
         uiLog("ManualScan", "Stopped " + cancelled + " running + " + purged
-                + " queued task(s) (total tracked: " + total + ")");
-        return cancelled + purged;
+                + " active + " + passivePurged + " passive task(s)");
+        return cancelled + purged + passivePurged;
     }
 
     /**

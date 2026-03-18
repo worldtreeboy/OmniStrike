@@ -133,9 +133,13 @@ public class CachePoisonScanner implements ScanModule {
         // Test unkeyed headers
         if (config.getBool("cache.headers.enabled", true)) {
             for (String header : UNKEYED_HEADERS) {
+                if (Thread.currentThread().isInterrupted()) return List.of(); // Stop signal
                 if (!dedup.markIfNew("cache-poison", urlPath, header)) continue;
                 try {
                     testUnkeyedHeader(requestResponse, header, url);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return List.of(); // Stop signal — exit immediately
                 } catch (Exception e) {
                     api.logging().logToError("Cache poison header test error (" + header + "): " + e.getMessage());
                 }
@@ -145,9 +149,13 @@ public class CachePoisonScanner implements ScanModule {
         // Test unkeyed query parameters
         if (config.getBool("cache.params.enabled", true)) {
             for (String param : UNKEYED_PARAMS) {
+                if (Thread.currentThread().isInterrupted()) return List.of(); // Stop signal
                 if (!dedup.markIfNew("cache-poison", urlPath, "param:" + param)) continue;
                 try {
                     testUnkeyedParam(requestResponse, param, url);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return List.of(); // Stop signal
                 } catch (Exception e) {
                     api.logging().logToError("Cache poison param test error (" + param + "): " + e.getMessage());
                 }

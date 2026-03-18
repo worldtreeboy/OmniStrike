@@ -122,6 +122,10 @@ public class ActiveScanExecutor {
                     return;
                 }
             }
+            // Final interrupt check: if shutdownNow() interrupted this thread
+            // after the sleep completed but before task execution, bail out.
+            if (Thread.currentThread().isInterrupted()) return;
+
             try {
                 task.run();
             } catch (NullPointerException e) {

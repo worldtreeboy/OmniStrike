@@ -849,6 +849,7 @@ public class DeserializationScanner implements ScanModule {
         }
 
         for (DeserPoint dp : deserPoints) {
+            if (Thread.currentThread().isInterrupted()) break;
             String dedupParam = dp.name + ":" + dp.language;
             if (!dedup.markIfNew("deser-scanner", urlPath, dedupParam)) continue;
             try {
@@ -916,6 +917,7 @@ public class DeserializationScanner implements ScanModule {
         // ==================== ACTIVE TESTING ====================
         // Test each identified serialization point
         for (DeserPoint dp : deserPoints) {
+            if (Thread.currentThread().isInterrupted()) break;
             String dedupParam = dp.name + ":" + dp.language;
             if (!dedup.markIfNew("deser-scanner", urlPath, dedupParam)) continue;
 
@@ -1506,6 +1508,7 @@ public class DeserializationScanner implements ScanModule {
     private void activeTestJava(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
         // Try each Java gadget chain
         for (String[] chainInfo : JAVA_TIME_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String chainName = chainInfo[0];
             String payload = chainInfo[1]; // Base64 gadget chain
 
@@ -1557,6 +1560,7 @@ public class DeserializationScanner implements ScanModule {
     private void activeTestDotNet(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
         // Phase 1: BinaryFormatter gadget chains — error-based
         for (String[] chainInfo : DOTNET_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String chainName = chainInfo[0];
             String payload = chainInfo[1];
 
@@ -1588,6 +1592,7 @@ public class DeserializationScanner implements ScanModule {
 
         // Phase 2: JSON.NET $type injection (TypeNameHandling attacks)
         for (String[] chainInfo : DOTNET_JSON_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String chainName = chainInfo[0];
             String payload = chainInfo[1];
 
@@ -1641,6 +1646,7 @@ public class DeserializationScanner implements ScanModule {
 
         // Phase 3: Time-based detection for BinaryFormatter chains
         for (String[] chainInfo : DOTNET_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String chainName = chainInfo[0];
             String payload = chainInfo[1];
 
@@ -1698,6 +1704,7 @@ public class DeserializationScanner implements ScanModule {
     private void activeTestPhp(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
         boolean reported500 = false;
         for (String[] payloadInfo : PHP_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -1748,6 +1755,7 @@ public class DeserializationScanner implements ScanModule {
 
     private void activeTestPython(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
         for (String[] payloadInfo : PYTHON_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -1795,6 +1803,7 @@ public class DeserializationScanner implements ScanModule {
 
     private void activeTestRuby(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
         for (String[] payloadInfo : RUBY_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -1865,6 +1874,7 @@ public class DeserializationScanner implements ScanModule {
 
     private void activeTestNodeJs(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
         for (String[] payloadInfo : NODEJS_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -1937,6 +1947,7 @@ public class DeserializationScanner implements ScanModule {
     private void activeTestJavaSubFrameworks(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
         // Fastjson @type injection
         for (String[] payloadInfo : JAVA_FASTJSON_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -1971,6 +1982,7 @@ public class DeserializationScanner implements ScanModule {
         String[][] jacksonPayloads = prioritizeJacksonPayloads(JAVA_JACKSON_PAYLOADS, original);
         boolean jacksonDefaultTypingConfirmed = false;
         for (String[] payloadInfo : jacksonPayloads) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -2031,6 +2043,7 @@ public class DeserializationScanner implements ScanModule {
         // Jackson XML payloads — test if Content-Type suggests XML processing
         if (isXmlContentType(original)) {
             for (String[] payloadInfo : JAVA_JACKSON_XML_PAYLOADS) {
+                if (Thread.currentThread().isInterrupted()) return;
                 String desc = payloadInfo[0];
                 String payload = payloadInfo[1];
                 HttpRequestResponse result = sendPayload(original, dp, payload);
@@ -2059,6 +2072,7 @@ public class DeserializationScanner implements ScanModule {
         // Jackson YAML payloads — test if Content-Type suggests YAML processing
         if (isYamlContentType(original)) {
             for (String[] payloadInfo : JAVA_JACKSON_YAML_PAYLOADS) {
+                if (Thread.currentThread().isInterrupted()) return;
                 String desc = payloadInfo[0];
                 String payload = payloadInfo[1];
                 HttpRequestResponse result = sendPayload(original, dp, payload);
@@ -2090,6 +2104,7 @@ public class DeserializationScanner implements ScanModule {
         // would just confirm the PTV is still blocking — not interesting enough to report twice.
         if (jacksonDefaultTypingConfirmed && collaboratorManager != null && collaboratorManager.isAvailable()) {
             for (String[] payloadInfo : JAVA_JACKSON_PTV_BYPASS_PAYLOADS) {
+                if (Thread.currentThread().isInterrupted()) return;
                 if (!payloadInfo[1].contains("COLLAB_PLACEHOLDER")) continue;
                 String desc = payloadInfo[0];
                 String payloadTemplate = payloadInfo[1];
@@ -2107,6 +2122,7 @@ public class DeserializationScanner implements ScanModule {
 
         // XStream XML injection
         for (String[] payloadInfo : JAVA_XSTREAM_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -2137,6 +2153,7 @@ public class DeserializationScanner implements ScanModule {
 
         // SnakeYAML injection
         for (String[] payloadInfo : JAVA_SNAKEYAML_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -2172,6 +2189,7 @@ public class DeserializationScanner implements ScanModule {
     private void activeTestPhpFrameworks(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
         boolean foundError = false;
         for (String[] payloadInfo : PHP_FRAMEWORK_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted()) return;
             String desc = payloadInfo[0];
             String payload = payloadInfo[1];
 
@@ -2347,6 +2365,7 @@ public class DeserializationScanner implements ScanModule {
 
         chainLoop:
         for (var entry : chains.entrySet()) {
+            if (Thread.currentThread().isInterrupted()) return;
             String chainName = entry.getKey();
             String[][] cmdTemplates = getOobCommandsForChain(chainName, genLang);
 
@@ -2362,6 +2381,7 @@ public class DeserializationScanner implements ScanModule {
                             DeserPayloadGenerator.Encoding.BASE64 };
 
             for (String[] cmdInfo : cmdTemplates) {
+                if (Thread.currentThread().isInterrupted()) return;
                 String cmdTemplate = cmdInfo[0];
                 String cmdLabel = cmdInfo[1];
                 String technique = chainName + " " + cmdLabel;
@@ -2375,6 +2395,7 @@ public class DeserializationScanner implements ScanModule {
                 String resolvedCmd = collaboratorManager.resolveTemplate(cmdTemplate, collabPayload);
 
                 for (DeserPayloadGenerator.Encoding enc : encodings) {
+                    if (Thread.currentThread().isInterrupted()) return;
                     try {
                         byte[] payloadBytes = DeserPayloadGenerator.generate(genLang, chainName, resolvedCmd, enc);
                         if (payloadBytes == null || payloadBytes.length == 0) continue;
@@ -2695,6 +2716,7 @@ public class DeserializationScanner implements ScanModule {
 
         // Send text-based OOB templates with Collaborator tracking
         for (String[] tmpl : oobTemplateList) {
+            if (Thread.currentThread().isInterrupted()) return;
             String payloadTemplate = tmpl[0];
             String technique = tmpl[1];
 
@@ -2719,6 +2741,7 @@ public class DeserializationScanner implements ScanModule {
             };
 
             for (String encoded : encodedPayloads) {
+                if (Thread.currentThread().isInterrupted()) return;
                 HttpRequestResponse result = sendPayload(original, dp, encoded);
                 sentRequest.compareAndSet(null, result);
                 perHostDelay();

@@ -82,12 +82,15 @@ public class PrototypePollutionScanner implements ScanModule {
             String url = request.url();
 
             // Phase 1: __proto__ detection
+            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
             testProtoInjection(requestResponse, url);
 
             // Phase 2: constructor.prototype alternative vector
+            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
             testConstructorPrototype(requestResponse, url);
 
             // Phase 3: Known gadgets (Express/Fastify)
+            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
             if (config.getBool("proto.gadgets.enabled", true)) {
                 testKnownGadgets(requestResponse, url);
             }
