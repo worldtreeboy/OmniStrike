@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.51-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.58-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
 **The last Burp extension you'll ever install.**
 
-18 active scanners. 6 passive analyzers. SQL exploitation engine. AI-powered fuzzing.<br/>
+22 active scanners. 6 passive analyzers. 4 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
 Technology profiling. Session automation. Custom OOB server. Zero false positives.<br/>
 **One JAR. One click. Everything.**
 
@@ -43,7 +43,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 
 ## What It Scans
 
-### 18 Active Injection Scanners
+### 18 Active Injection Scanners + 4 Auto-Triggered Technology Scanners
 
 | Scanner | What It Does |
 |:--------|:-------------|
@@ -65,6 +65,17 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 | **CSRF Manipulator** | 11 token manipulation tests: remove, empty, random, truncated, char flip, case swap, nonce reuse, Referer/Origin removal. |
 | **WebSocket** | Passive frame analysis + OOB-first active fuzzing across 8 injection categories (CSWSH, SQLi, CmdI, SSRF, SSTI, XSS, IDOR, AuthZ). |
 | **OmniMap** | Post-detection SQL exploitation engine. [Details below](#-omnimap--sql-exploitation-engine). |
+
+### 4 Auto-Triggered Technology Scanners
+
+These scanners **cannot be manually triggered**. They passively detect specific technologies in responses and automatically launch targeted attacks when confirmed. Zero noise on non-target systems.
+
+| Scanner | Trigger | Attack |
+|:--------|:--------|:-------|
+| **Dynamics 365 FetchXML** | D365 error patterns (`Microsoft.Xrm.Sdk`, `OrganizationServiceFault`, D365 error codes) | FetchXML injection: data exposure via `<all-attributes/>`, filter bypass tautologies, `<link-entity>` cross-entity joins, sensitive entity enumeration. Encoding-preserving (base64/URL/raw). |
+| **SAP OData Injection** | SAP error patterns (`SAP-ABAP`, `CX_SY_`, `/IWBEP/`) + SAP-specific headers | OData `$filter` injection, entity enumeration (S/4HANA `A_` prefix + legacy naming), `$expand` cross-entity access, `$metadata` exposure. |
+| **Salesforce SOQL Injection** | Salesforce error patterns (`MALFORMED_QUERY`, `System.QueryException`) + SF headers | SOQL filter tautology (`OR Id != null`), object enumeration (12 sensitive objects), `FIELDS(ALL)` field enumeration, SOSL search injection. |
+| **Firebase Misconfiguration** | Firebase URL patterns (`.firebaseio.com`, `firestore.googleapis.com`) | Unauthenticated read (`.json` suffix), write test with automatic cleanup, Firestore collection enumeration, Firebase Auth enumeration. |
 
 ### 6 Passive Analyzers
 
