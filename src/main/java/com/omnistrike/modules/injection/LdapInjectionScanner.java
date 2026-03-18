@@ -164,8 +164,6 @@ public class LdapInjectionScanner implements ScanModule {
             {"*)(objectClass=*", "*)(objectClass=zZzNonExistentClass999", "objectClass tautology vs impossible class"},
             // OR tautology vs AND contradiction
             {"*)(|(objectClass=*)", "*)(!(objectClass=*))", "OR-tautology vs NOT-all"},
-            // Simple wildcard vs extremely specific impossible value
-            {"*", "xX9nOnExIsTeNt8zZ7qQ", "Wildcard vs impossible literal value"},
     };
 
     // ==================== AUTH BYPASS PAYLOADS ====================
@@ -848,7 +846,7 @@ public class LdapInjectionScanner implements ScanModule {
     private boolean isAuthParameter(String paramName) {
         String lower = paramName.toLowerCase();
         for (String auth : AUTH_PARAM_NAMES) {
-            if (lower.equals(auth) || lower.contains(auth)) return true;
+            if (lower.equals(auth)) return true;
         }
         return false;
     }

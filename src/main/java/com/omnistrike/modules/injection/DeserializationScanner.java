@@ -54,8 +54,8 @@ public class DeserializationScanner implements ScanModule {
     private static final Pattern JAVA_RMI_PATTERN = Pattern.compile("(?i)\\bjrmp\\b|\\brmi\\b");
     private static final Set<String> JAVA_VULN_LIBRARIES = Set.of(
             "commons-collections", "commons-beanutils", "spring-core", "spring-beans",
-            "hibernate-core", "c3p0", "rome", "jboss", "jndi", "groovy",
-            "bsh", "clojure", "scala", "mozilla-rhino", "myfaces", "vaadin",
+            "hibernate-core", "c3p0", "rome-", "jboss", "jndi", "groovy",
+            "beanshell", "clojure", "scala-library", "mozilla-rhino", "myfaces", "vaadin",
             "xalan", "ognl", "log4j", "jackson-databind", "fastjson", "xstream",
             "snakeyaml", "kryo", "hessian", "dubbo", "shiro", "struts",
             "weblogic", "jenkins", "bamboo", "jira"
@@ -100,7 +100,7 @@ public class DeserializationScanner implements ScanModule {
 
     // Python serialization indicators
     private static final Pattern PYTHON_PICKLE_B64 = Pattern.compile("gASV[A-Za-z0-9+/=]"); // pickle protocol 4
-    private static final Pattern PYTHON_PICKLE_V2 = Pattern.compile("gAI[A-Za-z0-9+/=]"); // Base64 of pickle v2 header (0x80 0x02)
+    private static final Pattern PYTHON_PICKLE_V2 = Pattern.compile("gAI[A-Za-z0-9+/=]{8,}"); // Base64 of pickle v2 header (0x80 0x02)
     private static final Pattern PYTHON_YAML_UNSAFE = Pattern.compile(
             "(?i)yaml\\.load\\(|yaml\\.unsafe_load|!!python/object");
     private static final Pattern PYTHON_MARSHAL = Pattern.compile("(?i)marshal\\.loads");
@@ -108,7 +108,7 @@ public class DeserializationScanner implements ScanModule {
 
     // Ruby serialization indicators
     private static final Pattern RUBY_MARSHAL_B64 = Pattern.compile("BAh[bijIiUlxmc0NTYWVv][A-Za-z0-9+/=]");
-    private static final Pattern RUBY_MARSHAL_HEX = Pattern.compile("(?i)04\\s*08");
+    private static final Pattern RUBY_MARSHAL_HEX = Pattern.compile("(?i)(?:^|[^0-9])04\\s*08(?:[0-9a-f]|$)");
     private static final Pattern RUBY_YAML_UNSAFE = Pattern.compile(
             "!!ruby/object:|!!ruby/hash:|!!ruby/struct:|!!ruby/class:|!!ruby/module:|!!ruby/regexp:");
     private static final Pattern RUBY_ERB_TAGS = Pattern.compile("<%=?\\s*.*%>");

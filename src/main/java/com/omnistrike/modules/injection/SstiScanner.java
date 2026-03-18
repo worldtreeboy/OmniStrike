@@ -199,16 +199,16 @@ public class SstiScanner implements ScanModule {
             Map.entry("Mako", Pattern.compile("mako\\.exceptions|MakoException", Pattern.CASE_INSENSITIVE)),
             Map.entry("ERB", Pattern.compile("ActionView::Template::Error|ERB::Util", Pattern.CASE_INSENSITIVE)),
             Map.entry("Smarty", Pattern.compile("Smarty[_ ]error|SmartyException|Smarty_Internal", Pattern.CASE_INSENSITIVE)),
-            Map.entry("Pug", Pattern.compile("PugException|pug_error|unexpected token", Pattern.CASE_INSENSITIVE)),
+            Map.entry("Pug", Pattern.compile("PugException|pug_error|pug.*unexpected token|unexpected token.*pug", Pattern.CASE_INSENSITIVE)),
             Map.entry("Django", Pattern.compile("TemplateSyntaxError|django\\.template", Pattern.CASE_INSENSITIVE)),
             Map.entry("Razor", Pattern.compile("RazorEngine|System\\.Web\\.Mvc|CompilationError", Pattern.CASE_INSENSITIVE)),
-            Map.entry("Handlebars", Pattern.compile("Handlebars\\.Exception|handlebars.*error|Missing helper|Parse error", Pattern.CASE_INSENSITIVE)),
+            Map.entry("Handlebars", Pattern.compile("Handlebars\\.Exception|handlebars.*error|handlebars.*Missing helper|handlebars.*Parse error", Pattern.CASE_INSENSITIVE)),
             Map.entry("EJS", Pattern.compile("ejs.*error|EJS.*compile|ReferenceError.*ejs", Pattern.CASE_INSENSITIVE)),
             Map.entry("Nunjucks", Pattern.compile("nunjucks.*error|Template render error.*nunjucks", Pattern.CASE_INSENSITIVE)),
             Map.entry("doT.js", Pattern.compile("doT\\.template|doT.*error", Pattern.CASE_INSENSITIVE)),
-            Map.entry("Mustache", Pattern.compile("Mustache.*error|Missing.*tag|Unclosed.*section", Pattern.CASE_INSENSITIVE)),
-            Map.entry("Liquid", Pattern.compile("Liquid.*error|Liquid::SyntaxError|Unknown tag", Pattern.CASE_INSENSITIVE)),
-            Map.entry("Blade", Pattern.compile("Blade.*error|View.*not found|Undefined variable", Pattern.CASE_INSENSITIVE)),
+            Map.entry("Mustache", Pattern.compile("Mustache.*error|Mustache.*Missing.*tag|Mustache.*Unclosed.*section", Pattern.CASE_INSENSITIVE)),
+            Map.entry("Liquid", Pattern.compile("Liquid.*error|Liquid::SyntaxError|Liquid.*Unknown tag", Pattern.CASE_INSENSITIVE)),
+            Map.entry("Blade", Pattern.compile("Blade.*error|(?:Blade|Laravel).*View.*not found|(?:Blade|Laravel).*Undefined variable", Pattern.CASE_INSENSITIVE)),
             Map.entry("Groovy", Pattern.compile("groovy\\.lang|GroovyRuntimeException|MissingMethodException", Pattern.CASE_INSENSITIVE))
     );
 

@@ -1392,7 +1392,8 @@ public class GraphqlTool implements ScanModule {
         HttpRequestResponse result = guardedSendRequest(req);
         perHostDelay();
 
-        if (result != null && result.response() != null && result.response().statusCode() == 200) {
+        if (result != null && result.response() != null && result.response().statusCode() == 200
+                && !result.response().bodyToString().contains("\"errors\"")) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
                             "GraphQL No Query Depth Limiting",
                             Severity.INFO, Confidence.FIRM)
@@ -1713,9 +1714,9 @@ public class GraphqlTool implements ScanModule {
             hasDebugInfo = true;
             debugIndicators.add("tracing");
         }
-        if (respBody.contains("\"extensions\"") && (respBody.contains("\"debug\"") || respBody.contains("\"cacheControl\""))) {
+        if (respBody.contains("\"extensions\"") && respBody.contains("\"debug\"")) {
             hasDebugInfo = true;
-            debugIndicators.add("extensions.debug/cacheControl");
+            debugIndicators.add("extensions.debug");
         }
         if (respBody.contains("\"trace\"")) {
             hasDebugInfo = true;

@@ -73,8 +73,7 @@ public class CsrfManipulator implements ScanModule {
     // Headers that commonly carry CSRF tokens
     private static final List<Pattern> CSRF_HEADER_PATTERNS = List.of(
             Pattern.compile(".*csrf.*", Pattern.CASE_INSENSITIVE),
-            Pattern.compile(".*xsrf.*", Pattern.CASE_INSENSITIVE),
-            Pattern.compile("x-requested-with", Pattern.CASE_INSENSITIVE)
+            Pattern.compile(".*xsrf.*", Pattern.CASE_INSENSITIVE)
     );
 
     @Override

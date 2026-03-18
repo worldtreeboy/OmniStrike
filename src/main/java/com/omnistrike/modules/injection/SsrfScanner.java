@@ -160,8 +160,8 @@ public class SsrfScanner implements ScanModule {
     // Patterns indicating successful internal access — only highly specific markers
     // Removed overly generic words like "hostname" that appear in normal HTML pages
     private static final Pattern INTERNAL_RESPONSE_PATTERNS = Pattern.compile(
-            "root:x:0:0:|ami-[0-9a-f]+|instance-id|AccessKeyId|SecretAccessKey|" +
-                    "vmId|accountId|\\[extensions\\]|\\[fonts\\]|Linux version \\d|" +
+            "root:x:0:0:|ami-[0-9a-f]+|(?:instance-id|instance-type).*?(?:ami-|i-[0-9a-f])|AccessKeyId.*?(?:AKIA|ASIA)|" +
+                    "vmId.*?[0-9a-f]{8}-[0-9a-f]{4}|accountId.*?\\d{12}|\\[extensions\\]|\\[fonts\\]|Linux version \\d|" +
                     // Removed "access_token" — too generic, appears in OAuth responses.
                     // Kept cloud-specific patterns only.
                     "APIResourceList|local-ipv4|compute\\.internal|metadata\\.google\\.internal",
