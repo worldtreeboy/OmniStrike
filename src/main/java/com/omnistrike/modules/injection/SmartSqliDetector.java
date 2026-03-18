@@ -1014,6 +1014,10 @@ public class SmartSqliDetector implements ScanModule {
                 if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
 
                 int resultStatus = result.response().statusCode();
+                // Skip ALL 4xx responses — rate limiting, WAF blocks, auth failures, not-found etc.
+                // A real auth bypass produces 200 or 302, never 4xx.
+                if (resultStatus >= 400 && resultStatus < 500) { perHostDelay(); continue; }
+
                 String resultBody = result.response().bodyToString();
                 if (resultBody == null) resultBody = "";
                 int resultLength = resultBody.length();
