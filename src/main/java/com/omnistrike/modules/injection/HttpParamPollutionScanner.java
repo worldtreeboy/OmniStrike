@@ -142,6 +142,9 @@ public class HttpParamPollutionScanner implements ScanModule {
                     testParameterPrecedence(requestResponse, target, url, urlPath);
                 }
 
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Collections.emptyList();
             } catch (Exception e) {
                 api.logging().logToError("HPP test error on " + target.name + ": " + e.getMessage());
             }

@@ -252,12 +252,16 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             return;
         }
 
+        // Reset cancellation flag — new scan is starting
+        manualScansCancelled = false;
+        manualScanFutures.removeIf(Future::isDone);
+
         List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
         List<ScanModule> activeModules = registry.getEnabledActiveModules();
         String url = reqResp.request().url();
         uiLog("ManualScan", "Scanning " + url + " with ALL "
                 + (passiveModules.size() + activeModules.size()) + " enabled module(s)");
-        processWithModules(reqResp, passiveModules, activeModules);
+        processWithModulesTracked(reqResp, passiveModules, activeModules, null);
     }
 
     private void processWithModules(HttpRequestResponse reqResp,
@@ -267,18 +271,21 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         // Each module gets its own task so a slow one doesn't delay others.
         for (ScanModule module : passiveModules) {
             passiveExecutor.submit(() -> {
+                if (manualScansCancelled || Thread.currentThread().isInterrupted()) return;
                 try {
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
+                    if (manualScansCancelled || Thread.currentThread().isInterrupted()) return;
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                     }
                 } catch (NullPointerException e) {
                     // During extension unload Burp's API proxy becomes null — discard safely.
                     // But if we're still running, this is a real bug — log it.
-                    if (running) {
+                    if (running && !manualScansCancelled) {
                         uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
                     }
                 } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
                             + ": " + e.getMessage());
                 }
@@ -288,14 +295,17 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         // Active modules run on the active scan thread pool
         for (ScanModule module : activeModules) {
             executor.submit(() -> {
+                if (manualScansCancelled || Thread.currentThread().isInterrupted()) return;
                 try {
                     uiLog(module.getId(), "Processing: " + reqResp.request().url());
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
+                    if (manualScansCancelled || Thread.currentThread().isInterrupted()) return;
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                         uiLog(module.getId(), "Found " + findings.size() + " issue(s)");
                     }
                 } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
                     uiLog(module.getId(), "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
                 }
             });
@@ -381,6 +391,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     public int stopManualScans() {
         // Set the global cancellation flag FIRST — running tasks check this
         manualScansCancelled = true;
+        running = false;
 
         // Then cancel futures (handles queued-but-not-yet-started tasks)
         int cancelled = 0;
@@ -408,9 +419,31 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             return t;
         });
 
+        // Stop internal thread pools inside modules (e.g., BypassUrlParser, OmniMap, WebSocket)
+        stopModuleInternalPools();
+
         uiLog("ManualScan", "Stopped " + cancelled + " running + " + purged
                 + " active + " + passivePurged + " passive task(s)");
         return cancelled + purged + passivePurged;
+    }
+
+    /**
+     * Stops internal thread pools inside modules that manage their own executors.
+     * Called by stopManualScans() to ensure module-internal work is also cancelled.
+     */
+    private void stopModuleInternalPools() {
+        for (ScanModule module : registry.getAllModules()) {
+            try {
+                if (module instanceof com.omnistrike.modules.injection.BypassUrlParser) {
+                    ((com.omnistrike.modules.injection.BypassUrlParser) module).stopScan();
+                } else if (module instanceof com.omnistrike.framework.omnimap.OmniMapModule) {
+                    ((com.omnistrike.framework.omnimap.OmniMapModule) module).stopExploit();
+                } else if (module instanceof com.omnistrike.modules.websocket.WebSocketScanner) {
+                    ((com.omnistrike.modules.websocket.WebSocketScanner) module).getFuzzer().stopScan();
+                }
+            } catch (Exception ignored) {}
+        }
+        executor.resume();
     }
 
     /**

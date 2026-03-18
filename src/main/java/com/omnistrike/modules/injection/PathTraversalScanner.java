@@ -106,6 +106,9 @@ public class PathTraversalScanner implements ScanModule {
 
             try {
                 testTraversal(requestResponse, target);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Collections.emptyList();
             } catch (Exception e) {
                 api.logging().logToError("Path traversal test error on " + target.name + ": " + e.getMessage());
             }

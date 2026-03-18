@@ -199,7 +199,12 @@ public class StepperEngine {
 
         if (!cacheValid) {
             // Run the chain — serialize with lock so only one thread runs it
-            chainLock.lock();
+            try {
+                chainLock.lockInterruptibly();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return request; // return unmodified request
+            }
             try {
                 // Double-check after acquiring lock (another thread may have just run it)
                 long ageAfterLock = System.currentTimeMillis() - lastChainRunTime;
@@ -250,6 +255,7 @@ public class StepperEngine {
             uiLog("Stepper", "Running chain (" + currentSteps.size() + " steps)...");
 
             for (int i = 0; i < currentSteps.size(); i++) {
+                if (Thread.currentThread().isInterrupted()) break;
                 StepperStep step = currentSteps.get(i);
                 if (!step.isEnabled()) {
                     uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName() + "] — SKIPPED (disabled)");

@@ -75,6 +75,9 @@ public class CorsMisconfScanner implements ScanModule {
 
         try {
             testCors(requestResponse);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Collections.emptyList();
         } catch (Exception e) {
             api.logging().logToError("CORS test error on " + urlPath + ": " + e.getMessage());
         }
@@ -785,6 +788,9 @@ public class CorsMisconfScanner implements ScanModule {
                             .build());
                     return; // One JSONP hit is enough
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 // skip
             }
@@ -857,6 +863,9 @@ public class CorsMisconfScanner implements ScanModule {
                             .build());
                     return; // One hit proves inconsistency
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 // skip
             }

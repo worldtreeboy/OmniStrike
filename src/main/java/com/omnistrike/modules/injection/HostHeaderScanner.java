@@ -108,6 +108,9 @@ public class HostHeaderScanner implements ScanModule {
             // Phase 4: Override headers
             testOverrideHeaders(requestResponse, url);
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Collections.emptyList();
         } catch (Exception e) {
             api.logging().logToError("Host header test error on " + urlPath + ": " + e.getMessage());
         }
@@ -198,6 +201,9 @@ public class HostHeaderScanner implements ScanModule {
                             .build());
                     return;
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 api.logging().logToError("Host routing SSRF test failed for " + internalHost + ": " + e.getMessage());
             }
@@ -318,6 +324,9 @@ public class HostHeaderScanner implements ScanModule {
                             .build());
                 }
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
         } catch (Exception e) {
             api.logging().logToError("Duplicate Host test failed: " + e.getMessage());
         }
@@ -413,6 +422,9 @@ public class HostHeaderScanner implements ScanModule {
                         perHostDelay();
                     }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 api.logging().logToError("Override header test failed for " + header + ": " + e.getMessage());
             }

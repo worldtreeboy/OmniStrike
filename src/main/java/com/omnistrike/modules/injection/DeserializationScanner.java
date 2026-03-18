@@ -854,6 +854,9 @@ public class DeserializationScanner implements ScanModule {
             if (!dedup.markIfNew("deser-scanner", urlPath, dedupParam)) continue;
             try {
                 activeTest(requestResponse, dp);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Collections.emptyList();
             } catch (Exception e) {
                 api.logging().logToError("Deser active test error: " + e.getMessage());
             }
@@ -923,6 +926,9 @@ public class DeserializationScanner implements ScanModule {
 
             try {
                 activeTest(requestResponse, dp);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Collections.emptyList();
             } catch (Exception e) {
                 api.logging().logToError("Deser active test error: " + e.getMessage());
             }
@@ -2413,6 +2419,9 @@ public class DeserializationScanner implements ScanModule {
                     } catch (UnsupportedOperationException e) {
                         // Chain requires libraries not bundled (e.g., Spring, Hibernate) — skip entirely
                         continue chainLoop;
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
                     } catch (Exception e) {
                         api.logging().logToError("[Deser Generator] " + chainName + "/" + enc
                                 + " failed: " + e.getMessage());

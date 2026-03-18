@@ -2134,11 +2134,14 @@ public class GraphqlTool implements ScanModule {
      * Returns null if the response is not usable (WAF block, rate limit, etc.).
      */
     private HttpRequestResponse guardedSendRequest(HttpRequest request) {
+        if (Thread.currentThread().isInterrupted()) return null;
         try {
             HttpRequestResponse result = api.http().sendRequest(request);
+            if (Thread.currentThread().isInterrupted()) return null;
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.currentThread().isInterrupted()) return null;
             return null;
         }
     }

@@ -119,6 +119,9 @@ public class CsrfManipulator implements ScanModule {
 
         try {
             return testCsrf(requestResponse);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Collections.emptyList();
         } catch (Exception e) {
             api.logging().logToError("[CsrfManipulator] Error on " + urlPath + ": " + e.getMessage());
             return Collections.emptyList();

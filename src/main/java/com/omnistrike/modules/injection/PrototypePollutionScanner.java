@@ -95,6 +95,9 @@ public class PrototypePollutionScanner implements ScanModule {
                 testKnownGadgets(requestResponse, url);
             }
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return Collections.emptyList();
         } catch (Exception e) {
             api.logging().logToError("Prototype pollution test error on " + urlPath + ": " + e.getMessage());
         }
@@ -280,6 +283,9 @@ public class PrototypePollutionScanner implements ScanModule {
                     cleanupPollution(original, "status");
                 }
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
         } catch (Exception e) {
             api.logging().logToError("Status gadget probe failed: " + e.getMessage());
         }
@@ -343,6 +349,9 @@ public class PrototypePollutionScanner implements ScanModule {
                     }
                 }
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
         } catch (Exception e) {
             api.logging().logToError("Content-Type gadget probe failed: " + e.getMessage());
         }
@@ -402,6 +411,9 @@ public class PrototypePollutionScanner implements ScanModule {
                     }
                 }
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
         } catch (Exception e) {
             api.logging().logToError("JSON spaces gadget probe failed: " + e.getMessage());
         }

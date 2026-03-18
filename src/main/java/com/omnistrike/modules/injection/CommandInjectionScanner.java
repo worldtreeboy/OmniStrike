@@ -311,6 +311,9 @@ public class CommandInjectionScanner implements ScanModule {
 
             try {
                 testCommandInjection(requestResponse, target);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Collections.emptyList();
             } catch (Exception e) {
                 api.logging().logToError("CmdI test error on " + target.name + ": " + e.getMessage());
             }

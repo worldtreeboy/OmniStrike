@@ -232,6 +232,9 @@ public class SsrfScanner implements ScanModule {
 
             try {
                 testSsrf(requestResponse, target);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Collections.emptyList();
             } catch (Exception e) {
                 api.logging().logToError("SSRF test error on " + target.name + ": " + e.getMessage());
             }
@@ -368,6 +371,9 @@ public class SsrfScanner implements ScanModule {
                     hostSentRequest.set(hostResult);
                 }
                 perHostDelay();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 api.logging().logToError("Host header SSRF test failed: " + e.getMessage());
             }

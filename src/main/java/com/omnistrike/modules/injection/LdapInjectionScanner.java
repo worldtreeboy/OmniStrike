@@ -275,6 +275,9 @@ public class LdapInjectionScanner implements ScanModule {
 
             try {
                 testLdapInjection(requestResponse, target);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 api.logging().logToError("[LDAPI] Error testing '" + target.name + "': " + e.getMessage());
             }

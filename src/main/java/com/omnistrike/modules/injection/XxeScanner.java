@@ -339,6 +339,9 @@ public class XxeScanner implements ScanModule {
                 if (!dedup.markIfNew("xxe-xinclude", urlPath, target.name)) continue;
                 try {
                     testXInclude(requestResponse, target, url);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return Collections.emptyList();
                 } catch (Exception e) {
                     api.logging().logToError("XXE XInclude test error on " + target.name + ": " + e.getMessage());
                 }
@@ -375,6 +378,9 @@ public class XxeScanner implements ScanModule {
             if (dedup.markIfNew("xxe-scanner", urlPath, "__xml_body__")) {
                 try {
                     testXmlBody(requestResponse, url, fingerprint);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return Collections.emptyList();
                 } catch (Exception e) {
                     api.logging().logToError("XXE XML body test error: " + e.getMessage());
                 }
@@ -390,6 +396,9 @@ public class XxeScanner implements ScanModule {
                 if (!dedup.markIfNew("xxe-xinclude", urlPath, target.name)) continue;
                 try {
                     testXInclude(requestResponse, target, url);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return Collections.emptyList();
                 } catch (Exception e) {
                     api.logging().logToError("XXE XInclude test error on " + target.name + ": " + e.getMessage());
                 }
@@ -402,6 +411,9 @@ public class XxeScanner implements ScanModule {
             if (dedup.markIfNew("xxe-convert", urlPath, "__json_to_xml__")) {
                 try {
                     testContentTypeConversion(requestResponse, url);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return Collections.emptyList();
                 } catch (Exception e) {
                     api.logging().logToError("XXE Content-Type conversion test error: " + e.getMessage());
                 }
@@ -421,6 +433,9 @@ public class XxeScanner implements ScanModule {
                 if (dedup.markIfNew("xxe-force-ct", urlPath, "__force_xml__")) {
                     try {
                         testContentTypeForcing(requestResponse, url, fingerprint);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return Collections.emptyList();
                     } catch (Exception e) {
                         api.logging().logToError("XXE Content-Type forcing test error: " + e.getMessage());
                     }
@@ -1554,6 +1569,9 @@ public class XxeScanner implements ScanModule {
                                 .build());
                     }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception e) {
                 api.logging().logToError("[XXE] Content-Type bypass test error: " + e.getMessage());
             }
@@ -1855,6 +1873,9 @@ public class XxeScanner implements ScanModule {
                         return;
                     }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception ignored) {}
 
             perHostDelay();
@@ -1893,6 +1914,9 @@ public class XxeScanner implements ScanModule {
                         return;
                     }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception ignored) {}
 
             perHostDelay();
@@ -2104,6 +2128,9 @@ public class XxeScanner implements ScanModule {
                         return; // Confirmed — no need for more payloads
                     }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception ignored) {}
 
             perHostDelay();
@@ -2141,6 +2168,9 @@ public class XxeScanner implements ScanModule {
                         return;
                     }
                 }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception ignored) {}
 
             perHostDelay();
