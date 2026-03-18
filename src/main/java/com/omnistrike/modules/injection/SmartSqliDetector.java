@@ -85,7 +85,7 @@ public class SmartSqliDetector implements ScanModule {
                 Pattern.compile("SQLite.*?error", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("sqlite3\\.OperationalError", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("SQLITE_ERROR", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("unrecognized token", Pattern.CASE_INSENSITIVE)
+                Pattern.compile("(?:SQLite|sqlite3?).*?unrecognized token|unrecognized token.*?near\\s+\"", Pattern.CASE_INSENSITIVE)
         ));
         ERROR_PATTERNS.put("DB2", List.of(
                 Pattern.compile("DB2 SQL error", Pattern.CASE_INSENSITIVE),
@@ -110,7 +110,7 @@ public class SmartSqliDetector implements ScanModule {
         ));
         ERROR_PATTERNS.put("CockroachDB", List.of(
                 Pattern.compile("cockroach.*?error", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("CRDB", Pattern.CASE_INSENSITIVE)
+                Pattern.compile("\\bCRDB\\b.*?(?:error|panic|internal|syntax)", Pattern.CASE_INSENSITIVE)
         ));
         // Generic patterns — only include SQL-specific ones; removed OperationalError, DatabaseError,
         // ProgrammingError, DataError, IntegrityError, division by zero (too generic, match non-SQL errors)
@@ -130,15 +130,15 @@ public class SmartSqliDetector implements ScanModule {
                 Pattern.compile("java\\.sql\\.SQLException", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("System\\.Data\\.SqlClient", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("Npgsql\\.PostgresException", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("org\\.hibernate", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("org\\.hibernate\\.(?:exception|SQLQuery|QueryException|JDBCException)", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("jdbc\\.SQLServerException", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("\\bSQLException\\b", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("(?:sql|syntax|query|statement).*?\\bSQLException\\b|\\bSQLException\\b.*?(?:syntax|query|statement)", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("supplied argument is not a valid", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("Column count doesn't match", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("Unknown column", Pattern.CASE_INSENSITIVE),
+                Pattern.compile("Unknown column '.*?' in '(?:field list|where clause|on clause|order clause)'", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("Table .* doesn't exist", Pattern.CASE_INSENSITIVE),
                 Pattern.compile("Data truncated for column", Pattern.CASE_INSENSITIVE),
-                Pattern.compile("Duplicate entry", Pattern.CASE_INSENSITIVE)
+                Pattern.compile("Duplicate entry '.*?' for key", Pattern.CASE_INSENSITIVE)
         ));
     }
 
@@ -948,15 +948,14 @@ public class SmartSqliDetector implements ScanModule {
                             if (baselineEmpty && statusCode != 500) continue;
                             if (m.find() && !pattern.matcher(baselineBody != null ? baselineBody : "").find()) {
                                 String evidence = m.group();
-                                // Extra guard: when baseline is empty, require at least 2 DBMS-specific
-                                // error patterns in the same response to avoid FP on generic 500 pages
-                                if (baselineEmpty) {
-                                    int extraMatches = 0;
-                                    for (Pattern p2 : entry.getValue()) {
-                                        if (p2 != pattern && p2.matcher(responseBody).find()) extraMatches++;
-                                    }
-                                    if (extraMatches < 1) continue; // Require 2+ patterns total
+                                // Guard: require at least 2 matching DBMS-group patterns in the response,
+                                // OR 1 pattern + HTTP 500 status, to reduce false positives from single
+                                // keyword matches on error pages (applies to both empty and non-empty baselines)
+                                int extraMatches = 0;
+                                for (Pattern p2 : entry.getValue()) {
+                                    if (p2 != pattern && p2.matcher(responseBody).find()) extraMatches++;
                                 }
+                                if (extraMatches < 1 && statusCode != 500) continue; // Require 2+ patterns or 500 status
                                 findingsStore.addFinding(Finding.builder("sqli-detector",
                                                 "SQL Injection (Error-Based) - " + dbType,
                                                 Severity.HIGH, Confidence.FIRM)

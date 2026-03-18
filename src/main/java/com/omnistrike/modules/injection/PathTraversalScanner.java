@@ -809,6 +809,10 @@ public class PathTraversalScanner implements ScanModule {
     // ==================== DETECTION HELPERS ====================
 
     private ConfirmedRead detectConfirmedRead(String body, String checkType, String baselineBody) {
+        // Universal baseline guard: never confirm a file read without a valid baseline to compare against.
+        // Without baseline comparison, we cannot distinguish legitimate content from actual file reads.
+        if (baselineBody == null || baselineBody.isEmpty()) return null;
+
         // Avoid false positives: if the baseline already contains the pattern, skip
         switch (checkType) {
             case "UNIX_PASSWD": {
@@ -984,30 +988,30 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "WIN_BOOTINI": {
-                if ((body.contains("[boot loader]") || body.contains("multi("))
-                        && (baselineBody == null || !baselineBody.contains("[boot loader]"))) {
-                    return new ConfirmedRead("boot.ini content found");
+                if ((body.contains("[boot loader]") && (body.contains("multi(") || body.contains("[operating systems]")))
+                        && (!baselineBody.contains("[boot loader]") || !baselineBody.contains("multi("))) {
+                    return new ConfirmedRead("boot.ini content found ([boot loader] + multi/operating systems)");
                 }
                 break;
             }
             case "WIN_SYSTEMINI": {
-                if ((body.contains("[drivers]") || body.contains("[386Enh]"))
-                        && (baselineBody == null || !baselineBody.contains("[drivers]"))) {
-                    return new ConfirmedRead("system.ini content found");
+                if ((body.contains("[drivers]") && body.contains("[386Enh]"))
+                        && (!baselineBody.contains("[drivers]") || !baselineBody.contains("[386Enh]"))) {
+                    return new ConfirmedRead("system.ini content found ([drivers] + [386Enh])");
                 }
                 break;
             }
             case "WIN_PHPINI": {
-                if ((body.contains("[PHP]") || body.contains("extension_dir") || body.contains("display_errors"))
-                        && (baselineBody == null || !baselineBody.contains("[PHP]"))) {
-                    return new ConfirmedRead("php.ini content found");
+                if ((body.contains("[PHP]") && (body.contains("extension_dir") || body.contains("display_errors") || body.contains("error_reporting") || body.contains("max_execution_time")))
+                        && (!baselineBody.contains("[PHP]") || !(baselineBody.contains("extension_dir") || baselineBody.contains("display_errors") || baselineBody.contains("error_reporting") || baselineBody.contains("max_execution_time")))) {
+                    return new ConfirmedRead("php.ini content found ([PHP] + PHP directive)");
                 }
                 break;
             }
             case "WIN_WEBCONFIG": {
-                if ((body.contains("<configuration>") || body.contains("connectionString") || body.contains("appSettings"))
-                        && (baselineBody == null || !baselineBody.contains("<configuration>"))) {
-                    return new ConfirmedRead("web.config content found");
+                if ((body.contains("<configuration>") && (body.contains("connectionString") || body.contains("appSettings") || body.contains("<system.web>") || body.contains("<system.webServer>")))
+                        && (!baselineBody.contains("<configuration>") || !(baselineBody.contains("connectionString") || baselineBody.contains("appSettings") || baselineBody.contains("<system.web>") || baselineBody.contains("<system.webServer>")))) {
+                    return new ConfirmedRead("web.config content found (<configuration> + .NET element)");
                 }
                 break;
             }
