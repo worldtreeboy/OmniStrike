@@ -204,6 +204,21 @@ public class OmniStrikeExtension implements BurpExtension {
         firebase.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(firebase);
 
+        // SharePoint CAML Injection (auto-triggered, not user-triggerable)
+        SharePointCAMLScanner sharepoint = new SharePointCAMLScanner();
+        sharepoint.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(sharepoint);
+
+        // ServiceNow GlideRecord Injection (auto-triggered, not user-triggerable)
+        ServiceNowGlideScanner servicenow = new ServiceNowGlideScanner();
+        servicenow.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(servicenow);
+
+        // Apache Solr Query Injection (auto-triggered, not user-triggerable)
+        SolrQueryScanner solr = new SolrQueryScanner();
+        solr.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(solr);
+
         // WebSocket Scanner (passive + active fuzzing)
         WebSocketScanner wsScanner = new WebSocketScanner();
         wsScanner.setDependencies(dedup, findingsStore, collaboratorManager);

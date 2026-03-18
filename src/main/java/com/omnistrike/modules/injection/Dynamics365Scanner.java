@@ -44,13 +44,13 @@ public class Dynamics365Scanner implements ScanModule {
             "Microsoft\\.Xrm\\.Sdk|Microsoft\\.Crm|"
                     + "System\\.ServiceModel\\.FaultException.*Crm|"
                     + "Entity does not contain attribute|"
-                    + "The given key was not present in the dictionary.*entity|"
-                    + "0x80040216|0x80040217|0x80040220|0x80048408|0x80040203|"  // D365 error codes
+                    + "The given key was not present in the dictionary.*(?:Xrm|CrmSdk|Dataverse|attribute)|"
+                    + "(?:OrganizationServiceFault|CrmException|Microsoft\\.Xrm).*(?:0x80040216|0x80040217|0x80040220|0x80048408|0x80040203)|"  // D365 error codes — require CRM context (shared with DirectShow/CDO otherwise)
                     + "OrganizationServiceFault|"
                     + "fetchXml.*is not valid|"
                     + "Invalid FetchXML|"
                     + "Crm\\.CrmException|"
-                    + "Microsoft\\.Dynamics\\.\\w+Exception|"  // Require exception class, not bare brand name
+                    + "Microsoft\\.Dynamics\\.CRM\\.\\w+Exception|"  // CRM-specific, excludes NAV/GP/AX/F&O
                     + "The condition.*is not valid for attribute|"
                     + "The entity.*doesn't contain.*attribute|"
                     + "attribute.*does not exist on entity|"
@@ -70,10 +70,11 @@ public class Dynamics365Scanner implements ScanModule {
             Pattern.CASE_INSENSITIVE);
 
     // Response headers indicating D365 — only truly D365-specific headers
-    // Excluded: odata-version, preference-applied (generic OData), req_id (generic), ms-cv (all Azure)
+    // Excluded: odata-version, preference-applied (generic OData), req_id (generic), ms-cv (all Azure),
+    //           x-ms-service-request-id (generic Azure request tracking, not D365-specific)
     private static final Set<String> D365_HEADERS = Set.of(
             "x-ms-dynamics-organization", "x-ms-dyn-organization",
-            "x-ms-dynamics-request-uri", "x-ms-service-request-id");
+            "x-ms-dynamics-request-uri");
 
     // ── FetchXML injection payloads ─────────────────────────────────────────
 
@@ -445,7 +446,7 @@ public class Dynamics365Scanner implements ScanModule {
             if (status == 200 && body.length() > 50
                     && hasODataMarker && hasValueArray
                     && !body.toLowerCase().contains("does not exist")
-                    && !body.toLowerCase().contains("entity")
+                    && !body.toLowerCase().contains("entity does not contain")
                     && !body.toLowerCase().contains("not found")) {
 
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
