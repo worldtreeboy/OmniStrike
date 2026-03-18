@@ -184,6 +184,26 @@ public class OmniStrikeExtension implements BurpExtension {
         ldapi.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(ldapi);
 
+        // Dynamics 365 FetchXML Injection (auto-triggered, not user-triggerable)
+        Dynamics365Scanner d365 = new Dynamics365Scanner();
+        d365.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(d365);
+
+        // SAP OData Injection (auto-triggered, not user-triggerable)
+        SapODataScanner sapOData = new SapODataScanner();
+        sapOData.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(sapOData);
+
+        // Salesforce SOQL Injection (auto-triggered, not user-triggerable)
+        SalesforceSOQLScanner sfSoql = new SalesforceSOQLScanner();
+        sfSoql.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(sfSoql);
+
+        // Firebase Misconfiguration (auto-triggered, not user-triggerable)
+        FirebaseMisconfigScanner firebase = new FirebaseMisconfigScanner();
+        firebase.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(firebase);
+
         // WebSocket Scanner (passive + active fuzzing)
         WebSocketScanner wsScanner = new WebSocketScanner();
         wsScanner.setDependencies(dedup, findingsStore, collaboratorManager);

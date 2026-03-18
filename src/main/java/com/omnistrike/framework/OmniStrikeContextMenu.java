@@ -124,6 +124,10 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
                     if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
                     if ("ldapi-scanner".equals(m.getId())) continue; // LDAP Injection is right-click only
+                    if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
+                    if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
+                    if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
+                    if ("firebase-misconfig-scanner".equals(m.getId())) continue; // Firebase is auto-triggered only
                     if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
                     if (m.isPassive()) {
                         moduleIds.add(m.getId());
@@ -137,6 +141,10 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
                     if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
                     if ("ldapi-scanner".equals(m.getId())) continue; // LDAP Injection is right-click only
+                    if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
+                    if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
+                    if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
+                    if ("firebase-misconfig-scanner".equals(m.getId())) continue; // Firebase is auto-triggered only
                     if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
                     moduleIds.add(m.getId());
                     if (m.isPassive()) passive++;
@@ -364,6 +372,10 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
             if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
             if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
+            if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
+            if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
+            if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
+            if ("firebase-misconfig-scanner".equals(m.getId())) continue; // Firebase is auto-triggered only
             if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
             if (m.isPassive()) {
                 passiveModulesAll.add(m);
