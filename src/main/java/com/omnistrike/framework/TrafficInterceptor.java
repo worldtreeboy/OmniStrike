@@ -213,8 +213,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             return;
         }
 
-        // Reset cancellation flag — new scan is starting
+        // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
+        ScanState.reset();
 
         // Clean up completed futures before adding new ones
         manualScanFutures.removeIf(Future::isDone);
@@ -252,8 +253,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             return;
         }
 
-        // Reset cancellation flag — new scan is starting
+        // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
+        ScanState.reset();
         manualScanFutures.removeIf(Future::isDone);
 
         List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
@@ -389,8 +391,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
      * Returns the number of scans that were cancelled.
      */
     public int stopManualScans() {
-        // Set the global cancellation flag FIRST — running tasks check this
+        // Set the global cancellation flags FIRST — running tasks check these
         manualScansCancelled = true;
+        ScanState.cancel();
         running = false;
 
         // Then cancel futures (handles queued-but-not-yet-started tasks)

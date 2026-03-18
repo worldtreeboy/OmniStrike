@@ -697,6 +697,7 @@ public class SstiScanner implements ScanModule {
     }
 
     private HttpRequestResponse sendPayload(HttpRequestResponse original, InjectionTarget target, String payload) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
             HttpRequestResponse result = api.http().sendRequest(modified);

@@ -506,6 +506,7 @@ public class PrototypePollutionScanner implements ScanModule {
     }
 
     private HttpRequestResponse sendWithBody(HttpRequestResponse original, String body) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = original.request().withBody(body);
             HttpRequestResponse result = api.http().sendRequest(modified);

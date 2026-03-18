@@ -2761,6 +2761,7 @@ public class DeserializationScanner implements ScanModule {
     // ==================== HELPERS ====================
 
     private HttpRequestResponse sendPayload(HttpRequestResponse original, DeserPoint dp, String payload) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             // If the original value was base64-encoded, wrap the payload in base64 to match.
             // Skip if payload is already base64 (binary Java/Python/.NET payloads).

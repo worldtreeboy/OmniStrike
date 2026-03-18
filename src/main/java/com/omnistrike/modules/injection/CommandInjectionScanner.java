@@ -620,6 +620,7 @@ public class CommandInjectionScanner implements ScanModule {
     // ==================== HELPERS ====================
 
     private HttpRequestResponse sendPayload(HttpRequestResponse original, CmdiTarget target, String payload) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
             return api.http().sendRequest(modified);

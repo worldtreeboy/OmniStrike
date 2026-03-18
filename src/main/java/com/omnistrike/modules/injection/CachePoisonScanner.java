@@ -434,6 +434,7 @@ public class CachePoisonScanner implements ScanModule {
     // ==================== HELPERS ====================
 
     private HttpRequestResponse sendWithHeader(HttpRequestResponse original, String headerName, String value) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = original.request()
                     .withRemovedHeader(headerName)
@@ -447,6 +448,7 @@ public class CachePoisonScanner implements ScanModule {
     }
 
     private HttpRequestResponse sendWithQueryParam(HttpRequestResponse original, String paramName, String value) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = original.request()
                     .withUpdatedParameters(

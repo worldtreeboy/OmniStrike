@@ -1150,6 +1150,7 @@ public class PathTraversalScanner implements ScanModule {
     // ==================== PAYLOAD INJECTION ====================
 
     private HttpRequestResponse sendPayload(HttpRequestResponse original, TraversalTarget target, String payload) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
             HttpRequestResponse result = api.http().sendRequest(modified);

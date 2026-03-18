@@ -2134,6 +2134,7 @@ public class GraphqlTool implements ScanModule {
      * Returns null if the response is not usable (WAF block, rate limit, etc.).
      */
     private HttpRequestResponse guardedSendRequest(HttpRequest request) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         if (Thread.currentThread().isInterrupted()) return null;
         try {
             HttpRequestResponse result = api.http().sendRequest(request);

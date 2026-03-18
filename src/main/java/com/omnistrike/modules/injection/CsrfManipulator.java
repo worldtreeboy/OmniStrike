@@ -763,6 +763,7 @@ public class CsrfManipulator implements ScanModule {
     // ==================== UTILITY ====================
 
     private HttpRequestResponse sendRequest(HttpRequest request) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequestResponse result = api.http().sendRequest(request);
             if (!ResponseGuard.isUsableResponse(result)) return null;

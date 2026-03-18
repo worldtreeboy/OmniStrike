@@ -917,6 +917,7 @@ public class CorsMisconfScanner implements ScanModule {
     // ==================== HELPERS ====================
 
     private HttpRequestResponse sendWithOrigin(HttpRequestResponse original, String origin) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = original.request()
                     .withRemovedHeader("Origin")

@@ -854,6 +854,7 @@ public class LdapInjectionScanner implements ScanModule {
     }
 
     private HttpRequestResponse sendPayload(HttpRequestResponse original, LdapTarget target, String payload) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified;
             switch (target.type) {

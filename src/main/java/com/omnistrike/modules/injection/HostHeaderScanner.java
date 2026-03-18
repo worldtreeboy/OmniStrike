@@ -156,6 +156,7 @@ public class HostHeaderScanner implements ScanModule {
         sentHost.set(collabPayload);
 
         try {
+            if (com.omnistrike.framework.ScanState.isCancelled()) return;
             HttpRequest modified = original.request()
                     .withRemovedHeader("Host")
                     .withAddedHeader("Host", collabPayload);
@@ -175,6 +176,7 @@ public class HostHeaderScanner implements ScanModule {
         for (String internalHost : INTERNAL_HOSTS) {
             if (Thread.currentThread().isInterrupted()) return;
             try {
+                if (com.omnistrike.framework.ScanState.isCancelled()) return;
                 HttpRequest modified = original.request()
                         .withRemovedHeader("Host")
                         .withAddedHeader("Host", internalHost);
@@ -287,6 +289,7 @@ public class HostHeaderScanner implements ScanModule {
         // Get baseline to check if attacker string already exists
         String baselineBody = "";
         try {
+            if (com.omnistrike.framework.ScanState.isCancelled()) return;
             HttpRequestResponse baseline = api.http().sendRequest(original.request());
             if (ResponseGuard.isUsableResponse(baseline) && baseline != null && baseline.response() != null) {
                 baselineBody = baseline.response().bodyToString();
@@ -296,6 +299,7 @@ public class HostHeaderScanner implements ScanModule {
 
         String attackerHost = "attacker.com";
         try {
+            if (com.omnistrike.framework.ScanState.isCancelled()) return;
             // Add a second Host header (keep the original, add attacker's)
             HttpRequest modified = original.request()
                     .withAddedHeader("Host", attackerHost);
@@ -341,6 +345,7 @@ public class HostHeaderScanner implements ScanModule {
         // Get baseline response for comparison
         String baselineBody = "";
         try {
+            if (com.omnistrike.framework.ScanState.isCancelled()) return;
             HttpRequestResponse baseline = api.http().sendRequest(original.request());
             if (ResponseGuard.isUsableResponse(baseline) && baseline != null && baseline.response() != null) {
                 baselineBody = baseline.response().bodyToString();
@@ -356,6 +361,7 @@ public class HostHeaderScanner implements ScanModule {
                         ? "host=attacker.com"
                         : attackerValue;
 
+                if (com.omnistrike.framework.ScanState.isCancelled()) return;
                 HttpRequest modified = original.request()
                         .withRemovedHeader(header)
                         .withAddedHeader(header, headerValue);
@@ -412,6 +418,7 @@ public class HostHeaderScanner implements ScanModule {
                                 ? "host=" + collabPayload
                                 : collabPayload;
                         oobPayloadRef.set(oobHeaderValue);
+                        if (com.omnistrike.framework.ScanState.isCancelled()) return;
                         HttpRequest oobModified = original.request()
                                 .withRemovedHeader(header)
                                 .withAddedHeader(header, oobHeaderValue);

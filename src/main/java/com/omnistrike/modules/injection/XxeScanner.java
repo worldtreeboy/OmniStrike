@@ -2258,6 +2258,7 @@ public class XxeScanner implements ScanModule {
      * Sends the original request with a replaced body. Preserves all headers including Content-Type.
      */
     private HttpRequestResponse sendRawRequest(HttpRequestResponse original, String newBody) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = original.request().withBody(newBody);
             HttpRequestResponse result = api.http().sendRequest(modified);
@@ -2272,6 +2273,7 @@ public class XxeScanner implements ScanModule {
      * Sends a payload by injecting it into the target parameter (for XInclude testing).
      */
     private HttpRequestResponse sendPayload(HttpRequestResponse original, XxeTarget target, String payload) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
             HttpRequestResponse result = api.http().sendRequest(modified);

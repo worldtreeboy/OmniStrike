@@ -1966,6 +1966,7 @@ public class SmartSqliDetector implements ScanModule {
     // ==================== HELPER METHODS ====================
 
     private HttpRequestResponse sendWithPayload(HttpRequestResponse original, InjectionPoint ip, String payload) {
+        if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), ip, payload);
             return api.http().sendRequest(modified);
