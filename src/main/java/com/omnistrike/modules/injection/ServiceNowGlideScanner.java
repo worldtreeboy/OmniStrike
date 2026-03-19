@@ -410,10 +410,10 @@ public class ServiceNowGlideScanner implements ScanModule {
         }
 
         if (newSensitiveKeys.size() >= 2 && result.response().statusCode() == 200) {
-            // Only CRITICAL if password field exposed with non-empty value
+            // Only CRITICAL if password field exposed with non-empty, non-redacted value
             boolean hasPassword = newSensitiveKeys.contains("user_password")
                     && resultBody.contains("\"user_password\"")
-                    && !resultBody.matches("(?s).*\"user_password\"\\s*:\\s*\"\".*");
+                    && Pattern.compile("\"user_password\"\\s*:\\s*\"(?!\\s*\"|\\*+\")").matcher(resultBody).find();
             Severity sev = hasPassword ? Severity.CRITICAL : Severity.HIGH;
             findingsStore.addFinding(Finding.builder(MODULE_ID,
                             "ServiceNow Field Exposure -- " + newSensitiveKeys.size() + " Sensitive Fields",

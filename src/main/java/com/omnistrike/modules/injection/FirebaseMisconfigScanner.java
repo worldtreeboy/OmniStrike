@@ -37,12 +37,14 @@ public class FirebaseMisconfigScanner implements ScanModule {
 
     // -- Firebase detection patterns (passive gate) ----------------------------
 
-    // Error messages that confirm Firebase / Firestore
+    // Error messages that confirm Firebase / Firestore — only Firebase-exclusive
+    // Removed: "Missing or insufficient permissions" (generic Google Cloud, not Firebase-specific)
     private static final Pattern FIREBASE_ERROR_PATTERN = Pattern.compile(
             "FirebaseError|firebase\\..*exception|firebase.*auth.*error"
                     + "|firestore\\.googleapis|Firestore.*error"
                     + "|Permission denied.*firestore"
-                    + "|Missing or insufficient permissions"
+                    + "|Missing or insufficient permissions.*(?:firestore|firebase)"
+                    + "|(?:firestore|firebase).*Missing or insufficient permissions"
                     + "|firebase-auth",
             Pattern.CASE_INSENSITIVE);
 
@@ -330,7 +332,12 @@ public class FirebaseMisconfigScanner implements ScanModule {
         }
 
         // Immediately DELETE the test node to clean up (always execute -- even during cancellation)
-        perHostDelay();
+        // Wrap delay in try/catch so InterruptedException doesn't skip cleanup
+        try {
+            perHostDelay();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         sendDelete(testPath);
 
         if (confirmed) {

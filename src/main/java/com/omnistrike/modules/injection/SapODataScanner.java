@@ -74,11 +74,11 @@ public class SapODataScanner implements ScanModule {
 
     // -- Phase 2: Entity Enumeration -- sensitive SAP entities ----------------
 
+    // Only restricted entities — removed A_Product/MaterialSet/A_CompanyCode (accessible by design)
     private static final String[] SENSITIVE_ENTITIES = {
             "Users", "A_BusinessPartner", "BusinessPartnerSet", "A_SalesOrder", "SalesOrderSet",
-            "A_PurchaseOrder", "PurchaseOrderSet", "A_Product", "MaterialSet",
-            "A_CostCenter", "A_CompanyCode", "A_Supplier", "A_Customer",
-            "Employees", "EmployeeSet"
+            "A_PurchaseOrder", "PurchaseOrderSet", "A_Supplier", "A_Customer",
+            "A_CostCenter", "Employees", "EmployeeSet"
     };
 
     // -- Phase 3: $expand navigation properties -------------------------------

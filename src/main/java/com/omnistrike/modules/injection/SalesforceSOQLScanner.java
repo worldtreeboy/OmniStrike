@@ -40,24 +40,19 @@ public class SalesforceSOQLScanner implements ScanModule {
 
     // ── Salesforce detection patterns (passive gate) ─────────────────────────
 
-    // Error messages that confirm Salesforce / Apex / SOQL
+    // Only Salesforce-exclusive error patterns — removed generic tokens:
+    // MALFORMED_QUERY (Google/GraphQL), INVALID_FIELD (many APIs), INVALID_TYPE (generic),
+    // INVALID_OPERATION (.NET), sObject (JS var), SOQL (documentation), .force.com (body links),
+    // salesforce.com.*error (marketing), Apex\s+error/code (Oracle APEX/NVIDIA)
     private static final Pattern SF_ERROR_PATTERN = Pattern.compile(
-            "MALFORMED_QUERY|"
-                    + "System\\.QueryException|"
-                    + "INVALID_FIELD|"
-                    + "INVALID_TYPE|"
-                    + "sObject|"
-                    + "Apex\\s+(?:class|trigger|exception|error|code)|"
-                    + "Visualforce|"
+            "System\\.QueryException|"
                     + "System\\.SObjectException|"
-                    + "FIELD_INTEGRITY_EXCEPTION|"
-                    + "INVALID_OPERATION|"
-                    + "Apex\\s+trigger.*exception|"
-                    + "\\.force\\.com|"
-                    + "salesforce\\.com.*error|"
-                    + "SOQL|"
                     + "System\\.LimitException|"
-                    + "Too many SOQL queries",
+                    + "Visualforce|"
+                    + "FIELD_INTEGRITY_EXCEPTION|"
+                    + "Too many SOQL queries|"
+                    + "Apex\\s+(?:class|trigger)|"
+                    + "Apex\\s+trigger.*exception",
             Pattern.CASE_INSENSITIVE);
 
     // URL patterns that strongly indicate Salesforce endpoints
