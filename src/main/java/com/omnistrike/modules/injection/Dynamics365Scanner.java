@@ -57,7 +57,7 @@ public class Dynamics365Scanner implements ScanModule {
                     + "CrmHttpResponseException|"
                     + "SecLib::AccessCheckEx|"
                     + "Principal user.*lacks.*privilege|"
-                    + "0x80040265",
+                    + "(?:OrganizationServiceFault|CrmException|Microsoft\\.Xrm|Dataverse).*0x80040265",
             Pattern.CASE_INSENSITIVE);
 
     // URL patterns that strongly indicate D365/Dataverse endpoints
@@ -113,10 +113,10 @@ public class Dynamics365Scanner implements ScanModule {
     private static final Pattern BASE64_PATTERN = Pattern.compile(
             "^[A-Za-z0-9+/]{20,}={0,2}$");
 
-    // FetchXML parameter name hints
+    // FetchXML parameter name hints — removed $filter (OData syntax, not FetchXML)
     private static final Set<String> FETCHXML_PARAM_NAMES = Set.of(
             "fetchxml", "fetchxmlquery", "query", "savedquery", "userquery",
-            "xml", "fetch", "filter", "odata", "$filter");
+            "xml", "fetch", "filter");
 
     // ── ScanModule interface ────────────────────────────────────────────────
 
@@ -440,11 +440,13 @@ public class Dynamics365Scanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) body = "";
 
-            // Require OData marker AND "value" AND entity-specific field
+            // Require OData marker AND non-empty "value" array AND no error phrases
             boolean hasODataMarker = body.contains("@odata");
             boolean hasValueArray = body.contains("\"value\"");
+            // Reject empty value arrays — D365 returns "value":[] for access-denied or no-data
+            boolean hasEmptyValue = body.contains("\"value\":[]") || body.contains("\"value\": []");
             if (status == 200 && body.length() > 50
-                    && hasODataMarker && hasValueArray
+                    && hasODataMarker && hasValueArray && !hasEmptyValue
                     && !body.toLowerCase().contains("does not exist")
                     && !body.toLowerCase().contains("entity does not contain")
                     && !body.toLowerCase().contains("not found")) {

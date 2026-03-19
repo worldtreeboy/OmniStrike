@@ -219,6 +219,11 @@ public class OmniStrikeExtension implements BurpExtension {
         solr.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(solr);
 
+        // Odoo Domain Filter Injection (auto-triggered, not user-triggerable)
+        OdooDomainScanner odoo = new OdooDomainScanner();
+        odoo.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(odoo);
+
         // WebSocket Scanner (passive + active fuzzing)
         WebSocketScanner wsScanner = new WebSocketScanner();
         wsScanner.setDependencies(dedup, findingsStore, collaboratorManager);

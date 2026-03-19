@@ -131,6 +131,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     if ("sharepoint-caml-scanner".equals(m.getId())) continue; // SharePoint CAML is auto-triggered only
                     if ("servicenow-glide-scanner".equals(m.getId())) continue; // ServiceNow is auto-triggered only
                     if ("solr-query-scanner".equals(m.getId())) continue; // Solr is auto-triggered only
+                    if ("odoo-domain-scanner".equals(m.getId())) continue; // Odoo is auto-triggered only
                     if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
                     if (m.isPassive()) {
                         moduleIds.add(m.getId());
@@ -151,6 +152,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     if ("sharepoint-caml-scanner".equals(m.getId())) continue; // SharePoint CAML is auto-triggered only
                     if ("servicenow-glide-scanner".equals(m.getId())) continue; // ServiceNow is auto-triggered only
                     if ("solr-query-scanner".equals(m.getId())) continue; // Solr is auto-triggered only
+                    if ("odoo-domain-scanner".equals(m.getId())) continue; // Odoo is auto-triggered only
                     if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
                     moduleIds.add(m.getId());
                     if (m.isPassive()) passive++;
@@ -382,6 +384,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
             if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
             if ("firebase-misconfig-scanner".equals(m.getId())) continue; // Firebase is auto-triggered only
+            if ("odoo-domain-scanner".equals(m.getId())) continue; // Odoo is auto-triggered only
             if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
             if (m.isPassive()) {
                 passiveModulesAll.add(m);
