@@ -224,6 +224,16 @@ public class OmniStrikeExtension implements BurpExtension {
         odoo.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(odoo);
 
+        // Elasticsearch Query Injection (auto-triggered, not user-triggerable)
+        ElasticsearchQueryScanner elasticsearch = new ElasticsearchQueryScanner();
+        elasticsearch.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(elasticsearch);
+
+        // Spring Boot Actuator Exposure (auto-triggered, not user-triggerable)
+        SpringActuatorScanner springActuator = new SpringActuatorScanner();
+        springActuator.setDependencies(dedup, findingsStore, collaboratorManager);
+        registry.registerModule(springActuator);
+
         // WebSocket Scanner (passive + active fuzzing)
         WebSocketScanner wsScanner = new WebSocketScanner();
         wsScanner.setDependencies(dedup, findingsStore, collaboratorManager);
