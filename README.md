@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.58-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.62-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
 **The last Burp extension you'll ever install.**
 
-22 active scanners. 6 passive analyzers. 4 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
+22 active scanners. 6 passive analyzers. 11 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
 Technology profiling. Session automation. Custom OOB server. Zero false positives.<br/>
 **One JAR. One click. Everything.**
 
@@ -43,7 +43,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 
 ## What It Scans
 
-### 18 Active Injection Scanners + 4 Auto-Triggered Technology Scanners
+### 18 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
 
 | Scanner | What It Does |
 |:--------|:-------------|
@@ -66,16 +66,23 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 | **WebSocket** | Passive frame analysis + OOB-first active fuzzing across 8 injection categories (CSWSH, SQLi, CmdI, SSRF, SSTI, XSS, IDOR, AuthZ). |
 | **OmniMap** | Post-detection SQL exploitation engine. [Details below](#-omnimap--sql-exploitation-engine). |
 
-### 4 Auto-Triggered Technology Scanners
+### 11 Auto-Triggered Technology Scanners
 
-These scanners **cannot be manually triggered**. They passively detect specific technologies in responses and automatically launch targeted attacks when confirmed. Zero noise on non-target systems.
+These scanners **cannot be manually triggered**. They passively detect specific technologies in responses and automatically launch targeted attacks when confirmed. Zero noise on non-target systems. Each scanner's detection gate uses only technology-exclusive patterns — no generic error strings.
 
 | Scanner | Trigger | Attack |
 |:--------|:--------|:-------|
-| **Dynamics 365 FetchXML** | D365 error patterns (`Microsoft.Xrm.Sdk`, `OrganizationServiceFault`, D365 error codes) | FetchXML injection: data exposure via `<all-attributes/>`, filter bypass tautologies, `<link-entity>` cross-entity joins, sensitive entity enumeration. Encoding-preserving (base64/URL/raw). |
+| **Dynamics 365 FetchXML** | D365 error patterns (`Microsoft.Xrm.Sdk`, `OrganizationServiceFault`, CRM-context error codes) + D365 headers | FetchXML injection: data exposure via `<all-attributes/>`, filter bypass tautologies, `<link-entity>` cross-entity joins, sensitive entity enumeration. Encoding-preserving (base64/URL/raw). |
 | **SAP OData Injection** | SAP error patterns (`SAP-ABAP`, `CX_SY_`, `/IWBEP/`) + SAP-specific headers | OData `$filter` injection, entity enumeration (S/4HANA `A_` prefix + legacy naming), `$expand` cross-entity access, `$metadata` exposure. |
-| **Salesforce SOQL Injection** | Salesforce error patterns (`MALFORMED_QUERY`, `System.QueryException`) + SF headers | SOQL filter tautology (`OR Id != null`), object enumeration (12 sensitive objects), `FIELDS(ALL)` field enumeration, SOSL search injection. |
-| **Firebase Misconfiguration** | Firebase URL patterns (`.firebaseio.com`, `firestore.googleapis.com`) | Unauthenticated read (`.json` suffix), write test with automatic cleanup, Firestore collection enumeration, Firebase Auth enumeration. |
+| **Salesforce SOQL Injection** | Salesforce-exclusive patterns (`System.QueryException`, `System.SObjectException`, `Visualforce`) + SF headers | SOQL filter tautology (`OR Id != null`), object enumeration (12 sensitive objects), `FIELDS(ALL)` field enumeration, SOSL search injection. |
+| **Firebase Misconfiguration** | Firebase URL patterns (`.firebaseio.com`, `firestore.googleapis.com`) + config triple-check (`projectId`+`storageBucket`+`apiKey`) | Unauthenticated read (`.json` suffix), write test with automatic cleanup, Firestore collection enumeration with differential probe, Firebase Auth enumeration (signInWithPassword + createAuthUri). |
+| **SharePoint CAML Injection** | SP error patterns (`Microsoft.SharePoint`, `\bSPWeb\b`, `Invalid CAML`) + SP-specific headers (`sprequestguid`, `x-sharepointhealthscore`) | CAML filter injection (tautology), ViewFields expansion (JSON key format), REST list enumeration (mandatory `odata.metadata` marker), cross-list joins with `<ProjectedFields>` verification. |
+| **ServiceNow GlideRecord** | SN error patterns (`GlideRecord`, `GlideSystem`, `com.glide.(db\|script\|processors)`) + `x-is-logged-in` header | Encoded query injection (tautology/wildcard), table enumeration with differential probe, field exposure filtered to `SENSITIVE_FIELDS` set, ACL bypass via dot-walking with password value validation. |
+| **Apache Solr Query** | Solr error patterns (`SolrException`, `org.apache.solr`) + `/solr/` URL + body markers (`responseHeader`, `numFound`) | `*:*` query injection with `numFound` differential, `fl=*` field enumeration, admin endpoint probes (`_cat/indices` equivalent) with differential, streaming expression detection, SSRF via shards (connection-error only). |
+| **Odoo Domain Filter** | Odoo-exclusive patterns (`odoo.exceptions.*`, `openerp.exceptions`) + 3-signal URL gate (Odoo URL + JSON-RPC body + `odoo.` body marker) | Domain filter tautology (correct Polish-notation OR for multi-clause domains), admin-only model enumeration (7 restricted models), field exposure with non-trivial value validation, `fields_get` schema probing at INFO severity. |
+| **Elasticsearch Query** | ES-exclusive patterns (`ElasticsearchException`, `org.elasticsearch.`, `SearchPhaseExecutionException`) + URL/body dual-signal | `*:*` query injection with `total_hits` differential (anchored to `hits` context, ES 6.x/7.x+), index enumeration (`_cat/indices`, `_cluster/health`, `_nodes`), `_source=*` field exposure, `_exists_` query syntax confirmation. |
+| **Spring Boot Actuator** | Spring-exclusive patterns (`Whitelabel Error Page`, `org.springframework.`, `DispatcherServlet`) + actuator URL/HAL JSON dual-signal | Actuator root discovery with differential, 15 sensitive endpoint probes with per-endpoint JSON validation (`env`/`configprops`/`heapdump`/`mappings`/`httptrace`/`sessions`/etc.), legacy Spring Boot 1.x paths with differential probes. Binary Content-Type validation for heapdump. Per-host dedup. |
+| **WordPress REST API** | *(Coming soon)* | User enumeration, exposed drafts, plugin enumeration. |
 
 ### 6 Passive Analyzers
 
