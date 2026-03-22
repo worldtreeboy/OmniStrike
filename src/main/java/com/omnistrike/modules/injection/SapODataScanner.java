@@ -291,6 +291,36 @@ public class SapODataScanner implements ScanModule {
             }
             perHostDelay();
         }
+
+        // Payload 3: Boolean tautology — true eq true (OData v4)
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        {
+            String boolPayload = target.decodedValue + " or true eq true";
+            HttpRequestResponse result = sendPayload(original, target, boolPayload);
+            if (result != null && result.response() != null
+                    && result.response().statusCode() < 400
+                    && ResponseGuard.isUsableResponse(result)) {
+                String resultBody = result.response().bodyToString();
+                if (resultBody == null) resultBody = "";
+                int resultRows = countResultRows(resultBody);
+
+                if (resultRows > baselineRows + 2
+                        && result.response().statusCode() == 200) {
+                    findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                    "SAP OData Filter Injection — Boolean Tautology",
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(url).parameter(target.name)
+                            .evidence("Injected ' or true eq true' returned " + resultRows
+                                    + " rows vs baseline " + baselineRows + " rows.")
+                            .payload(boolPayload)
+                            .requestResponse(result)
+                            .build());
+                    perHostDelay();
+                    return;
+                }
+            }
+            perHostDelay();
+        }
     }
 
     // -- Phase 2: Entity Enumeration ------------------------------------------
@@ -579,6 +609,7 @@ public class SapODataScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -603,6 +634,7 @@ public class SapODataScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -621,6 +653,7 @@ public class SapODataScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }

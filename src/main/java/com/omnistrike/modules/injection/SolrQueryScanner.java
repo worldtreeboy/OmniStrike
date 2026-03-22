@@ -264,6 +264,42 @@ public class SolrQueryScanner implements ScanModule {
             }
             perHostDelay();
         }
+
+        // Test 3: Range wildcard — _val_:"1" (function query, always returns score)
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        {
+            String rangePayload = target.originalValue + " OR _val_:\"1\"";
+            HttpRequestResponse result = sendPayload(original, target, rangePayload);
+            if (result != null && result.response() != null
+                    && !(result.response().statusCode() >= 400 && result.response().statusCode() < 500)) {
+                if (ResponseGuard.isUsableResponse(result)) {
+                    String resultBody = result.response().bodyToString();
+                    if (resultBody == null) resultBody = "";
+                    int resultNumFound = extractNumFound(resultBody);
+
+                    if (resultNumFound > baselineNumFound + 2
+                            && baselineNumFound >= 0 && resultNumFound >= 0
+                            && resultBody.contains("\"response\"")
+                            && resultBody.contains("\"docs\"")
+                            && result.response().statusCode() == 200
+                            && !resultBody.equals(baselineBody)) {
+                        findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                        "Solr Query Injection — Function Query (_val_)",
+                                        Severity.HIGH, Confidence.FIRM)
+                                .url(url).parameter(target.name)
+                                .evidence("Injected _val_ function query returned numFound=" + resultNumFound
+                                        + " vs baseline numFound=" + baselineNumFound
+                                        + ". Function query syntax was interpreted.")
+                                .payload(rangePayload)
+                                .requestResponse(result)
+                                .build());
+                        perHostDelay();
+                        return;
+                    }
+                }
+            }
+            perHostDelay();
+        }
     }
 
     // ── Phase 2: Field Enumeration ──────────────────────────────────────────
@@ -634,6 +670,7 @@ public class SolrQueryScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -653,6 +690,7 @@ public class SolrQueryScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -677,6 +715,7 @@ public class SolrQueryScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -704,6 +743,7 @@ public class SolrQueryScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }

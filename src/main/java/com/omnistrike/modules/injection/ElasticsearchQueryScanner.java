@@ -257,7 +257,51 @@ public class ElasticsearchQueryScanner implements ScanModule {
             perHostDelay();
         }
 
-        // Test 2: Tautology — append OR *:* to existing query
+        // Test 2: JSON DSL body injection — if the request has a JSON body with "query", try match_all
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        {
+            String requestBody = original.request().bodyToString();
+            if (requestBody != null && requestBody.contains("\"query\"") && requestBody.contains("{")) {
+                String matchAllBody = requestBody.replaceFirst(
+                        "\"query\"\\s*:\\s*\\{[^}]*\\}",
+                        "\"query\":{\"match_all\":{}}");
+                if (!matchAllBody.equals(requestBody)) {
+                    HttpRequest modified = original.request().withBody(matchAllBody);
+                    HttpRequestResponse result = sendModifiedRequest(original, modified);
+                    if (result != null && result.response() != null
+                            && !(result.response().statusCode() >= 400 && result.response().statusCode() < 500)) {
+                        if (ResponseGuard.isUsableResponse(result)) {
+                            String resultBody = result.response().bodyToString();
+                            if (resultBody == null) resultBody = "";
+                            int resultHits = extractTotalHits(resultBody);
+
+                            if (resultHits > baselineHits + 2
+                                    && baselineHits >= 0 && resultHits >= 0
+                                    && resultBody.contains("\"hits\"")
+                                    && resultBody.contains("\"_source\"")
+                                    && result.response().statusCode() == 200
+                                    && !resultBody.equals(baselineBody)) {
+                                findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                                "Elasticsearch Query Injection — JSON DSL match_all",
+                                                Severity.HIGH, Confidence.FIRM)
+                                        .url(url).parameter("request body (JSON DSL)")
+                                        .evidence("Replaced query with match_all:{} returned total_hits=" + resultHits
+                                                + " vs baseline total_hits=" + baselineHits
+                                                + ". JSON query DSL injection confirmed.")
+                                        .payload("{\"query\":{\"match_all\":{}}}")
+                                        .requestResponse(result)
+                                        .build());
+                                perHostDelay();
+                                return;
+                            }
+                        }
+                    }
+                    perHostDelay();
+                }
+            }
+        }
+
+        // Test 3: Tautology — append OR *:* to existing query
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
         {
             String tautologyPayload = target.originalValue + " OR *:*";
@@ -578,6 +622,23 @@ public class ElasticsearchQueryScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
+            return null;
+        }
+    }
+
+    /**
+     * Send a pre-modified request (used for JSON body injection where we replace the body directly).
+     */
+    private HttpRequestResponse sendModifiedRequest(HttpRequestResponse original, HttpRequest modified) {
+        if (ScanState.isCancelled()) return null;
+
+        try {
+            HttpRequestResponse result = api.http().sendRequest(modified);
+            if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
+            return result;
+        } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -594,6 +655,7 @@ public class ElasticsearchQueryScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -616,6 +678,7 @@ public class ElasticsearchQueryScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }

@@ -89,6 +89,9 @@ public class SpringActuatorScanner implements ScanModule {
             {"/actuator/flyway", "Flyway DB migration info (reveals DB schema changes)", "MEDIUM"},
             {"/actuator/liquibase", "Liquibase DB migration info", "MEDIUM"},
             {"/actuator/sessions", "Active sessions (if Spring Session enabled)", "HIGH"},
+            {"/actuator/jolokia/list", "Jolokia JMX access — may enable RCE via MBeans", "CRITICAL"},
+            {"/actuator/gateway/routes", "Spring Cloud Gateway routes — may reveal backends (CVE-2022-22947)", "HIGH"},
+            {"/actuator/prometheus", "Prometheus metrics endpoint (leaks internal metric names)", "MEDIUM"},
     };
 
     // Also try legacy Spring Boot 1.x paths (without /actuator prefix)
@@ -499,6 +502,21 @@ public class SpringActuatorScanner implements ScanModule {
             // Heapdump is binary — just check it's large enough
             return body.length() > 1000;
         }
+        if (path.contains("/jolokia")) {
+            // Jolokia returns JSON with "value" containing MBean info
+            return body.contains("\"value\"") && body.contains("\"request\"")
+                    && body.contains("\"status\"");
+        }
+        if (path.contains("/gateway/routes")) {
+            // Spring Cloud Gateway returns array of route objects
+            return body.contains("\"route_id\"") || body.contains("\"predicate\"")
+                    || body.contains("\"uri\"");
+        }
+        if (path.contains("/prometheus")) {
+            // Prometheus metrics in text format (not JSON)
+            return body.contains("# HELP") || body.contains("# TYPE")
+                    || body.contains("jvm_memory") || body.contains("http_server_requests");
+        }
 
         // Default: require at least JSON-like structure
         return body.startsWith("{") || body.startsWith("[");
@@ -535,6 +553,7 @@ public class SpringActuatorScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }

@@ -642,6 +642,7 @@ public class OdooDomainScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -682,6 +683,7 @@ public class OdooDomainScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }

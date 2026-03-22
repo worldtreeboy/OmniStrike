@@ -76,6 +76,10 @@ public class SharePointCAMLScanner implements ScanModule {
                     "ID >= 0 tautology"},
             {"<Where><IsNotNull><FieldRef Name='ID'/></IsNotNull></Where>",
                     "ID IsNotNull tautology"},
+            {"<Where><Neq><FieldRef Name='ID'/><Value Type='Counter'>0</Value></Neq></Where>",
+                    "ID != 0 negation tautology"},
+            {"<Where><IsNotNull><FieldRef Name='Created'/></IsNotNull></Where>",
+                    "Created IsNotNull tautology"},
     };
 
     // Phase 2: ViewFields Expansion -- request extra columns not in baseline
@@ -630,6 +634,7 @@ public class SharePointCAMLScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
@@ -662,6 +667,7 @@ public class SharePointCAMLScanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }

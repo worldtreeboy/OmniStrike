@@ -91,6 +91,8 @@ public class Dynamics365Scanner implements ScanModule {
             {"<condition attribute='statecode' operator='ge' value='0'/>", "statecode tautology"},
             {"<condition attribute='createdon' operator='not-null'/>", "createdon not-null tautology"},
             {"<condition attribute='modifiedon' operator='not-null'/>", "modifiedon not-null tautology"},
+            {"<condition attribute='versionnumber' operator='not-null'/>", "versionnumber not-null tautology"},
+            {"<condition attribute='ownerid' operator='not-null'/>", "ownerid not-null tautology"},
     };
 
     // Phase 3: Cross-entity join — link-entity to access related data
@@ -603,6 +605,7 @@ public class Dynamics365Scanner implements ScanModule {
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
+            if (Thread.interrupted()) Thread.currentThread().interrupt();
             return null;
         }
     }
