@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.62-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.63-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
 **The last Burp extension you'll ever install.**
 
-22 active scanners. 6 passive analyzers. 11 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
+23 active scanners. 6 passive analyzers. 11 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
 Technology profiling. Session automation. Custom OOB server. Zero false positives.<br/>
 **One JAR. One click. Everything.**
 
@@ -43,7 +43,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 
 ## What It Scans
 
-### 18 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
+### 19 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
 
 | Scanner | What It Does |
 |:--------|:-------------|
@@ -51,6 +51,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 | **Command Injection** | 3-step time verification, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/backtick/encoding bypasses. |
 | **SSRF** | Collaborator OOB, cloud metadata with multi-marker validation (AWS/Azure/GCP/Oracle), DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads. |
 | **SSTI** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
+| **XSS** | 7-phase detection: blind OOB via Collaborator, reflection context analysis (8 contexts), context-aware breakout, encoding bypass, CSTI (Angular/Vue/Svelte), framework-specific (React/Vue/Angular), WAF evasion (13 mutation variants). Zero FP via canary + breakout confirmation. |
 | **XXE** | 4-phase: XML body + XInclude + JSON-to-XML + Content-Type forcing. UTF-16 bypass, SAML detection, 14 OOB payloads. |
 | **Deserialization** | 6 languages, 137+ gadget chains (Java/PHP/.NET/Python/Ruby/Node.js). Jackson Tier 2 gadgets with PTV bypass probes. Passive fingerprinting + OOB-first detection. |
 | **Path Traversal** | 24 Unix + 9 Windows targets, 26 encoding bypasses, PHP wrappers, structural content validation with multi-marker confirmation. |
