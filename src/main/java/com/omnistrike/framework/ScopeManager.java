@@ -56,6 +56,11 @@ public class ScopeManager {
         return targetDomains;
     }
 
+    /** Returns true if at least one target domain has been configured. */
+    public boolean hasScope() {
+        return !targetDomains.isEmpty();
+    }
+
     public boolean isInScope(String host) {
         if (host == null) return false;
         Set<String> domains = targetDomains;

@@ -30,6 +30,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     private volatile boolean running = false;
     private volatile BiConsumer<String, String> uiLogger;
     private volatile StepperEngine stepperEngine;
+    private volatile SessionKeepAlive sessionKeepAlive;
 
     // Static file extensions — active injection scanners are skipped for these.
     // Passive analyzers still run (Client-Side Analyzer, Hidden Endpoint Finder, etc.)
@@ -100,6 +101,10 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         this.stepperEngine = engine;
     }
 
+    public void setSessionKeepAlive(SessionKeepAlive keepAlive) {
+        this.sessionKeepAlive = keepAlive;
+    }
+
     public void setRunning(boolean running) {
         this.running = running;
     }
@@ -110,13 +115,31 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
     @Override
     public RequestToBeSentAction handleHttpRequestToBeSent(HttpRequestToBeSent request) {
+        HttpRequest current = request;
+
+        // SessionKeepAlive: inject fresh cookies from the periodic login replay.
+        // Domain-scoped — only injects into requests matching the login request's domain.
+        try {
+            SessionKeepAlive keepAlive = sessionKeepAlive;
+            if (keepAlive != null && keepAlive.isEnabled()) {
+                String host = request.httpService().host();
+                java.util.Map<String, String> freshCookies = keepAlive.getFreshCookiesForHost(host);
+                if (!freshCookies.isEmpty()) {
+                    current = injectCookies(current, freshCookies);
+                }
+            }
+        } catch (Exception e) {
+            // Never break the proxy pipeline
+            uiLog("SessionKeepAlive", "ERROR in cookie injection: " + e.getMessage());
+        }
+
         // Stepper: run prerequisite chain and patch variables into outgoing requests.
         // Skipped when the current thread is already executing a Stepper chain (recursion prevention).
         try {
             StepperEngine stepper = stepperEngine;
             if (stepper != null && stepper.isEnabled() && !StepperEngine.isExecutingChain()) {
-                HttpRequest modified = stepper.processOutgoingRequest(request);
-                if (modified != request) {
+                HttpRequest modified = stepper.processOutgoingRequest(current);
+                if (modified != current) {
                     return RequestToBeSentAction.continueWith(modified);
                 }
             }
@@ -124,7 +147,40 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             // Never break the proxy pipeline — log and pass through unmodified
             uiLog("Stepper", "ERROR in request hook: " + e.getMessage());
         }
-        return RequestToBeSentAction.continueWith(request);
+        return RequestToBeSentAction.continueWith(current);
+    }
+
+    /**
+     * Merges cookies into a request's Cookie header.
+     * Preserves existing cookies; new values overwrite same-name cookies.
+     */
+    private HttpRequest injectCookies(HttpRequest request, java.util.Map<String, String> cookies) {
+        java.util.LinkedHashMap<String, String> merged = new java.util.LinkedHashMap<>();
+
+        // Parse existing Cookie header
+        String existing = request.headerValue("Cookie");
+        if (existing != null && !existing.isEmpty()) {
+            for (String pair : existing.split(";")) {
+                String trimmed = pair.trim();
+                int eq = trimmed.indexOf('=');
+                if (eq > 0) {
+                    merged.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
+                }
+            }
+        }
+
+        // Overlay fresh cookies (new wins on conflicts)
+        merged.putAll(cookies);
+
+        // Build Cookie header
+        StringBuilder sb = new StringBuilder();
+        for (java.util.Map.Entry<String, String> entry : merged.entrySet()) {
+            if (sb.length() > 0) sb.append("; ");
+            sb.append(entry.getKey()).append("=").append(entry.getValue());
+        }
+
+        return request.withRemovedHeader("Cookie")
+                .withAddedHeader("Cookie", sb.toString());
     }
 
     @Override

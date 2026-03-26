@@ -259,6 +259,7 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== STEPPER ENGINE ====================
         stepperEngine = new StepperEngine(api, scopeManager);
         interceptor.setStepperEngine(stepperEngine);
+        interceptor.setSessionKeepAlive(sessionKeepAlive);
         api.logging().logToOutput("Stepper engine initialized (disabled by default).");
 
         // ==================== SESSION KEEP-ALIVE ====================

@@ -177,10 +177,11 @@ public class StepperEngine {
         // Skip if this thread is already executing a chain (recursion prevention)
         if (isExecutingChain()) return request;
 
-        // Scope check
+        // Scope check — only filter by scope if a scope is actually configured.
+        // When no scope is set, Stepper injects into ALL requests (user explicitly enabled it).
         try {
             String host = request.httpService().host();
-            if (!scopeManager.isInScope(host)) return request;
+            if (scopeManager.hasScope() && !scopeManager.isInScope(host)) return request;
         } catch (Exception e) {
             return request;
         }
