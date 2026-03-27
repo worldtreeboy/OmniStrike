@@ -318,11 +318,6 @@ public class AiVulnAnalyzer implements ScanModule {
                     + "Test EVERY injectable parameter. Use BOTH single and double quotes.\n"
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for XSS, SSTI, command injection, SSRF, path traversal, or any other vulnerability type. "
                     + "Every payload MUST have attack_type set to \"sqli\". Any non-SQLi payload will be discarded.")),
-            Map.entry("xss-scanner", new ModuleFocus("Cross-Site Scripting (XSS)",
-                    "SCOPE: Cross-Site Scripting ONLY (reflected XSS, stored XSS, DOM-based XSS). "
-                    + "Generate payloads for: script tags, event handlers, SVG/IMG payloads, template literals, encoding bypasses. "
-                    + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQLi, SSTI, SSRF, command injection, or any other vulnerability type. "
-                    + "Every payload MUST have attack_type set to \"xss\". Any non-XSS payload will be discarded.")),
             Map.entry("ssti-scanner", new ModuleFocus("Server-Side Template Injection (SSTI)",
                     "SCOPE: Server-Side Template Injection ONLY for Jinja2, Twig, Freemarker, Velocity, Pebble, Mako, ERB, Smarty, Thymeleaf.\n"
                     + "PRIORITY ORDER:\n"
@@ -495,7 +490,6 @@ public class AiVulnAnalyzer implements ScanModule {
     private static String getAttackType(String moduleId) {
         return switch (moduleId) {
             case "sqli-detector" -> "sqli";
-            case "xss-scanner" -> "xss";
             case "ssti-scanner" -> "ssti";
             case "cmdi-scanner" -> "cmdi";
             case "ssrf-scanner" -> "ssrf";
@@ -1430,14 +1424,13 @@ public class AiVulnAnalyzer implements ScanModule {
     // ==================== WAF Fingerprinting (Improvement 1) ====================
 
     private static final String[] WAF_PROBE_PAYLOADS = {
-            "<script>alert(1)</script>",
             "' OR 1=1-- -",
             "{{7*7}}",
             "; cat /etc/passwd",
             "../../../../etc/passwd"
     };
     private static final String[] WAF_PROBE_LABELS = {
-            "XSS <script>", "SQLi OR", "SSTI {{7*7}}", "CMDi cat", "Path traversal"
+            "SQLi OR", "SSTI {{7*7}}", "CMDi cat", "Path traversal"
     };
     private static final List<String> WAF_INDICATOR_HEADERS = List.of(
             "X-WAF-Action", "X-CDN", "CF-RAY", "X-Sucuri-ID", "X-Amz-Cf-Id",

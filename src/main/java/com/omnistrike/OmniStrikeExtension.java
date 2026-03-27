@@ -11,7 +11,7 @@ import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
 import com.omnistrike.modules.injection.BypassUrlParser;
 import com.omnistrike.framework.omnimap.OmniMapModule;
-import com.omnistrike.modules.websocket.WebSocketScanner;
+// WebSocket module removed
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.framework.wordlist.WordlistGenerator;
 import com.omnistrike.modules.recon.*;
@@ -129,10 +129,6 @@ public class OmniStrikeExtension implements BurpExtension {
         ssrf.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(ssrf);
 
-        XssScanner xss = new XssScanner();
-        xss.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(xss);
-
         CommandInjectionScanner cmdi = new CommandInjectionScanner();
         cmdi.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(cmdi);
@@ -238,12 +234,6 @@ public class OmniStrikeExtension implements BurpExtension {
         springActuator.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(springActuator);
 
-        // WebSocket Scanner (passive + active fuzzing)
-        WebSocketScanner wsScanner = new WebSocketScanner();
-        wsScanner.setDependencies(dedup, findingsStore, collaboratorManager);
-        wsScanner.setExecutor(executor);
-        registry.registerModule(wsScanner);
-
         // Initialize all modules
         registry.initializeAll(api);
         api.logging().logToOutput("Registered " + registry.getAllModules().size() + " modules.");
@@ -326,12 +316,6 @@ public class OmniStrikeExtension implements BurpExtension {
             sessionKeepAlive.setUiLogger((module, message) ->
                     javax.swing.SwingUtilities.invokeLater(() ->
                             mainPanel.getLogPanel().log("INFO", module, message)));
-            // Wire WebSocket Scanner log messages to the Activity Log
-            if (wsScanner != null) {
-                wsScanner.setUiLogger(msg ->
-                        javax.swing.SwingUtilities.invokeLater(() ->
-                                mainPanel.getLogPanel().log("INFO", "WS-Scanner", msg)));
-            }
             api.logging().logToOutput("UI tab registered. Theme: Default (Burp native).");
         });
 

@@ -497,8 +497,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     ((com.omnistrike.modules.injection.BypassUrlParser) module).stopScan();
                 } else if (module instanceof com.omnistrike.framework.omnimap.OmniMapModule) {
                     ((com.omnistrike.framework.omnimap.OmniMapModule) module).stopExploit();
-                } else if (module instanceof com.omnistrike.modules.websocket.WebSocketScanner) {
-                    ((com.omnistrike.modules.websocket.WebSocketScanner) module).getFuzzer().stopScan();
                 }
             } catch (Exception ignored) {}
         }

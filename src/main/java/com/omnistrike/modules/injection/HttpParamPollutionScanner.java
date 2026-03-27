@@ -56,11 +56,11 @@ public class HttpParamPollutionScanner implements ScanModule {
         PRIVILEGE_PARAMS.put("status", "active");
     }
 
-    // XSS split payloads for WAF bypass (Phase 3)
+    // Split payloads for WAF bypass (Phase 3) — injection-agnostic canaries
     private static final String[][] SPLIT_PAYLOADS = {
-            {"<script", ">alert(1)</script>"},
-            {"<img src=x onerror", "=alert(1)>"},
-            {"javascript:", "alert(1)"},
+            {"omnistrike_split_", "canary_test"},
+            {"${7*", "7}"},
+            {"' OR '1", "'='1"},
     };
 
     @Override
@@ -295,7 +295,7 @@ public class HttpParamPollutionScanner implements ScanModule {
                                 String url, String urlPath) throws InterruptedException {
         // First, check if a NON-split full payload is blocked (implies WAF exists).
         // If the full payload goes through unsplit, there's no WAF to bypass — skip.
-        String probePayload = SPLIT_PAYLOADS[0][0] + SPLIT_PAYLOADS[0][1]; // e.g. <script>alert(1)</script>
+        String probePayload = SPLIT_PAYLOADS[0][0] + SPLIT_PAYLOADS[0][1]; // combined canary
         HttpRequest probeRequest = original.request().withUpdatedParameters(
                 target.location == ParamLocation.QUERY
                         ? HttpParameter.urlParameter(target.name, PayloadEncoder.encode(probePayload))
@@ -319,7 +319,7 @@ public class HttpParamPollutionScanner implements ScanModule {
             String part2 = splitParts[1];
             String fullPayload = part1 + part2;
 
-            // Send split payload: param=<script&param=>alert(1)</script>
+            // Send split payload: param=part1&param=part2
             HttpRequest modified = appendDuplicateParamWithValues(
                     original.request(), target, part1, part2);
             if (modified == null) continue;

@@ -306,20 +306,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             items.add(customPromptItem);
         }
 
-        // ============ "Open WebSocket Scanner" — switch to WS Scanner panel ============
-        {
-            Supplier<MainPanel> supplier = mainPanelSupplier;
-            if (supplier != null) {
-                JMenuItem wsItem = new JMenuItem("Open WebSocket Scanner");
-                wsItem.setToolTipText("Open the WebSocket Scanner panel for passive analysis and active fuzzing");
-                wsItem.addActionListener(e -> {
-                    MainPanel panel = supplier.get();
-                    if (panel == null) return;
-                    panel.selectModule("ws-scanner");
-                });
-                items.add(wsItem);
-            }
-        }
+        // WebSocket Scanner removed
 
         // ============ "Send to OmniMap" — SQL injection exploitation ============
         {

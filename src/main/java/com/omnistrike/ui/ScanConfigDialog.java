@@ -87,17 +87,6 @@ public class ScanConfigDialog extends JDialog {
                 intEntry("ssrf.perHostDelay", 500)
         ));
 
-        // XSS Scanner
-        KNOWN_CONFIGS.put("xss-scanner", List.of(
-                boolEntry("xss.domAnalysis.enabled", true),
-                boolEntry("xss.evasion.enabled", true),
-                boolEntry("xss.csti.enabled", true),
-                boolEntry("xss.frameworkXss.enabled", true),
-                boolEntry("xss.encodingXss.enabled", true),
-                boolEntry("xss.blindOob.enabled", true),
-                intEntry("xss.perHostDelay", 300)
-        ));
-
         // Command Injection
         KNOWN_CONFIGS.put("cmdi-scanner", List.of(
                 boolEntry("cmdi.unix.enabled", true),
