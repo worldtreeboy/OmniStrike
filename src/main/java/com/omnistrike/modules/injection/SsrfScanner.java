@@ -509,11 +509,19 @@ public class SsrfScanner implements ScanModule {
             String imdsv2Body = imdsv2Result.response().bodyToString();
             if (imdsv2Body == null) imdsv2Body = "";
             int imdsv2Status = imdsv2Result.response().statusCode();
-            // IMDSv2 returns 401 if token not provided, which still confirms SSRF
-            if (imdsv2Status == 401 && !baselineBody.contains("401")) {
+            // IMDSv2 returns 401 if token not provided — but ONLY confirm if the response
+            // looks like it actually came from AWS metadata (not the app's own 401 page).
+            // AWS IMDS 401 has a very short body or contains "IMDSv2" / "X-aws-ec2-metadata-token"
+            boolean looksLikeAwsImds401 = imdsv2Status == 401
+                    && imdsv2Body.length() < 500
+                    && !imdsv2Body.contains("<html")
+                    && !imdsv2Body.contains("<!DOCTYPE")
+                    && (imdsv2Body.isEmpty() || imdsv2Body.contains("IMDSv2")
+                        || imdsv2Body.contains("token") || imdsv2Body.contains("metadata"));
+            if (looksLikeAwsImds401 && !baselineBody.contains("401")) {
                 findingsStore.addFinding(Finding.builder("ssrf-scanner",
                                 "SSRF: AWS IMDSv2 endpoint reachable (token required)",
-                                Severity.HIGH, Confidence.FIRM)
+                                Severity.HIGH, Confidence.TENTATIVE)
                         .url(url).parameter(target.name)
                         .evidence("AWS IMDSv2 returned 401 (token required) - confirms SSRF to 169.254.169.254")
                         .description("AWS metadata endpoint is reachable but requires IMDSv2 token. "
