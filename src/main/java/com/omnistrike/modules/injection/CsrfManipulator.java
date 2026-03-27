@@ -262,7 +262,7 @@ public class CsrfManipulator implements ScanModule {
         List<Finding> findings = new ArrayList<>();
 
         for (CsrfTarget target : csrfTargets) {
-            if (Thread.currentThread().isInterrupted()) return findings;
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return findings;
 
             api.logging().logToOutput("[CsrfManipulator] Testing token: " + target.name
                     + " (" + (target.location != null ? target.location : target.paramType) + ")");
@@ -363,7 +363,7 @@ public class CsrfManipulator implements ScanModule {
                           String testName, String testDescription,
                           HttpRequest manipulatedRequest) throws InterruptedException {
         if (manipulatedRequest == null) return;
-        if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) throw new InterruptedException();
 
         HttpRequestResponse result = sendRequest(manipulatedRequest);
         if (result == null || result.response() == null) {
@@ -414,7 +414,7 @@ public class CsrfManipulator implements ScanModule {
     private void runNonceTest(HttpRequestResponse original, HttpRequestResponse baseline,
                                int baselineStatus, int baselineBodyLen,
                                CsrfTarget target, List<Finding> findings) throws InterruptedException {
-        if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) throw new InterruptedException();
 
         // First replay — should succeed (same as baseline)
         HttpRequestResponse replay1 = sendRequest(original.request());

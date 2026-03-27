@@ -93,31 +93,31 @@ public class CorsMisconfScanner implements ScanModule {
 
         // Phase 1: Reflected arbitrary origin
         boolean reflectedArbitrary = testReflectedOrigin(original, url);
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 2: Null origin
         testNullOrigin(original, url);
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 3: Subdomain / prefix trust
         testSubdomainTrust(original, url, targetDomain);
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 4: Scheme downgrade
         if (url.startsWith("https://")) {
             testSchemeDowngrade(original, url, targetDomain);
         }
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 5: Wildcard with credentials
         testWildcardWithCredentials(original, url);
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 6: Preflight bypass
         if (config.getBool("cors.preflight.enabled", true) && !reflectedArbitrary) {
             testPreflightBypass(original, url);
         }
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // --- Novel techniques (phases 7–16) ---
         // Bypass-oriented phases are skipped if arbitrary origin already reflects
@@ -126,49 +126,49 @@ public class CorsMisconfScanner implements ScanModule {
         if (!reflectedArbitrary) {
             testParserDifferentialBypasses(original, url, targetDomain);
         }
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 8: Port-based bypass
         if (!reflectedArbitrary) {
             testPortBypass(original, url, targetDomain);
         }
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 9: Duplicate Origin header confusion
         if (!reflectedArbitrary) {
             testDuplicateOriginHeaders(original, url, targetDomain);
         }
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 10: Trusted cloud/SaaS platform origins
         if (!reflectedArbitrary) {
             testTrustedCloudOrigins(original, url);
         }
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 11: Internal/private network origins
         if (!reflectedArbitrary) {
             testInternalNetworkOrigins(original, url);
         }
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 12: Wildcard subdomain trust (*.target.com)
         testWildcardSubdomainTrust(original, url, targetDomain);
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 13: Missing Vary: Origin (cache poisoning)
         testVaryOriginCachePoisoning(original, url);
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 14: JSONP coexistence (bypasses CORS entirely)
         testJsonpCoexistence(original, url);
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 15: Per-method CORS policy divergence
         if (!reflectedArbitrary) {
             testPerMethodDivergence(original, url);
         }
-        if (Thread.currentThread().isInterrupted()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
 
         // Phase 16: Collaborator-based blind CORS (OOB DNS)
         if (!reflectedArbitrary) {
@@ -255,7 +255,7 @@ public class CorsMisconfScanner implements ScanModule {
         };
 
         for (String evilOrigin : evilOrigins) {
-            if (Thread.currentThread().isInterrupted()) return;
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
             HttpRequestResponse result = sendWithOrigin(original, evilOrigin);
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 

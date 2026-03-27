@@ -369,7 +369,7 @@ public class SstiScanner implements ScanModule {
     private List<Finding> runSstiTargets(HttpRequestResponse requestResponse,
                                           List<InjectionTarget> targets, String urlPath) {
         for (InjectionTarget target : targets) {
-            if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return Collections.emptyList();
             if (!dedup.markIfNew("ssti-scanner", urlPath, target.name)) continue;
 
             try {
@@ -441,7 +441,7 @@ public class SstiScanner implements ScanModule {
         String confirmedEngine = null;
 
         for (String[] probe : POLYGLOT_PROBES) {
-            if (Thread.currentThread().isInterrupted()) return;
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
             String payload = probe[0];
             String expected = probe[1];
             String engineHint = probe[2];
@@ -552,12 +552,12 @@ public class SstiScanner implements ScanModule {
         String url = original.request().url();
 
         for (Map.Entry<String, String[][]> engineEntry : ENGINE_PROBES.entrySet()) {
-            if (Thread.currentThread().isInterrupted()) return null;
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return null;
             String engine = engineEntry.getKey();
             String[][] probes = engineEntry.getValue();
 
             for (String[] probe : probes) {
-                if (Thread.currentThread().isInterrupted()) return null;
+                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return null;
                 String payload = probe[0];
                 String expected = probe[1];
                 String desc = probe[2];
@@ -625,7 +625,7 @@ public class SstiScanner implements ScanModule {
     private void testOobSsti(HttpRequestResponse original, InjectionTarget target, String identifiedEngine) {
         String url = original.request().url();
         for (String[] payloadInfo : OOB_SSTI_PAYLOADS) {
-            if (Thread.currentThread().isInterrupted()) return;
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
 
