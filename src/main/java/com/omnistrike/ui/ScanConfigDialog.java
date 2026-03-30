@@ -79,11 +79,9 @@ public class ScanConfigDialog extends JDialog {
         // SSRF Scanner
         KNOWN_CONFIGS.put("ssrf-scanner", List.of(
                 boolEntry("ssrf.aggressive", false),
-                boolEntry("ssrf.metadata.enabled", true),
                 boolEntry("ssrf.localhost.enabled", true),
                 boolEntry("ssrf.rebinding.enabled", true),
                 boolEntry("ssrf.protocol.enabled", true),
-                boolEntry("ssrf.redirect.enabled", true),
                 intEntry("ssrf.perHostDelay", 500)
         ));
 

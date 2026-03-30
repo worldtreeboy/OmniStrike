@@ -882,6 +882,15 @@ public class MainPanel extends JPanel {
         moduleListPanel.addFrameworkEntry("wordlist-generator", "Wordlist Generator",
                 "Passive Word Harvester & Exporter");
 
+        // Register File Payload Generator as a framework tool
+        {
+            com.omnistrike.ui.modules.FilePayloadPanel filePayloadPanel = new com.omnistrike.ui.modules.FilePayloadPanel();
+            modulePanels.put("file-payload-generator", filePayloadPanel);
+            moduleDetailContainer.add(filePayloadPanel, "file-payload-generator");
+            moduleListPanel.addFrameworkEntry("file-payload-generator", "File Payload Generator",
+                    "Generate POC Files & Payloads for Upload Testing");
+        }
+
         // Placeholder when no module selected
         JPanel placeholder = new JPanel(new GridBagLayout());
         placeholder.setBackground(BG_DARK);

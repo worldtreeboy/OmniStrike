@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
 /**
  * MODULE 7: SSRF Scanner
  * Detects Server-Side Request Forgery using Burp Collaborator for OOB detection,
- * cloud metadata endpoint probing, localhost bypass techniques, and protocol smuggling.
+ * localhost bypass techniques, and protocol smuggling.
  */
 public class SsrfScanner implements ScanModule {
 
@@ -34,45 +34,6 @@ public class SsrfScanner implements ScanModule {
     private CollaboratorManager collaboratorManager;
     // Parameters confirmed exploitable via OOB — skip all remaining phases for these
     private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
-
-    // Cloud metadata endpoints
-    // Cloud metadata endpoints — markers use REQUIRE_ALL: prefix to require ALL markers (not just one).
-    // Single generic words like "id", "region", "name" match normal web pages.
-    // Use cloud-specific multi-word markers or REQUIRE_ALL to require multiple matches.
-    private static final String[][] CLOUD_METADATA = {
-            // AWS IMDSv1 — these return plain-text directory listings with specific AWS paths
-            {"http://169.254.169.254/latest/meta-data/", "REQUIRE_ALL:ami-id,instance-id", "AWS IMDSv1 metadata"},
-            {"http://169.254.169.254/latest/meta-data/iam/security-credentials/", "AccessKeyId", "AWS IAM credentials"},
-            {"http://169.254.169.254/latest/dynamic/instance-identity/document", "REQUIRE_ALL:accountId,instanceId", "AWS instance identity"},
-            // GCP — requires Metadata-Flavor header, responses are structured
-            {"http://metadata.google.internal/computeMetadata/v1/", "REQUIRE_ALL:attributes/,hostname", "GCP metadata"},
-            {"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", "access_token", "GCP service account token"},
-            // Azure — JSON responses with specific nested structure
-            {"http://169.254.169.254/metadata/instance?api-version=2021-02-01", "REQUIRE_ALL:vmId,resourceGroupName", "Azure instance metadata"},
-            {"http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/", "access_token", "Azure managed identity token"},
-            // DigitalOcean — structured metadata
-            {"http://169.254.169.254/metadata/v1/", "REQUIRE_ALL:droplet_id,interfaces", "DigitalOcean metadata"},
-            // Alibaba Cloud
-            {"http://100.100.100.200/latest/meta-data/", "REQUIRE_ALL:instance-id,hostname", "Alibaba Cloud metadata"},
-            // Oracle Cloud — JSON with displayName
-            {"http://169.254.169.254/opc/v2/instance/", "REQUIRE_ALL:displayName,compartmentId", "Oracle Cloud metadata"},
-            // Kubernetes
-            {"https://kubernetes.default.svc/api/v1/", "APIResourceList", "Kubernetes API"},
-            // Hetzner Cloud
-            {"http://169.254.169.254/hetzner/v1/metadata", "REQUIRE_ALL:instance-id,public-ipv4", "Hetzner Cloud metadata"},
-            // Packet/Equinix Metal — JSON with specific fields
-            {"http://metadata.packet.net/metadata", "REQUIRE_ALL:facility,plan", "Packet/Equinix metadata"},
-            // OpenStack — JSON with uuid
-            {"http://169.254.169.254/openstack/latest/meta_data.json", "REQUIRE_ALL:uuid,availability_zone", "OpenStack metadata"},
-            // AWS IMDSv1 additional — highly specific markers
-            {"http://169.254.169.254/latest/meta-data/hostname", "ec2.internal|compute.amazonaws", "AWS hostname"},
-            // Azure additional
-            {"http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01", "REQUIRE_ALL:vmId,resourceGroupName", "Azure compute metadata"},
-            // Docker / Container metadata
-            {"http://172.17.0.1:2375/version", "REQUIRE_ALL:ApiVersion,GoVersion", "Docker API (unauth)"},
-            // Consul
-            {"http://127.0.0.1:8500/v1/agent/self", "REQUIRE_ALL:Config,Member", "Consul agent API"},
-    };
 
     // Localhost bypass payloads
     private static final String[] LOCALHOST_BYPASSES = {
@@ -160,11 +121,7 @@ public class SsrfScanner implements ScanModule {
     // Patterns indicating successful internal access — only highly specific markers
     // Removed overly generic words like "hostname" that appear in normal HTML pages
     private static final Pattern INTERNAL_RESPONSE_PATTERNS = Pattern.compile(
-            "root:x:0:0:|ami-[0-9a-f]+|(?:instance-id|instance-type).*?(?:ami-|i-[0-9a-f])|AccessKeyId.*?(?:AKIA|ASIA)|" +
-                    "vmId.*?[0-9a-f]{8}-[0-9a-f]{4}|accountId.*?\\d{12}|\\[extensions\\]|\\[fonts\\]|Linux version \\d|" +
-                    // Removed "access_token" — too generic, appears in OAuth responses.
-                    // Kept cloud-specific patterns only.
-                    "APIResourceList|local-ipv4|compute\\.internal|metadata\\.google\\.internal",
+            "root:x:0:0:|\\[extensions\\]|\\[fonts\\]|Linux version \\d",
             Pattern.CASE_INSENSITIVE
     );
 
@@ -184,7 +141,7 @@ public class SsrfScanner implements ScanModule {
 
     @Override
     public String getDescription() {
-        return "SSRF detection via Burp Collaborator OOB, cloud metadata probing, localhost bypasses, and protocol smuggling.";
+        return "SSRF detection via Burp Collaborator OOB, localhost bypasses, and protocol smuggling.";
     }
 
     @Override
@@ -252,19 +209,13 @@ public class SsrfScanner implements ScanModule {
             testOobSsrf(original, target, url);
         }
 
-        // Phase 2: Cloud metadata endpoint probing
-        if (oobConfirmedParams.contains(target.name)) return;
-        if (config.getBool("ssrf.metadata.enabled", true)) {
-            testCloudMetadata(original, target, url);
-        }
-
-        // Phase 3: Localhost bypass techniques
+        // Phase 2: Localhost bypass techniques
         if (oobConfirmedParams.contains(target.name)) return;
         if (config.getBool("ssrf.localhost.enabled", true)) {
             testLocalhostBypasses(original, target, url);
         }
 
-        // Phase 3.5: DNS rebinding via rbndr.us
+        // Phase 3: DNS rebinding via rbndr.us
         if (oobConfirmedParams.contains(target.name)) return;
         if (config.getBool("ssrf.rebinding.enabled", true)) {
             testDnsRebinding(original, target, url);
@@ -402,190 +353,7 @@ public class SsrfScanner implements ScanModule {
         api.logging().logToOutput("[SSRF] Confirmed OOB interaction! " + url + " param=" + target.name);
     }
 
-    // ==================== PHASE 2: CLOUD METADATA ====================
-
-    private void testCloudMetadata(HttpRequestResponse original, SsrfTarget target, String url) throws InterruptedException {
-        // Get baseline
-
-        HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
-        String baselineBody = baseline != null && baseline.response() != null
-                ? baseline.response().bodyToString() : "";
-        if (baselineBody == null) baselineBody = "";
-
-        for (String[] meta : CLOUD_METADATA) {
-            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            String metaUrl = meta[0];
-            String expectedPatterns = meta[1];
-            String description = meta[2];
-
-    
-            HttpRequestResponse result = sendPayload(original, target, metaUrl);
-            if (result == null || result.response() == null) continue;
-
-            String body = result.response().bodyToString();
-            if (body == null) body = "";
-            int status = result.response().statusCode();
-
-            // Check if response contains expected cloud metadata patterns
-            if (status == 200 && !body.equals(baselineBody)) {
-                if (!expectedPatterns.isEmpty()) {
-                    boolean confirmed = false;
-                    String matchEvidence = "";
-
-                    if (expectedPatterns.startsWith("REQUIRE_ALL:")) {
-                        // All markers must be present — prevents FPs from generic single-word matches
-                        String[] required = expectedPatterns.substring("REQUIRE_ALL:".length()).split(",");
-                        boolean allFound = true;
-                        StringBuilder evidence = new StringBuilder();
-                        for (String marker : required) {
-                            String trimmed = marker.trim();
-                            if (!body.contains(trimmed)) {
-                                allFound = false;
-                                break;
-                            }
-                            if (evidence.length() > 0) evidence.append(", ");
-                            evidence.append(trimmed);
-                        }
-                        if (allFound && required.length >= 2) {
-                            // Also verify these markers were NOT in the baseline response
-                            // Require ALL markers to be absent from baseline (not just one).
-                            // Previous logic broke on first new marker — allowed FP when
-                            // one marker existed in baseline but another didn't.
-                            boolean allNewToBaseline = true;
-                            for (String marker : required) {
-                                if (baselineBody.contains(marker.trim())) {
-                                    allNewToBaseline = false; // Marker already in baseline
-                                    break;
-                                }
-                            }
-                            if (allNewToBaseline) {
-                                confirmed = true;
-                                matchEvidence = evidence.toString();
-                            }
-                        }
-                    } else {
-                        // OR matching — but only for highly specific markers
-                        for (String pattern : expectedPatterns.split("\\|")) {
-                            String trimmed = pattern.trim();
-                            boolean patternMatched;
-                            if (trimmed.startsWith("REGEX:")) {
-                                patternMatched = Pattern.compile(trimmed.substring(6)).matcher(body).find();
-                            } else {
-                                patternMatched = body.contains(trimmed) && !baselineBody.contains(trimmed);
-                            }
-                            if (patternMatched) {
-                                confirmed = true;
-                                matchEvidence = trimmed;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (confirmed) {
-                        Severity severity = description.contains("credential") || description.contains("token")
-                                ? Severity.CRITICAL : Severity.HIGH;
-                        findingsStore.addFinding(Finding.builder("ssrf-scanner",
-                                        "SSRF: " + description + " accessible",
-                                        severity, Confidence.FIRM)
-                                .url(url).parameter(target.name)
-                                .evidence("Metadata URL: " + metaUrl + " | Response contains: " + matchEvidence)
-                                .description("Cloud metadata endpoint accessible via SSRF. " + description + ".")
-                                .requestResponse(result)
-                                .payload(metaUrl)
-                                .responseEvidence(matchEvidence)
-                                .build());
-                    }
-                }
-                // Removed: empty-pattern fallback that reported on any non-empty response
-            }
-            perHostDelay();
-        }
-
-        // AWS IMDSv2 - requires PUT to get token, then GET with token header
-        // Test by injecting the full IMDSv2 metadata URL (the app may handle PUT internally)
-        String imdsv2Url = "http://169.254.169.254/latest/meta-data/";
-        HttpRequestResponse imdsv2Result = sendPayload(original, target, imdsv2Url);
-        if (imdsv2Result != null && imdsv2Result.response() != null) {
-            String imdsv2Body = imdsv2Result.response().bodyToString();
-            if (imdsv2Body == null) imdsv2Body = "";
-            int imdsv2Status = imdsv2Result.response().statusCode();
-            // IMDSv2 returns 401 if token not provided — but ONLY confirm if the response
-            // looks like it actually came from AWS metadata (not the app's own 401 page).
-            // AWS IMDS 401 has a very short body or contains "IMDSv2" / "X-aws-ec2-metadata-token"
-            boolean looksLikeAwsImds401 = imdsv2Status == 401
-                    && imdsv2Body.length() < 500
-                    && !imdsv2Body.contains("<html")
-                    && !imdsv2Body.contains("<!DOCTYPE")
-                    && (imdsv2Body.isEmpty() || imdsv2Body.contains("IMDSv2")
-                        || imdsv2Body.contains("token") || imdsv2Body.contains("metadata"));
-            if (looksLikeAwsImds401 && !baselineBody.contains("401")) {
-                findingsStore.addFinding(Finding.builder("ssrf-scanner",
-                                "SSRF: AWS IMDSv2 endpoint reachable (token required)",
-                                Severity.HIGH, Confidence.TENTATIVE)
-                        .url(url).parameter(target.name)
-                        .evidence("AWS IMDSv2 returned 401 (token required) - confirms SSRF to 169.254.169.254")
-                        .description("AWS metadata endpoint is reachable but requires IMDSv2 token. "
-                                + "The server can reach the internal metadata service. "
-                                + "If the application makes requests with custom headers, token retrieval may be possible.")
-                        .requestResponse(imdsv2Result)
-                        .payload(imdsv2Url)
-                        .build());
-            }
-        }
-
-        // Redirect-based SSRF: use external redirect to internal URLs
-        // This bypasses URL validation that only checks the initial URL
-        if (config.getBool("ssrf.redirect.enabled", true)) {
-            testRedirectSsrf(original, target, url, baselineBody);
-        }
-    }
-
-    // ==================== PHASE 2.5: REDIRECT-BASED SSRF ====================
-
-    private void testRedirectSsrf(HttpRequestResponse original, SsrfTarget target,
-                                   String url, String baselineBody) throws InterruptedException {
-        // Common redirect services that can redirect to internal IPs
-        String[] redirectPayloads = {
-                "http://metadata.google.internal/computeMetadata/v1/?recursive=true",
-                "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
-                // URL with @ to trick parsers: http://expected@evil
-                "http://example.com@169.254.169.254/latest/meta-data/",
-                "http://169.254.169.254.nip.io/latest/meta-data/",
-                // DNS rebinding targets
-                "http://169.254.169.254:80/latest/meta-data/",
-                "http://[::ffff:169.254.169.254]/latest/meta-data/",
-                // URL with fragment
-                "http://169.254.169.254/latest/meta-data/#",
-        };
-
-        for (String payload : redirectPayloads) {
-            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            HttpRequestResponse result = sendPayload(original, target, payload);
-            if (result == null || result.response() == null) continue;
-
-            String body = result.response().bodyToString();
-            if (body == null) body = "";
-            int status = result.response().statusCode();
-
-            if (status == 200 && !body.equals(baselineBody) && body.length() > 10) {
-                if (INTERNAL_RESPONSE_PATTERNS.matcher(body).find()) {
-                    findingsStore.addFinding(Finding.builder("ssrf-scanner",
-                                    "SSRF: Internal access via URL manipulation",
-                                    Severity.CRITICAL, Confidence.FIRM)
-                            .url(url).parameter(target.name)
-                            .evidence("Payload: " + payload + " | Internal data in response")
-                            .description("Internal resource accessed via URL parsing bypass technique.")
-                            .requestResponse(result)
-                            .payload(payload)
-                            .build());
-                    return;
-                }
-            }
-            perHostDelay();
-        }
-    }
-
-    // ==================== PHASE 3: LOCALHOST BYPASSES ====================
+    // ==================== PHASE 2: LOCALHOST BYPASSES ====================
 
     private void testLocalhostBypasses(HttpRequestResponse original, SsrfTarget target, String url) throws InterruptedException {
 
@@ -625,7 +393,7 @@ public class SsrfScanner implements ScanModule {
         }
     }
 
-    // ==================== PHASE 4: PROTOCOL SMUGGLING ====================
+    // ==================== PHASE 4: PROTOCOL SMUGGLING (AGGRESSIVE) ====================
 
     private void testProtocolSmuggling(HttpRequestResponse original, SsrfTarget target, String url) throws InterruptedException {
 
@@ -662,14 +430,12 @@ public class SsrfScanner implements ScanModule {
         }
     }
 
-    // ==================== PHASE 3.5: DNS REBINDING ====================
+    // ==================== PHASE 3: DNS REBINDING ====================
 
     private void testDnsRebinding(HttpRequestResponse original, SsrfTarget target, String url) throws InterruptedException {
         // DNS rebinding payloads via rbndr.us service
         // Format: <hexIP1>.<hexIP2>.rbndr.us - alternates resolution between the two IPs
         String[][] rebindingDomains = {
-                // 127.0.0.1 (7f000001) <-> 169.254.169.254 (a9fea9fe) - AWS metadata
-                {"7f000001.a9fea9fe.rbndr.us", "127.0.0.1 <-> 169.254.169.254 (AWS metadata)"},
                 // 127.0.0.1 (7f000001) <-> 172.17.0.1 (ac110001) - Docker gateway
                 {"7f000001.ac110001.rbndr.us", "127.0.0.1 <-> 172.17.0.1 (Docker gateway)"},
         };
@@ -685,7 +451,6 @@ public class SsrfScanner implements ScanModule {
             String description = rebind[1];
 
             String[] payloads = {
-                    "http://" + domain + "/latest/meta-data/",
                     "http://" + domain + "/",
                     "http://" + domain + ":80/",
             };
