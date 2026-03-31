@@ -215,13 +215,7 @@ public class SsrfScanner implements ScanModule {
             testLocalhostBypasses(original, target, url);
         }
 
-        // Phase 3: DNS rebinding via rbndr.us
-        if (oobConfirmedParams.contains(target.name)) return;
-        if (config.getBool("ssrf.rebinding.enabled", true)) {
-            testDnsRebinding(original, target, url);
-        }
-
-        // Phase 4: Protocol smuggling (aggressive only)
+        // Phase 3: Protocol smuggling (aggressive only)
         if (oobConfirmedParams.contains(target.name)) return;
         if (aggressiveMode && config.getBool("ssrf.protocol.enabled", true)) {
             testProtocolSmuggling(original, target, url);
@@ -427,63 +421,6 @@ public class SsrfScanner implements ScanModule {
                 }
             }
             perHostDelay();
-        }
-    }
-
-    // ==================== PHASE 3: DNS REBINDING ====================
-
-    private void testDnsRebinding(HttpRequestResponse original, SsrfTarget target, String url) throws InterruptedException {
-        // DNS rebinding payloads via rbndr.us service
-        // Format: <hexIP1>.<hexIP2>.rbndr.us - alternates resolution between the two IPs
-        String[][] rebindingDomains = {
-                // 127.0.0.1 (7f000001) <-> 172.17.0.1 (ac110001) - Docker gateway
-                {"7f000001.ac110001.rbndr.us", "127.0.0.1 <-> 172.17.0.1 (Docker gateway)"},
-        };
-
-        HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
-        String baselineBody = baseline != null && baseline.response() != null
-                ? baseline.response().bodyToString() : "";
-        if (baselineBody == null) baselineBody = "";
-
-        for (String[] rebind : rebindingDomains) {
-            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            String domain = rebind[0];
-            String description = rebind[1];
-
-            String[] payloads = {
-                    "http://" + domain + "/",
-                    "http://" + domain + ":80/",
-            };
-
-            for (String payload : payloads) {
-                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-                HttpRequestResponse result = sendPayload(original, target, payload);
-                if (result == null || result.response() == null) continue;
-
-                String body = result.response().bodyToString();
-                if (body == null) body = "";
-                int status = result.response().statusCode();
-
-                if (status == 200 && !body.equals(baselineBody) && body.length() > 10) {
-                    if (INTERNAL_RESPONSE_PATTERNS.matcher(body).find()) {
-                        findingsStore.addFinding(Finding.builder("ssrf-scanner",
-                                        "SSRF via DNS Rebinding: " + description,
-                                        Severity.HIGH, Confidence.FIRM)
-                                .url(url).parameter(target.name)
-                                .evidence("DNS rebinding domain: " + domain + " | Payload: " + payload
-                                        + " | Internal content detected in response")
-                                .description("DNS rebinding attack successful using rbndr.us service. "
-                                        + "The server resolved the domain to an internal IP on a subsequent request, "
-                                        + "bypassing SSRF filters that only validate the initial DNS resolution. "
-                                        + "Rebinding pair: " + description)
-                                .requestResponse(result)
-                                .payload(payload)
-                                .build());
-                        return; // One confirmed rebinding is enough
-                    }
-                }
-                perHostDelay();
-            }
         }
     }
 

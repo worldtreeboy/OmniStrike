@@ -340,7 +340,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQLi, XSS, SSTI, SSRF, or any other vulnerability type. "
                     + "Every payload MUST have attack_type set to \"cmdi\". Any non-cmdi payload will be discarded.")),
             Map.entry("ssrf-scanner", new ModuleFocus("Server-Side Request Forgery (SSRF)",
-                    "SCOPE: SSRF ONLY — internal network access, cloud metadata endpoints (AWS/GCP/Azure), DNS rebinding, protocol smuggling, "
+                    "SCOPE: SSRF ONLY — internal network access, protocol smuggling, "
                     + "URL scheme abuse (file://, gopher://, dict://), IP address bypasses (decimal, hex, octal, IPv6). "
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQLi, XSS, SSTI, command injection, path traversal, or any other vulnerability type. "
                     + "No <script> tags, no SQL quotes, no template expressions. ONLY URLs and SSRF vectors. "
@@ -526,6 +526,34 @@ public class AiVulnAnalyzer implements ScanModule {
         };
     }
 
+    /**
+     * Checks if an AI analysis finding's title+description matches the expected vulnerability type.
+     * Used to drop off-target findings when the user asked for a specific vuln type.
+     */
+    private static boolean isFindingMatchingType(String combined, String expectedType) {
+        return switch (expectedType) {
+            case "sqli" -> combined.contains("sql") || combined.contains("sqli") || combined.contains("injection")
+                    && (combined.contains("database") || combined.contains("query"));
+            case "xss" -> combined.contains("xss") || combined.contains("cross-site scripting")
+                    || combined.contains("reflected") && combined.contains("script");
+            case "ssti" -> combined.contains("ssti") || combined.contains("template")
+                    || combined.contains("server-side template");
+            case "cmdi" -> combined.contains("command") || combined.contains("cmdi") || combined.contains("rce")
+                    || combined.contains("os injection") || combined.contains("code execution");
+            case "ssrf" -> combined.contains("ssrf") || combined.contains("server-side request")
+                    || combined.contains("internal") && combined.contains("request");
+            case "xxe" -> combined.contains("xxe") || combined.contains("xml external")
+                    || combined.contains("xml entity");
+            case "deserialization" -> combined.contains("deseriali") || combined.contains("gadget")
+                    || combined.contains("marshalling");
+            case "client-side" -> combined.contains("dom") || combined.contains("client-side")
+                    || combined.contains("prototype pollution") || combined.contains("open redirect")
+                    || combined.contains("postmessage") || combined.contains("hardcoded")
+                    || combined.contains("secret") || combined.contains("cwe-79");
+            default -> true; // unknown type — accept all
+        };
+    }
+
     // ==================== ScanModule interface ====================
 
     @Override
@@ -631,7 +659,24 @@ public class AiVulnAnalyzer implements ScanModule {
 
             analyzedCount.incrementAndGet();
 
+            // Filter off-target findings when a specific module is requested.
+            // The prompt tells the AI to only report X, but LLMs don't always listen.
+            String expectedType = targetModuleId != null ? getAttackType(targetModuleId) : null;
+            int droppedFindings = 0;
+
             for (LlmAnalysisResult.LlmFinding llmFinding : result.getFindings()) {
+                // Post-processing filter: drop findings that don't match the target vuln type
+                if (expectedType != null && !"unknown".equals(expectedType)) {
+                    String titleLower = (llmFinding.getTitle() != null ? llmFinding.getTitle() : "").toLowerCase();
+                    String descLower = (llmFinding.getDescription() != null ? llmFinding.getDescription() : "").toLowerCase();
+                    String cweLower = (llmFinding.getCweId() != null ? llmFinding.getCweId() : "").toLowerCase();
+                    String combined = titleLower + " " + descLower + " " + cweLower;
+                    if (!isFindingMatchingType(combined, expectedType)) {
+                        droppedFindings++;
+                        continue;
+                    }
+                }
+
                 Severity severity = parseSeverity(llmFinding.getSeverity());
 
                 String title = llmFinding.getTitle();
@@ -658,6 +703,9 @@ public class AiVulnAnalyzer implements ScanModule {
 
                 findingsStore.addFinding(fb.build());
                 findingsCount.incrementAndGet();
+            }
+            if (droppedFindings > 0) {
+                logInfo("AI Analysis: Filtered out " + droppedFindings + " off-target finding(s) for " + exchange.getUrl());
             }
         } catch (LlmException e) {
             errorCount.incrementAndGet();
