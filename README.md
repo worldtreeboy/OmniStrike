@@ -1,13 +1,13 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.63-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.65-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
 **The last Burp extension you'll ever install.**
 
-23 active scanners. 6 passive analyzers. 11 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
-Technology profiling. Session automation. Custom OOB server. Zero false positives.<br/>
+17 active scanners. 6 passive analyzers. 11 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
+Technology profiling. Session automation. Custom OOB server. File payload generator. Zero false positives.<br/>
 **One JAR. One click. Everything.**
 
 <br/>
@@ -43,15 +43,15 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 
 ## What It Scans
 
-### 19 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
+### 17 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
 
 | Scanner | What It Does |
 |:--------|:-------------|
 | **SQL Injection** | 6-phase detection: error-based + UNION + boolean-blind (2-round) + time-blind (3-step) + OOB (64 payloads) + auth bypass. ~375 payloads/param across 10 DBMS. REST path segment injection. |
 | **Command Injection** | 3-step time verification, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/backtick/encoding bypasses. |
-| **SSRF** | Collaborator OOB, cloud metadata with multi-marker validation (AWS/Azure/GCP/Oracle), DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads. |
+| **SSRF** | Collaborator OOB, DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads (file/gopher/dict/ftp/ldap/tftp). |
 | **SSTI** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
-| **XSS** | 7-phase detection: blind OOB via Collaborator, reflection context analysis (8 contexts), context-aware breakout, encoding bypass, CSTI (Angular/Vue/Svelte), framework-specific (React/Vue/Angular), WAF evasion (13 mutation variants). Zero FP via canary + breakout confirmation. |
+| **XSS** | *(Removed in v1.63 — use Burp's built-in scanner for XSS)* |
 | **XXE** | 4-phase: XML body + XInclude + JSON-to-XML + Content-Type forcing. UTF-16 bypass, SAML detection, 14 OOB payloads. |
 | **Deserialization** | 6 languages, 137+ gadget chains (Java/PHP/.NET/Python/Ruby/Node.js). Jackson Tier 2 gadgets with PTV bypass probes. Passive fingerprinting + OOB-first detection. |
 | **Path Traversal** | 24 Unix + 9 Windows targets, 26 encoding bypasses, PHP wrappers, structural content validation with multi-marker confirmation. |
@@ -64,7 +64,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 | **LDAP Injection** | 4-phase: error-based (2+ signature requirement), boolean differential (2-round), auth bypass (multi-signal), wildcard amplification. Zero FP design. |
 | **Bypass URL Parser** | 13 modes for 403/401 bypass: path manipulation, encoding variants, method override, IP spoofing, rewrite headers, user-agent rotation. |
 | **CSRF Manipulator** | 11 token manipulation tests: remove, empty, random, truncated, char flip, case swap, nonce reuse, Referer/Origin removal. |
-| **WebSocket** | Passive frame analysis + OOB-first active fuzzing across 8 injection categories (CSWSH, SQLi, CmdI, SSRF, SSTI, XSS, IDOR, AuthZ). |
+| **WebSocket** | *(Removed in v1.63)* |
 | **OmniMap** | Post-detection SQL exploitation engine. [Details below](#-omnimap--sql-exploitation-engine). |
 
 ### 11 Auto-Triggered Technology Scanners
@@ -96,11 +96,12 @@ These scanners **cannot be manually triggered**. They passively detect specific 
 | **Tech Fingerprinter** | Detects servers, languages, frameworks, CMS, JS libraries, WAF/CDN, caches, cloud platforms. |
 | **Sensitive Data** | Credit cards (Luhn), SSNs (range-validated), emails, phones, internal IPs, JWTs, DB connection strings, AWS ARNs, crypto addresses, IBANs. All values redacted. |
 
-### 2 Framework Tools
+### 3 Framework Tools
 
 | Tool | What It Does |
 |:-----|:-------------|
 | **AI Vulnerability Analyzer** | LLM-powered security analysis with smart fuzzing, WAF bypass generation, and adaptive multi-round scanning. Supports Claude Code, Gemini CLI, Codex CLI, OpenCode CLI. No API keys needed. Disabled by default. |
+| **File Payload Generator** | 39 file payloads (PDF XSS, SVG XXE, DOCX/XLSX XXE, PHP/JSP/ASPX/Python/Ruby/Perl/Node.js/Bash/PowerShell POC, 11 template engine injections, .htaccess/.user.ini/web.config hijack, CSV injection, LaTeX RCE, polyglot GIF/JS, EICAR) + 31 inline copy-paste payloads (SSTI probes for 8 engines, XXE, Log4j, EL/SpEL, OGNL, LFI/RFI, CRLF, polyglot). Collaborator URL support. |
 | **Wordlist Generator** | Passive word harvester from proxied traffic. Builds domain-specific wordlists for fuzzing/brute-forcing. |
 
 ---
