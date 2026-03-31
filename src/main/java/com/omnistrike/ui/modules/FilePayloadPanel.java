@@ -102,7 +102,7 @@ public class FilePayloadPanel extends JPanel {
         fileButtons.add(copyFilenamesBtn);
 
         filePanel.add(fileButtons, BorderLayout.SOUTH);
-        tabs.addTab("File Payloads (39)", filePanel);
+        tabs.addTab("File Payloads (53)", filePanel);
 
         // Inline payloads table
         String[] inlineCols = {"Type", "Description", "Notes"};
