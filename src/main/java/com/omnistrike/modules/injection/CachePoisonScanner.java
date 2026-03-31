@@ -212,7 +212,7 @@ public class CachePoisonScanner implements ScanModule {
         if (cacheInfo.cacheable) {
             findingsStore.addFinding(Finding.builder("cache-poison",
                             "Potential Web Cache Poisoning via " + headerName,
-                            Severity.MEDIUM, Confidence.FIRM)
+                            Severity.MEDIUM, Confidence.TENTATIVE)
                     .url(url).parameter(headerName)
                     .evidence("Canary: " + canary + " | Header: " + headerName
                             + " | Reflected: yes | Cache indicators: " + cacheInfo.headerSummary)
@@ -263,7 +263,7 @@ public class CachePoisonScanner implements ScanModule {
         if (cacheInfo.cacheable) {
             findingsStore.addFinding(Finding.builder("cache-poison",
                             "Potential Cache Poisoning via Unkeyed Parameter: " + paramName,
-                            Severity.MEDIUM, Confidence.FIRM)
+                            Severity.MEDIUM, Confidence.TENTATIVE)
                     .url(url).parameter(paramName)
                     .evidence("Canary: " + canary + " | Param: " + paramName
                             + " | Reflected: yes | Cache indicators: " + cacheInfo.headerSummary)

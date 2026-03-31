@@ -269,6 +269,12 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             return;
         }
 
+        // URL inclusion — if inclusion list is active, only scan matching URLs
+        if (!scopeManager.isIncludedPath(reqResp.request().url())) {
+            uiLog("ManualScan", "SKIPPED (not in include list): " + reqResp.request().url());
+            return;
+        }
+
         // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
         ScanState.reset();
@@ -306,6 +312,12 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         // URL exclusion — skip excluded paths even on manual right-click
         if (scopeManager.isExcludedPath(reqResp.request().url())) {
             uiLog("ManualScan", "SKIPPED (excluded path): " + reqResp.request().url());
+            return;
+        }
+
+        // URL inclusion — if inclusion list is active, only scan matching URLs
+        if (!scopeManager.isIncludedPath(reqResp.request().url())) {
+            uiLog("ManualScan", "SKIPPED (not in include list): " + reqResp.request().url());
             return;
         }
 
