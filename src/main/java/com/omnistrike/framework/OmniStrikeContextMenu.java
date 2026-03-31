@@ -375,6 +375,9 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
             if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
             if ("firebase-misconfig-scanner".equals(m.getId())) continue; // Firebase is auto-triggered only
+            if ("sharepoint-caml-scanner".equals(m.getId())) continue; // SharePoint CAML is auto-triggered only
+            if ("servicenow-glide-scanner".equals(m.getId())) continue; // ServiceNow is auto-triggered only
+            if ("solr-query-scanner".equals(m.getId())) continue; // Solr is auto-triggered only
             if ("odoo-domain-scanner".equals(m.getId())) continue; // Odoo is auto-triggered only
             if ("elasticsearch-query-scanner".equals(m.getId())) continue; // ES is auto-triggered only
             if ("spring-actuator-scanner".equals(m.getId())) continue; // Spring Actuator is auto-triggered only

@@ -276,7 +276,15 @@ public class ScanConfigDialog extends JDialog {
         List<ScanModule> activeModules = new ArrayList<>();
         List<ScanModule> passiveModules = new ArrayList<>();
 
+        // Auto-triggered scanners — never shown in custom scan dialog
+        Set<String> autoTriggered = Set.of(
+                "dynamics365-scanner", "sap-odata-scanner", "salesforce-soql-scanner",
+                "firebase-misconfig-scanner", "sharepoint-caml-scanner", "servicenow-glide-scanner",
+                "solr-query-scanner", "odoo-domain-scanner", "elasticsearch-query-scanner",
+                "spring-actuator-scanner");
+
         for (ScanModule m : registry.getAllModules()) {
+            if (autoTriggered.contains(m.getId())) continue;
             if (ModuleRegistry.AI_MODULE_ID.equals(m.getId())) {
                 aiModules.add(m);
             } else if (m.isPassive()) {
