@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.65-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.66-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
 **The last Burp extension you'll ever install.**
 
-17 active scanners. 6 passive analyzers. 11 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
+17 active scanners. 7 passive analyzers. 11 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
 Technology profiling. Session automation. Custom OOB server. File payload generator. Zero false positives.<br/>
 **One JAR. One click. Everything.**
 
@@ -95,6 +95,7 @@ These scanners **cannot be manually triggered**. They passively detect specific 
 | **Security Headers** | HSTS, CSP, CORS, cookie flags, X-Frame-Options, server version disclosure. Consolidated per host. |
 | **Tech Fingerprinter** | Detects servers, languages, frameworks, CMS, JS libraries, WAF/CDN, caches, cloud platforms. |
 | **Sensitive Data** | Credit cards (Luhn), SSNs (range-validated), emails, phones, internal IPs, JWTs, DB connection strings, AWS ARNs, crypto addresses, IBANs. All values redacted. |
+| **Error Disclosure** | Java stack traces + reflection errors (ClassNotFoundException, NoSuchMethodException, InvocationTargetException) + native serialization (InvalidClassException, StreamCorruptedException) + JAXB. Jackson deserialization errors: 12 exception types, 13 error messages, and polymorphic type-id errors (flags DefaultTyping/@JsonTypeInfo — Jackson gadget-chain attack surface, CVE-2017-7525 family). Spring Whitelabel, Python tracebacks, Django debug, Werkzeug debugger, PHP errors, Laravel Whoops, ASP.NET yellow pages, Node.js/Go/Ruby stack frames, database driver exceptions (ORA-, SQLSTATE, PSQLException, Hibernate, Sequelize). One finding per host/path/category. Skips all 4xx. |
 
 ### 3 Framework Tools
 

