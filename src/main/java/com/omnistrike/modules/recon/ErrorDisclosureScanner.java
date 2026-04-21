@@ -244,7 +244,15 @@ public class ErrorDisclosureScanner implements ScanModule {
             // DB2
             + "|DB2 SQL Error: SQLCODE=-?\\d+"
             // SQLCODE (IBM DB2 / generic)
-            + "|SQLCODE\\s*=\\s*-?\\d{3,6}");
+            + "|SQLCODE\\s*=\\s*-?\\d{3,6}"
+            // Sybase / SAP ASE
+            + "|Sybase message:|Adaptive Server Enterprise|sybsystemprocs"
+            // Informix
+            + "|INFORMIX-SQL|com\\.informix\\.jdbc|\\bifx_[a-z_]+\\("
+            // Firebird / InterBase
+            + "|Dynamic SQL Error|isc_dsql_error|Firebird[\\s\\S]{0,50}error"
+            // CockroachDB
+            + "|\\bCRDB\\b[\\s\\S]{0,80}(?:error|panic|syntax)|cockroachdb[\\s\\S]{0,80}error");
 
     // ── Module interface ──
 

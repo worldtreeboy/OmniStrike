@@ -53,6 +53,10 @@ public class StepperEngine {
     private volatile boolean enabled = false;
     private volatile int cacheTtlSeconds = 10;
     private volatile long lastChainRunTime = 0;
+    // Tracks how many prerequisite steps ran last time — cache is invalidated when this changes
+    private volatile int lastChainPrereqCount = -1;
+    // When true, chain execution aborts immediately on a step that returns no response
+    private volatile boolean stopOnFailure = false;
 
     private final ReentrantLock chainLock = new ReentrantLock();
 
@@ -75,6 +79,9 @@ public class StepperEngine {
     public void setCacheTtlSeconds(int seconds) { this.cacheTtlSeconds = Math.max(0, seconds); }
 
     public long getLastChainRunTime() { return lastChainRunTime; }
+
+    public boolean isStopOnFailure() { return stopOnFailure; }
+    public void setStopOnFailure(boolean stop) { this.stopOnFailure = stop; }
 
     public StepperVariableStore getVariableStore() { return variableStore; }
 
@@ -157,11 +164,13 @@ public class StepperEngine {
         variableStore.clear();
         cookieJar.clear();
         lastChainRunTime = 0;
+        lastChainPrereqCount = -1;
         uiLog("Stepper", "All steps cleared.");
     }
 
     public void invalidateCache() {
         lastChainRunTime = 0;
+        lastChainPrereqCount = -1;
     }
 
     // ── Core: Process Outgoing Request ───────────────────────────────────────
@@ -170,6 +179,12 @@ public class StepperEngine {
      * Called from TrafficInterceptor.handleHttpRequestToBeSent().
      * If Stepper is enabled and the request is in scope, runs the prerequisite
      * chain (if cache is stale) and patches variables into the outgoing request.
+     *
+     * Prerequisite detection: if the outgoing request matches one of the configured
+     * steps (by method + host + path), only the steps BEFORE it are used as
+     * prerequisites. For example, if steps are [A, B, C, D, E] and the outgoing
+     * request matches C (index 2), only A and B run. If no match is found, all
+     * steps run (pure-prerequisite mode, backwards compatible).
      */
     public HttpRequest processOutgoingRequest(HttpRequest request) {
         if (!enabled) return request;
@@ -193,24 +208,44 @@ public class StepperEngine {
             currentSteps = new ArrayList<>(steps);
         }
 
-        // Check if cache is still valid
+        // Determine which prerequisite steps to run.
+        // If the outgoing request matches step[i], run steps[0..i-1] only.
+        // If no match, run all steps (pure-prerequisite mode).
+        int matchIdx = findMatchingStepIndex(request, currentSteps);
+        List<StepperStep> prereqSteps;
+        if (matchIdx < 0) {
+            prereqSteps = currentSteps;                          // no match → run all
+        } else if (matchIdx == 0) {
+            prereqSteps = Collections.emptyList();              // first step → no prerequisites
+        } else {
+            prereqSteps = currentSteps.subList(0, matchIdx);   // run only preceding steps
+        }
+
+        int prereqCount = prereqSteps.size();
+
+        // Check if cache is still valid — also invalidated when the prerequisite set changes
         long now = System.currentTimeMillis();
         long age = now - lastChainRunTime;
-        boolean cacheValid = cacheTtlSeconds > 0 && age < (cacheTtlSeconds * 1000L);
+        boolean cacheValid = cacheTtlSeconds > 0
+                && age < (cacheTtlSeconds * 1000L)
+                && lastChainPrereqCount == prereqCount;
 
-        if (!cacheValid) {
+        if (!cacheValid && !prereqSteps.isEmpty()) {
             // Run the chain — serialize with lock so only one thread runs it
             try {
                 chainLock.lockInterruptibly();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return request; // return unmodified request
+                return request;
             }
             try {
                 // Double-check after acquiring lock (another thread may have just run it)
                 long ageAfterLock = System.currentTimeMillis() - lastChainRunTime;
-                if (cacheTtlSeconds <= 0 || ageAfterLock >= (cacheTtlSeconds * 1000L)) {
-                    executeChain(currentSteps);
+                if (cacheTtlSeconds <= 0
+                        || ageAfterLock >= (cacheTtlSeconds * 1000L)
+                        || lastChainPrereqCount != prereqCount) {
+                    executeChain(prereqSteps);
+                    lastChainPrereqCount = prereqCount;
                 }
             } finally {
                 chainLock.unlock();
@@ -219,6 +254,36 @@ public class StepperEngine {
 
         // Apply variables to the outgoing request
         return applyVariables(request);
+    }
+
+    /**
+     * Identifies which step the outgoing request corresponds to by matching
+     * method + host + path (without query string). Returns the step index, or
+     * -1 if the request doesn't match any configured step.
+     */
+    private int findMatchingStepIndex(HttpRequest request, List<StepperStep> steps) {
+        String method, host, path;
+        int port;
+        try {
+            method = request.method();
+            host   = request.httpService().host();
+            port   = request.httpService().port();
+            path   = request.pathWithoutQuery();
+        } catch (Exception e) {
+            return -1;
+        }
+        for (int i = 0; i < steps.size(); i++) {
+            try {
+                HttpRequest s = steps.get(i).getOriginalRequest();
+                if (method.equalsIgnoreCase(s.method())
+                        && host.equalsIgnoreCase(s.httpService().host())
+                        && port == s.httpService().port()
+                        && path.equals(s.pathWithoutQuery())) {
+                    return i;
+                }
+            } catch (Exception ignored) {}
+        }
+        return -1;
     }
 
     /**
@@ -279,6 +344,10 @@ public class StepperEngine {
                     if (response == null) {
                         uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName()
                                 + "] — No response (connection failed?)");
+                        if (stopOnFailure) {
+                            uiLog("Stepper", "  Chain aborted at step " + (i + 1) + " (stop-on-failure).");
+                            break;
+                        }
                         continue;
                     }
 
@@ -305,6 +374,10 @@ public class StepperEngine {
                 } catch (Exception e) {
                     uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName()
                             + "] — ERROR: " + e.getMessage());
+                    if (stopOnFailure) {
+                        uiLog("Stepper", "  Chain aborted at step " + (i + 1) + " (stop-on-failure).");
+                        break;
+                    }
                 }
             }
 

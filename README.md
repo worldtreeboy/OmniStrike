@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.66-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.67-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
@@ -47,7 +47,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 
 | Scanner | What It Does |
 |:--------|:-------------|
-| **SQL Injection** | 6-phase detection: error-based + UNION + boolean-blind (2-round) + time-blind (3-step) + OOB (64 payloads) + auth bypass. ~375 payloads/param across 10 DBMS. REST path segment injection. |
+| **SQL Injection** | 3-phase active detection: UNION-based (dynamic column probing, 5 syntax variants) + time-blind (3-step verification, ~45 payloads across 5 DBMS) + OOB via Collaborator (~100 payloads across 6 DBMS groups). Error/boolean phases removed — covered by Burp's built-in scanner. REST path segment injection. |
 | **Command Injection** | 3-step time verification, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/backtick/encoding bypasses. |
 | **SSRF** | Collaborator OOB, DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads (file/gopher/dict/ftp/ldap/tftp). |
 | **SSTI** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
@@ -95,7 +95,7 @@ These scanners **cannot be manually triggered**. They passively detect specific 
 | **Security Headers** | HSTS, CSP, CORS, cookie flags, X-Frame-Options, server version disclosure. Consolidated per host. |
 | **Tech Fingerprinter** | Detects servers, languages, frameworks, CMS, JS libraries, WAF/CDN, caches, cloud platforms. |
 | **Sensitive Data** | Credit cards (Luhn), SSNs (range-validated), emails, phones, internal IPs, JWTs, DB connection strings, AWS ARNs, crypto addresses, IBANs. All values redacted. |
-| **Error Disclosure** | Java stack traces + reflection errors (ClassNotFoundException, NoSuchMethodException, InvocationTargetException) + native serialization (InvalidClassException, StreamCorruptedException) + JAXB. Jackson deserialization errors: 12 exception types, 13 error messages, and polymorphic type-id errors (flags DefaultTyping/@JsonTypeInfo — Jackson gadget-chain attack surface, CVE-2017-7525 family). Spring Whitelabel, Python tracebacks, Django debug, Werkzeug debugger, PHP errors, Laravel Whoops, ASP.NET yellow pages, Node.js/Go/Ruby stack frames, database driver exceptions (ORA-, SQLSTATE, PSQLException, Hibernate, Sequelize). One finding per host/path/category. Skips all 4xx. |
+| **Error Disclosure** | Java stack traces + reflection errors (ClassNotFoundException, NoSuchMethodException, InvocationTargetException) + native serialization (InvalidClassException, StreamCorruptedException) + JAXB. Jackson deserialization errors: 12 exception types, 13 error messages, and polymorphic type-id errors (flags DefaultTyping/@JsonTypeInfo — Jackson gadget-chain attack surface, CVE-2017-7525 family). Spring Whitelabel, Python tracebacks, Django debug, Werkzeug debugger, PHP errors, Laravel Whoops, ASP.NET yellow pages, Node.js/Go/Ruby stack frames, database driver exceptions (ORA-, SQLSTATE, PSQLException, Hibernate, Sequelize, Sybase, Informix, Firebird, CockroachDB). One finding per host/path/category. Skips all 4xx. |
 
 ### 3 Framework Tools
 
@@ -178,13 +178,16 @@ All scanner modules receive the host's tech profile and **prioritize payloads ac
 
 Multi-step auth flows (login, CSRF token, session refresh) produce single-use tokens. Testing the final request requires replaying the entire chain first.
 
-**Stepper automates this.** Define the chain once, and every outgoing request -- Repeater, Intruder, OmniStrike scans -- automatically replays the prerequisites, extracts fresh tokens, and patches them in.
+**Stepper automates this.** Add all requests in the chain (A → B → C → D → E). When any step is sent from Repeater, Intruder, or the active scanner, Stepper automatically identifies which step it is and replays only the required prerequisites — then patches the fresh cookies and tokens into the outgoing request.
 
-- Automatic cookie jar from chain responses
-- `{{variable}}` placeholder substitution in headers/body
-- 4 extraction types: Body Regex, Header, Cookie, JSON Path
-- Token cache with TTL (prevents redundant re-runs)
-- Recursion-safe and serialized execution
+| Feature | Detail |
+|:--------|:-------|
+| **Smart prerequisite detection** | Matches outgoing request by method + host + port + path. Sending step C automatically runs A and B first. No configuration needed. |
+| **Automatic cookie jar** | Every `Set-Cookie` from each chain step is collected and forwarded to subsequent steps and the final request. |
+| **`{{variable}}` substitution** | 4 extraction types: Body Regex (capture group 1), Header, Cookie, JSON Path (dot-notation). Substituted in headers and body. |
+| **TTL cache** | Configurable cache window (default 10s) prevents re-running the chain for every scanner request. Invalidated automatically when the prerequisite set changes. |
+| **Stop on Failure** | Optional: abort the chain immediately if any step returns no response, preventing downstream steps from running with incomplete state. |
+| **Recursion-safe** | ThreadLocal guard prevents chain requests from re-triggering the chain. ReentrantLock serializes concurrent execution. |
 
 ---
 

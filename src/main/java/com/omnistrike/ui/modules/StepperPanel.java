@@ -31,6 +31,8 @@ public class StepperPanel extends JPanel {
     private final DefaultTableModel rulesModel;
     private final JTable rulesTable;
 
+    private JCheckBox stopOnFailureBox;
+
     // Cookie jar table
     private JCheckBox cookieJarCheckBox;
     private DefaultTableModel cookieModel;
@@ -114,10 +116,19 @@ public class StepperPanel extends JPanel {
         JButton invalidateBtn = new JButton("Invalidate Cache");
         styleButton(invalidateBtn, NEON_ORANGE);
         invalidateBtn.setToolTipText("Force the next outgoing request to re-run the chain");
-        invalidateBtn.addActionListener(e -> {
-            engine.invalidateCache();
-        });
+        invalidateBtn.addActionListener(e -> engine.invalidateCache());
         topPanel.add(invalidateBtn);
+
+        topPanel.add(Box.createHorizontalStrut(20));
+
+        stopOnFailureBox = new JCheckBox("Stop on Failure");
+        stopOnFailureBox.setSelected(engine.isStopOnFailure());
+        styleCheckBox(stopOnFailureBox);
+        stopOnFailureBox.setForeground(NEON_RED);
+        stopOnFailureBox.setFont(MONO_FONT);
+        stopOnFailureBox.setToolTipText("Abort the chain immediately if any step returns no response (connection error or timeout)");
+        stopOnFailureBox.addActionListener(e -> engine.setStopOnFailure(stopOnFailureBox.isSelected()));
+        topPanel.add(stopOnFailureBox);
 
         // ════════════════════ EXPLANATION BANNER (collapsible) ════════════════════
         JPanel bannerPanel = new JPanel(new BorderLayout(0, 0));
@@ -561,6 +572,7 @@ public class StepperPanel extends JPanel {
         boolean on = enabledCheckBox.isSelected();
         cacheTtlField.setEnabled(on);
         runChainBtn.setEnabled(on);
+        stopOnFailureBox.setEnabled(on);
         stepsTable.setEnabled(on);
         rulesTable.setEnabled(on);
         enabledCheckBox.setForeground(on ? NEON_GREEN : NEON_RED);
