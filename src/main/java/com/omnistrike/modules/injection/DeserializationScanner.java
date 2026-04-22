@@ -834,6 +834,13 @@ public class DeserializationScanner implements ScanModule {
         passiveAnalyzeRequest(request, url, deserPoints, findings);
         deserPoints.removeIf(dp -> !dp.name.equalsIgnoreCase(targetParameterName));
 
+        // User right-clicked this parameter explicitly — if passive signatures didn't match
+        // (e.g., plain value with no rO0/base64/serialization markers), blind-test it against
+        // all supported languages. User intent overrides signature detection here.
+        if (deserPoints.isEmpty()) {
+            deserPoints.addAll(buildBlindDeserPoints(request, targetParameterName));
+        }
+
         // Flush passive findings to FindingsStore IMMEDIATELY so the UI shows
         // detection results BEFORE any active payloads are sent.
         for (Finding f : findings) {
@@ -880,6 +887,50 @@ public class DeserializationScanner implements ScanModule {
             }
         }
         return enriched;
+    }
+
+    /**
+     * Build synthetic DeserPoints covering every supported language for an explicitly-targeted
+     * parameter. Used when the user right-clicks a parameter and passive analysis finds no
+     * serialization signature — we still honour their intent by blind-testing the parameter.
+     * Locates the parameter in cookies / body params / url params / headers to pick the right
+     * injection strategy in sendPayload().
+     */
+    private List<DeserPoint> buildBlindDeserPoints(HttpRequest request, String paramName) {
+        String location = null;
+        String originalValue = "";
+
+        for (var p : request.parameters()) {
+            if (!p.name().equalsIgnoreCase(paramName)) continue;
+            switch (p.type()) {
+                case COOKIE: location = "cookie"; break;
+                case BODY:   location = "body_param"; break;
+                case URL:    location = "url_param"; break;
+                default:     continue;
+            }
+            originalValue = p.value() == null ? "" : p.value();
+            break;
+        }
+
+        if (location == null) {
+            for (var h : request.headers()) {
+                if (h.name().equalsIgnoreCase(paramName)) {
+                    location = "header";
+                    originalValue = h.value() == null ? "" : h.value();
+                    break;
+                }
+            }
+        }
+
+        if (location == null) return Collections.emptyList();
+
+        String[] languages = {"Java", ".NET", "PHP", "Python", "Ruby", "Node.js"};
+        List<DeserPoint> pts = new ArrayList<>(languages.length);
+        for (String lang : languages) {
+            pts.add(new DeserPoint(location, paramName, originalValue, lang,
+                    "user-selected parameter (blind test)"));
+        }
+        return pts;
     }
 
     @Override

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.68-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.69-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
@@ -243,6 +243,25 @@ Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chai
 ---
 
 ## Changelog
+
+### v1.69
+- **OOB LDAP Listener** added to the custom OOB server
+  - TCP LDAP listener on a configurable port (default: random available port, 0 = disabled)
+  - Scans raw bytes for the 24-char hex payload ID — no full BER/ASN.1 parsing needed
+  - Responds with a minimal LDAP BindResponse (resultCode=0) so clients don't hang or retry
+  - UI: LDAP port field + randomize button + live preview label; status shows HTTP / DNS / LDAP
+  - Enables OOB detection for XXE → LDAP, Log4Shell → LDAP, SSRF → LDAP payloads
+- **Deserialization Scanner: blind testing on right-clicked parameters**
+  - Previously, right-clicking a parameter skipped active payloads if passive analysis found no serialization signature (no rO0/base64/ysoserial markers)
+  - Now falls back to `buildBlindDeserPoints()` — tests the parameter against all 6 supported languages (Java, .NET, PHP, Python, Ruby, Node.js) regardless of signature match
+  - Respects user intent: explicit right-click = test it
+- **ErrorDisclosureScanner** registered in the extension (was built but not wired into the module registry)
+- **SSTI Scanner: dead code cleanup (5 fixes)**
+  - Removed `polyglotCaused500` flag — declared and set but never used downstream; stale comment removed
+  - Removed `confirmedEngine` variable — set to `"Spring EL"` in one branch but never read
+  - Removed 2 POLYGLOT_PROBES with empty `expected` fields — Java `String.contains("")` always returns `true`, so `!baseline.contains("")` is always `false`; these probes could never produce a finding
+  - Removed Django `{{settings.SECRET_KEY}}` ENGINE_PROBE with empty `expected` — same `String.contains("")` trap
+  - Added `oobConfirmedParams` early-exit check inside the `testOobSsti` loop — stops sending OOB payloads as soon as a callback fires (consistent with CommandInjectionScanner)
 
 ### v1.68
 - **Node.js SSJI detection** added to Command Injection scanner (JSON body parameters only)

@@ -40,6 +40,7 @@ public class CollaboratorManager {
     private volatile String customAddress; // The IP address the target should call back to
     private volatile int customPort;       // HTTP port
     private volatile int customDnsPort;    // DNS port (UDP)
+    private volatile int customLdapPort;   // LDAP port (TCP, 0 = disabled)
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     // Stale payload cleanup — shared by both modes
@@ -158,27 +159,29 @@ public class CollaboratorManager {
     // ==================== CUSTOM OOB MODE ====================
 
     /**
-     * Initialize and start the custom OOB HTTP + DNS listeners.
+     * Initialize and start the custom OOB listeners (HTTP + DNS + optional LDAP).
      *
-     * @param address The IP address to bind to and that the target can reach
-     * @param httpPort The port for the HTTP listener
-     * @param dnsPort  The port for the DNS listener (UDP)
-     * @return true if both listeners started successfully
+     * @param address  IP address to bind to (must be reachable from the target)
+     * @param httpPort TCP port for the HTTP listener
+     * @param dnsPort  UDP port for the DNS listener
+     * @param ldapPort TCP port for the LDAP listener (0 = disabled)
+     * @return true if HTTP started successfully (DNS/LDAP failures are non-fatal)
      */
-    public boolean initializeCustomOob(String address, int httpPort, int dnsPort) {
+    public boolean initializeCustomOob(String address, int httpPort, int dnsPort, int ldapPort) {
         stopCustomOob();
-        this.customAddress = address;
-        this.customPort = httpPort;
-        this.customDnsPort = dnsPort;
+        this.customAddress  = address;
+        this.customPort     = httpPort;
+        this.customDnsPort  = dnsPort;
+        this.customLdapPort = ldapPort;
 
         try {
-            oobListener = new OobListener(address, httpPort, dnsPort);
+            oobListener = new OobListener(address, httpPort, dnsPort, ldapPort);
             oobListener.setInteractionHandler(this::handleCustomOobInteraction);
             uiLog("Starting HTTP listener on " + address + ":" + httpPort + "...");
             oobListener.startHttp();
             uiLog("HTTP listener started on " + address + ":" + httpPort);
 
-            // Self-test: verify the listener is actually accepting connections
+            // Self-test
             try {
                 java.net.Socket testSocket = new java.net.Socket();
                 testSocket.connect(new java.net.InetSocketAddress(
@@ -198,6 +201,16 @@ public class CollaboratorManager {
                         + ": " + dnsEx.getMessage() + " (HTTP still active)");
             }
 
+            if (ldapPort > 0) {
+                try {
+                    oobListener.startLdap();
+                    uiLog("LDAP listener started on " + address + ":" + ldapPort + " (TCP)");
+                } catch (Throwable ldapEx) {
+                    uiLog("LDAP FAILED on port " + ldapPort + ": " + ldapEx.getClass().getSimpleName()
+                            + ": " + ldapEx.getMessage() + " (HTTP/DNS still active)");
+                }
+            }
+
             available = true;
             startCleanupTask();
             return true;
@@ -210,9 +223,14 @@ public class CollaboratorManager {
         }
     }
 
-    /** Legacy overload — starts HTTP only with default DNS port 53. */
+    /** Overload without LDAP — ldapPort defaults to 0 (disabled). */
+    public boolean initializeCustomOob(String address, int httpPort, int dnsPort) {
+        return initializeCustomOob(address, httpPort, dnsPort, 0);
+    }
+
+    /** Legacy overload — HTTP only with default DNS port 53. */
     public boolean initializeCustomOob(String address, int port) {
-        return initializeCustomOob(address, port, 53);
+        return initializeCustomOob(address, port, 53, 0);
     }
 
     /**
@@ -235,17 +253,18 @@ public class CollaboratorManager {
      */
     private void handleCustomOobInteraction(String payloadId, CustomOobInteraction interaction) {
         PendingPayload matched = pendingPayloads.remove(payloadId);
+        String proto = interaction.getProtocol();
         if (matched != null) {
             try {
                 matched.callback.accept(interaction);
             } catch (Exception e) {
                 uiLog("Callback error for payload " + payloadId + ": " + e.getMessage());
             }
-            uiLog("Received " + interaction.type().name()
+            uiLog("Received " + proto
                     + " from " + interaction.clientIp().getHostAddress()
                     + " — matched payload " + payloadId + " (" + matched.moduleId + ")");
         } else {
-            uiLog("Received " + interaction.type().name() + " from "
+            uiLog("Received " + proto + " from "
                     + interaction.clientIp().getHostAddress()
                     + " payloadId=" + payloadId + " (no matching payload)");
         }
@@ -269,6 +288,14 @@ public class CollaboratorManager {
 
     public boolean isCustomDnsRunning() {
         return oobListener != null && oobListener.isDnsRunning();
+    }
+
+    public boolean isCustomLdapRunning() {
+        return oobListener != null && oobListener.isLdapRunning();
+    }
+
+    public int getCustomLdapPort() {
+        return customLdapPort;
     }
 
     // ==================== PAYLOAD GENERATION (both modes) ====================

@@ -20,21 +20,32 @@ public class CustomOobInteraction implements Interaction {
     private final ZonedDateTime timestamp;
     private final String rawRequest;
     private final InteractionType interactionType;
+    /** Human-readable protocol label for UI log: "HTTP", "DNS", "LDAP", etc. */
+    private final String protocol;
+
+    public CustomOobInteraction(String payloadId, InetAddress clientAddress, int clientPort,
+                                String rawRequest, InteractionType type, String protocol) {
+        this.interactionId  = new CustomInteractionId(payloadId);
+        this.clientAddress  = clientAddress;
+        this.clientPortNum  = clientPort;
+        this.timestamp      = ZonedDateTime.now();
+        this.rawRequest     = rawRequest;
+        this.interactionType = type;
+        this.protocol       = protocol;
+    }
 
     public CustomOobInteraction(String payloadId, InetAddress clientAddress, int clientPort,
                                 String rawRequest, InteractionType type) {
-        this.interactionId = new CustomInteractionId(payloadId);
-        this.clientAddress = clientAddress;
-        this.clientPortNum = clientPort;
-        this.timestamp = ZonedDateTime.now();
-        this.rawRequest = rawRequest;
-        this.interactionType = type;
+        this(payloadId, clientAddress, clientPort, rawRequest, type, type.name());
     }
 
     /** Backward-compatible constructor — defaults to HTTP. */
     public CustomOobInteraction(String payloadId, InetAddress clientAddress, int clientPort, String rawRequest) {
-        this(payloadId, clientAddress, clientPort, rawRequest, InteractionType.HTTP);
+        this(payloadId, clientAddress, clientPort, rawRequest, InteractionType.HTTP, "HTTP");
     }
+
+    /** Returns the true protocol ("HTTP", "DNS", "LDAP") for display in the activity log. */
+    public String getProtocol() { return protocol; }
 
     @Override
     public InteractionId id() {

@@ -97,6 +97,7 @@ public class OmniStrikeExtension implements BurpExtension {
         registry.registerModule(new ClientSideAnalyzer());
         registry.registerModule(new TechFingerprinter());
         registry.registerModule(new SensitiveDataExposure());
+        registry.registerModule(new ErrorDisclosureScanner());
 
         // Wordlist Generator (passive word harvester — framework tool, domain-scoped)
         WordlistGenerator wordlistGen = new WordlistGenerator();

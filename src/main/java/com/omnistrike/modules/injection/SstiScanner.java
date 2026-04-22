@@ -47,8 +47,6 @@ public class SstiScanner implements ScanModule {
             {"<%= 133*991 %>", SSTI_EXPECTED, "ERB (Ruby)"},
             {"#{133*991}", SSTI_EXPECTED, "Pug/Jade/Thymeleaf"},
             {"{133*991}", SSTI_EXPECTED, "Smarty/Velocity"},
-            {"{{133*'991'}}", "", "Jinja2 (string multiplication)"},  // String repeat produces huge output, not reliable
-            {"{{'133'*991}}", "", "Twig (string repeat)"},
             {"#set($x=133*991)${x}", SSTI_EXPECTED, "Velocity"},
             {"[[${133*991}]]", SSTI_EXPECTED, "Thymeleaf inline"},
             {"{{= 133*991}}", SSTI_EXPECTED, "doT.js"},
@@ -150,7 +148,6 @@ public class SstiScanner implements ScanModule {
         });
         ENGINE_PROBES.put("Django", new String[][]{
                 {"{% debug %}", "settings|TEMPLATES|INSTALLED_APPS", "Django debug tag"},
-                {"{{settings.SECRET_KEY}}", "", "Django SECRET_KEY leak (any non-empty output)"},
                 {"{% load log %}{% get_admin_log 10 as log %}{{log}}", "QuerySet|LogEntry", "Django admin log"},
                 {"{% include 'admin/base.html' %}", "Django|admin|doctype", "Django template include"},
         });
@@ -403,8 +400,6 @@ public class SstiScanner implements ScanModule {
         if (baselineBody == null) baselineBody = "";
 
         // Step 2: Error-triggering polyglot
-        boolean polyglotCaused500 = false;
-
         HttpRequestResponse errorResult = sendPayload(original, target, POLYGLOT_ERROR);
         if (errorResult != null && errorResult.response() != null) {
             String errorBody = errorResult.response().bodyToString();
@@ -425,20 +420,11 @@ public class SstiScanner implements ScanModule {
                             .build());
                 }
             }
-
-            // A 500 from the polyglot is NOT reported as a finding — malformed input in cookies,
-            // query params, or headers commonly triggers 500s for reasons unrelated to template rendering
-            // (input validation, WAF rejection, deserialization errors, etc.). However, we still use it
-            // to gate OOB testing below, since OOB only confirms if Collaborator actually gets a callback.
-            if (errorStatus == 500 && baseline.response().statusCode() != 500) {
-                polyglotCaused500 = true;
-            }
         }
 
         // Step 3: Math evaluation probes
         if (oobConfirmedParams.contains(target.name)) return;
         boolean templateConfirmed = false;
-        String confirmedEngine = null;
 
         for (String[] probe : POLYGLOT_PROBES) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
@@ -462,7 +448,6 @@ public class SstiScanner implements ScanModule {
                 if (Pattern.compile("0\\.\\d{10,}").matcher(responseBody).find()
                         && !Pattern.compile("0\\.\\d{10,}").matcher(baselineBody).find()) {
                     templateConfirmed = true;
-                    confirmedEngine = "Spring EL";
                     findingsStore.addFinding(Finding.builder("ssti-scanner",
                                     "SSTI Confirmed: Spring Expression Language",
                                     Severity.HIGH, Confidence.CERTAIN)
@@ -626,6 +611,7 @@ public class SstiScanner implements ScanModule {
         String url = original.request().url();
         for (String[] payloadInfo : OOB_SSTI_PAYLOADS) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+            if (oobConfirmedParams.contains(target.name)) return;
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
 

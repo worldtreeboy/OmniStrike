@@ -1064,11 +1064,24 @@ public class MainPanel extends JPanel {
         dnsPortField.setToolTipText("Port for the OOB DNS listener (UDP). Default 53 requires root/admin.");
         customControls.add(dnsPortField);
 
+        // LDAP Port field
+        JLabel ldapPortLabel = new JLabel("LDAP Port:");
+        ldapPortLabel.setForeground(NEON_CYAN);
+        ldapPortLabel.setFont(MONO_LABEL);
+        customControls.add(ldapPortLabel);
+
+        int initialLdapPort = OobListener.randomAvailablePort();
+        JTextField ldapPortField = new JTextField(String.valueOf(initialLdapPort), 6);
+        styleTextField(ldapPortField);
+        ldapPortField.setToolTipText("Port for the OOB LDAP listener (TCP). 0 = disabled. Default 389 requires root/admin.");
+        customControls.add(ldapPortField);
+
         JButton randomizeBtn = new JButton("Randomize");
         styleButton(randomizeBtn, null);
         randomizeBtn.addActionListener(e -> {
             portField.setText(String.valueOf(OobListener.randomAvailablePort()));
             dnsPortField.setText(String.valueOf(OobListener.randomAvailableUdpPort()));
+            ldapPortField.setText(String.valueOf(OobListener.randomAvailablePort()));
         });
         customControls.add(randomizeBtn);
 
@@ -1109,8 +1122,17 @@ public class MainPanel extends JPanel {
             if (selectedIdx >= 0 && selectedIdx < interfaces.size()) {
                 String ip = interfaces.get(selectedIdx)[1];
                 String httpPortText = portField.getText().trim();
-                String dnsPortText = dnsPortField.getText().trim();
-                previewLabel.setText("HTTP: http://" + ip + ":" + httpPortText + "/<id>   |   DNS: nslookup <id>." + ip + " " + ip + " (port " + dnsPortText + ")");
+                String dnsPortText  = dnsPortField.getText().trim();
+                String ldapPortText = ldapPortField.getText().trim();
+                StringBuilder sb = new StringBuilder();
+                sb.append("HTTP: http://").append(ip).append(":").append(httpPortText).append("/<id>");
+                sb.append("   |   DNS: nslookup <id>.").append(ip).append(" ").append(ip)
+                  .append(" (port ").append(dnsPortText).append(")");
+                try {
+                    int lp = Integer.parseInt(ldapPortText);
+                    if (lp > 0) sb.append("   |   LDAP: ldap://").append(ip).append(":").append(ldapPortText).append("/<id>");
+                } catch (NumberFormatException ignored) {}
+                previewLabel.setText(sb.toString());
             }
         };
         ifaceCombo.addActionListener(e -> updatePreview.run());
@@ -1121,6 +1143,7 @@ public class MainPanel extends JPanel {
         };
         portField.getDocument().addDocumentListener(previewDocListener);
         dnsPortField.getDocument().addDocumentListener(previewDocListener);
+        ldapPortField.getDocument().addDocumentListener(previewDocListener);
         updatePreview.run();
 
         // --- Visibility toggle ---
@@ -1181,9 +1204,23 @@ public class MainPanel extends JPanel {
                     return;
                 }
 
+                // LDAP port: 0 = disabled, any valid port starts the listener
+                int ldapPort = 0;
+                String ldapPortText = ldapPortField.getText().trim();
+                if (!ldapPortText.isEmpty() && !ldapPortText.equals("0")) {
+                    try {
+                        ldapPort = Integer.parseInt(ldapPortText);
+                        if (ldapPort < 1 || ldapPort > 65535) throw new NumberFormatException();
+                    } catch (NumberFormatException ex) {
+                        JOptionPane.showMessageDialog(this, "Invalid LDAP port number (1-65535 or 0 to disable).");
+                        listenerToggle.setSelected(false);
+                        return;
+                    }
+                }
+
                 boolean started;
                 try {
-                    started = collaboratorManager.initializeCustomOob(ip, httpPort, dnsPort);
+                    started = collaboratorManager.initializeCustomOob(ip, httpPort, dnsPort, ldapPort);
                 } catch (Throwable ex) {
                     listenerToggle.setSelected(false);
                     String errMsg = "CRASH: " + ex.getClass().getSimpleName() + ": " + ex.getMessage();
@@ -1198,23 +1235,25 @@ public class MainPanel extends JPanel {
                     listenerToggle.setBorder(BorderFactory.createCompoundBorder(
                             new CyberTheme.GlowLineBorder(NEON_RED, 1),
                             BorderFactory.createEmptyBorder(4, 12, 4, 12)));
-                    // Show status for both HTTP and DNS
-                    boolean dnsOk = collaboratorManager.isCustomDnsRunning();
-                    String statusText = "Started — HTTP on " + ip + ":" + httpPort;
-                    if (dnsOk) {
-                        statusText += " | DNS on " + ip + ":" + dnsPort;
-                    } else {
-                        statusText += " | DNS failed (port " + dnsPort + " in use?)";
+                    boolean dnsOk  = collaboratorManager.isCustomDnsRunning();
+                    boolean ldapOk = collaboratorManager.isCustomLdapRunning();
+                    StringBuilder statusText = new StringBuilder("Started — HTTP on " + ip + ":" + httpPort);
+                    if (dnsOk) statusText.append(" | DNS:").append(dnsPort);
+                    else        statusText.append(" | DNS FAILED");
+                    if (ldapPort > 0) {
+                        if (ldapOk) statusText.append(" | LDAP:").append(ldapPort);
+                        else         statusText.append(" | LDAP FAILED");
                     }
-                    listenerStatusLabel.setText(statusText);
+                    listenerStatusLabel.setText(statusText.toString());
                     listenerStatusLabel.setForeground(NEON_GREEN);
-                    // Disable controls while running
                     ifaceCombo.setEnabled(false);
                     portField.setEnabled(false);
                     dnsPortField.setEnabled(false);
+                    ldapPortField.setEnabled(false);
                     randomizeBtn.setEnabled(false);
                     logPanel.log("INFO", "OOB", "Custom OOB Listener started — HTTP:" + httpPort
-                            + " DNS:" + (dnsOk ? String.valueOf(dnsPort) : "FAILED"));
+                            + " DNS:" + (dnsOk ? String.valueOf(dnsPort) : "FAILED")
+                            + (ldapPort > 0 ? " LDAP:" + (ldapOk ? String.valueOf(ldapPort) : "FAILED") : ""));
                 } else {
                     listenerToggle.setSelected(false);
                     listenerStatusLabel.setText("Failed to start — check Activity Log for details");
@@ -1230,10 +1269,10 @@ public class MainPanel extends JPanel {
                         BorderFactory.createEmptyBorder(4, 12, 4, 12)));
                 listenerStatusLabel.setText("Stopped");
                 listenerStatusLabel.setForeground(FG_SECONDARY);
-                // Re-enable controls
                 ifaceCombo.setEnabled(true);
                 portField.setEnabled(true);
                 dnsPortField.setEnabled(true);
+                ldapPortField.setEnabled(true);
                 randomizeBtn.setEnabled(true);
                 logPanel.log("INFO", "OOB", "Custom OOB Listener stopped");
             }

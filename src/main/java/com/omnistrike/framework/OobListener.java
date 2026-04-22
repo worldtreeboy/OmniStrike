@@ -31,11 +31,21 @@ public class OobListener {
     private Thread httpAcceptThread;
     private DatagramSocket dnsSocket;
     private Thread dnsThread;
+    private ServerSocket ldapServerSocket;
+    private ExecutorService ldapExecutor;
+    private Thread ldapAcceptThread;
+
     private final String bindAddress;
     private final int httpPort;
     private volatile int dnsPort;
-    private volatile boolean httpRunning = false;
-    private volatile boolean dnsRunning = false;
+    private volatile int ldapPort;
+    private volatile boolean httpRunning  = false;
+    private volatile boolean dnsRunning   = false;
+    private volatile boolean ldapRunning  = false;
+
+    // Regex to extract our 24-char hex payload ID from raw bytes / text
+    private static final java.util.regex.Pattern HEX_ID =
+            java.util.regex.Pattern.compile("[0-9a-f]{24}");
 
     /**
      * Callback invoked for every incoming request: (payloadId, CustomOobInteraction).
@@ -53,6 +63,13 @@ public class OobListener {
         this.bindAddress = bindAddress;
         this.httpPort = httpPort;
         this.dnsPort = dnsPort;
+    }
+
+    public OobListener(String bindAddress, int httpPort, int dnsPort, int ldapPort) {
+        this.bindAddress = bindAddress;
+        this.httpPort    = httpPort;
+        this.dnsPort     = dnsPort;
+        this.ldapPort    = ldapPort;
     }
 
     public void setInteractionHandler(BiConsumer<String, CustomOobInteraction> handler) {
@@ -246,6 +263,90 @@ public class OobListener {
         }
     }
 
+    // ==================== LDAP LISTENER (TCP) ====================
+
+    /**
+     * Starts a minimal LDAP listener on a TCP port.
+     * Scans the raw bytes of every inbound message for a 24-char hex payload ID,
+     * then fires the callback. Responds with a generic BindResponse (resultCode=0)
+     * so the client does not hang or retry.
+     *
+     * Payload ID extraction: SSRF/XXE payloads using LDAP URLs embed the hex ID in
+     * the Distinguished Name (base DN). Scanning for the hex pattern is more reliable
+     * than full BER/ASN.1 parsing across every LDAP client implementation.
+     */
+    public void startLdap() throws IOException {
+        if (ldapPort <= 0) throw new IOException("LDAP port not configured");
+        InetAddress addr = InetAddress.getByName(bindAddress);
+        ldapServerSocket = new ServerSocket(ldapPort, 50, addr);
+        ldapExecutor = Executors.newFixedThreadPool(4, r -> {
+            Thread t = new Thread(r, "OmniStrike-OOB-LDAP");
+            t.setDaemon(true);
+            return t;
+        });
+        ldapRunning = true;
+        ldapAcceptThread = new Thread(() -> {
+            while (ldapRunning) {
+                try {
+                    Socket client = ldapServerSocket.accept();
+                    ldapExecutor.submit(() -> handleLdapConnection(client));
+                } catch (IOException e) {
+                    if (ldapRunning) { /* real error */ }
+                }
+            }
+        }, "OmniStrike-LDAP-Accept");
+        ldapAcceptThread.setDaemon(true);
+        ldapAcceptThread.start();
+    }
+
+    public void stopLdap() {
+        ldapRunning = false;
+        if (ldapServerSocket != null) {
+            try { ldapServerSocket.close(); } catch (IOException ignored) {}
+            ldapServerSocket = null;
+        }
+        if (ldapExecutor != null) { ldapExecutor.shutdownNow(); ldapExecutor = null; }
+        if (ldapAcceptThread != null) { ldapAcceptThread.interrupt(); ldapAcceptThread = null; }
+    }
+
+    private void handleLdapConnection(Socket socket) {
+        try {
+            socket.setSoTimeout(5000);
+            InputStream in  = socket.getInputStream();
+            OutputStream out = socket.getOutputStream();
+
+            // Read up to 2 KB — enough to cover any LDAP bind/search request
+            byte[] buf = new byte[2048];
+            int n = in.read(buf, 0, buf.length);
+            if (n <= 0) return;
+
+            String raw = new String(buf, 0, n, StandardCharsets.ISO_8859_1);
+            String payloadId = extractHexId(raw);
+
+            InetAddress remoteAddr = socket.getInetAddress();
+            int remotePort = socket.getPort();
+            String evidence = "LDAP request from " + remoteAddr.getHostAddress() + ":" + remotePort
+                    + (payloadId != null ? " payloadId=" + payloadId : " (no payload ID)");
+
+            if (payloadId != null && interactionHandler != null) {
+                CustomOobInteraction interaction = new CustomOobInteraction(
+                        payloadId, remoteAddr, remotePort, evidence,
+                        InteractionType.HTTP, "LDAP");
+                interactionHandler.accept(payloadId, interaction);
+            }
+
+            // Minimal LDAP BindResponse: resultCode=0 (success), so the client doesn't hang
+            // SEQUENCE { messageID=1, [APP 1] BindResponse { resultCode=0, matchedDN="", errorMsg="" } }
+            byte[] bindResp = { 0x30, 0x0C, 0x02, 0x01, 0x01, 0x61, 0x07,
+                                 0x0A, 0x01, 0x00, 0x04, 0x00, 0x04, 0x00 };
+            out.write(bindResp);
+            out.flush();
+        } catch (Exception ignored) {
+        } finally {
+            try { socket.close(); } catch (IOException ignored) {}
+        }
+    }
+
     // ==================== COMBINED START/STOP ====================
 
     /** Starts both HTTP and DNS listeners. */
@@ -257,19 +358,16 @@ public class OobListener {
     public void stop() {
         stopHttp();
         stopDns();
+        stopLdap();
     }
 
     public boolean isRunning() {
-        return httpRunning || dnsRunning;
+        return httpRunning || dnsRunning || ldapRunning;
     }
 
-    public boolean isHttpRunning() {
-        return httpRunning;
-    }
-
-    public boolean isDnsRunning() {
-        return dnsRunning;
-    }
+    public boolean isHttpRunning()  { return httpRunning;  }
+    public boolean isDnsRunning()   { return dnsRunning;   }
+    public boolean isLdapRunning()  { return ldapRunning;  }
 
     public int getPort() {
         return httpPort;
@@ -283,8 +381,23 @@ public class OobListener {
         return dnsPort;
     }
 
+    public int getLdapPort() {
+        return ldapPort;
+    }
+
     public String getBindAddress() {
         return bindAddress;
+    }
+
+    /**
+     * Scans text for our 24-char lowercase hex payload ID.
+     * Used by LDAP (and any future protocol) where payload IDs are embedded in
+     * raw protocol data rather than a clean URL path segment.
+     */
+    private String extractHexId(String text) {
+        if (text == null) return null;
+        java.util.regex.Matcher m = HEX_ID.matcher(text);
+        return m.find() ? m.group() : null;
     }
 
     /**
