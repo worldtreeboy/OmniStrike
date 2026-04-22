@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.67-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.68-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
@@ -48,7 +48,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 | Scanner | What It Does |
 |:--------|:-------------|
 | **SQL Injection** | 3-phase active detection: UNION-based (dynamic column probing, 5 syntax variants) + time-blind (3-step verification, ~45 payloads across 5 DBMS) + OOB via Collaborator (~100 payloads across 6 DBMS groups). Error/boolean phases removed — covered by Burp's built-in scanner. REST path segment injection. |
-| **Command Injection** | 3-step time verification, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/backtick/encoding bypasses. |
+| **Command Injection** | 3-step time verification, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/backtick/encoding bypasses. **Node.js SSJI** (JSON params): arithmetic math probe (`(A*B).toString()` with word-boundary FP guard), `execSync` OOB/output-based/time-based across 5 context-breaker prefixes, `global.process.mainModule.require` WAF bypass, IIFE obfuscation variant — 29 payloads total. |
 | **SSRF** | Collaborator OOB, DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads (file/gopher/dict/ftp/ldap/tftp). |
 | **SSTI** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
 | **XSS** | *(Removed in v1.63 — use Burp's built-in scanner for XSS)* |
@@ -239,6 +239,23 @@ Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chai
 4. Open a PR
 
 [Issues](https://github.com/worldtreeboy/OmniStrike/issues) for bugs and feature requests.
+
+---
+
+## Changelog
+
+### v1.68
+- **Node.js SSJI detection** added to Command Injection scanner (JSON body parameters only)
+  - JS arithmetic math probe: injects `(A*B).toString()` and checks for the product in the response; word-boundary guard prevents false positives from large numbers containing the product as a substring
+  - `execSync` OOB payloads (14 variants): `require()`, `global.process.mainModule.require()`, IIFE obfuscation; `curl`/`wget`/`nslookup`/`ping` — fires in Phase 1 alongside standard OOB
+  - `execSync` output-based payloads (8 variants): `id` (regex-matched) + `cat /etc/passwd` (marker-matched)
+  - `execSync` time-based payloads (7 variants): gated by the Time-Based Testing UI toggle, serialized via `TimingLock`
+  - 5 context-breaker prefixes per payload family: `'`, `')`, `'})`, `'))`, `'}}))` — covers the most common Node.js eval idioms
+
+### v1.67
+- Passive Tech Fingerprinter: per-host dedup, new framework signal categories
+- LDAP Injection: zero FP redesign (2+ signature requirement for error-based, 2-round boolean differential)
+- Auto-Throttle: exponential backoff on rate-limit detection
 
 ---
 
