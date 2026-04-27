@@ -61,6 +61,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
     private final OmniStrikeScanCheck scanCheck;
     private final SessionKeepAlive sessionKeepAlive;
     private final StepperEngine stepperEngine;
+    private final com.omnistrike.framework.tls.TlsAnalyzer tlsAnalyzer;
     private volatile Supplier<MainPanel> mainPanelSupplier;
 
     // Static file extensions where active injection testing is pointless
@@ -75,13 +76,15 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                                   TrafficInterceptor interceptor,
                                   OmniStrikeScanCheck scanCheck,
                                   SessionKeepAlive sessionKeepAlive,
-                                  StepperEngine stepperEngine) {
+                                  StepperEngine stepperEngine,
+                                  com.omnistrike.framework.tls.TlsAnalyzer tlsAnalyzer) {
         this.api = api;
         this.registry = registry;
         this.interceptor = interceptor;
         this.scanCheck = scanCheck;
         this.sessionKeepAlive = sessionKeepAlive;
         this.stepperEngine = stepperEngine;
+        this.tlsAnalyzer = tlsAnalyzer;
     }
 
     public void setMainPanelSupplier(Supplier<MainPanel> supplier) {
@@ -298,6 +301,37 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         // WebSocket Scanner removed
+
+        // ============ "Analyze TLS" — out-of-band TLS / SSL inspection ============
+        if (tlsAnalyzer != null && reqResp.request().httpService() != null
+                && reqResp.request().httpService().secure()) {
+            String tlsHost = reqResp.request().httpService().host();
+            int tlsPort = reqResp.request().httpService().port();
+            JMenuItem tlsItem = new JMenuItem("Analyze TLS (" + tlsHost + ":" + tlsPort + ")");
+            tlsItem.setToolTipText("Probe TLS protocol versions, ciphers, and certificate chain. Findings appear in Dashboard.");
+            Supplier<MainPanel> supplier = mainPanelSupplier;
+            tlsItem.addActionListener(e -> {
+                MainPanel mp = supplier != null ? supplier.get() : null;
+                if (mp != null) {
+                    var panel = mp.getTlsAnalyzerPanel();
+                    if (panel != null) {
+                        panel.runForTarget(tlsHost, tlsPort, true);
+                        mp.selectModule("tls-analyzer");
+                        showToast("TLS Analyzer",
+                                "Scanning " + tlsHost + ":" + tlsPort
+                                + "\n\nResults appear in TLS Analyzer panel.");
+                        return;
+                    }
+                }
+                // Fallback: kick off the scan even if the panel isn't ready
+                tlsAnalyzer.invalidate(tlsHost, tlsPort);
+                tlsAnalyzer.analyze(tlsHost, tlsPort, false, true, null);
+                showToast("TLS Analyzer",
+                        "Scan started for " + tlsHost + ":" + tlsPort
+                        + "\n\n(Open the TLS Analyzer panel to see results.)");
+            });
+            items.add(tlsItem);
+        }
 
         // ============ "Scan This Parameter" — targeted parameter scanning ============
         // Build module lists: one set for parameter scanning (excludes right-click-only modules),

@@ -41,6 +41,7 @@ public class MainPanel extends JPanel {
     private final CollaboratorManager collaboratorManager;
     private final SessionKeepAlive sessionKeepAlive;
     private final StepperEngine stepperEngine;
+    private final com.omnistrike.framework.tls.TlsAnalyzer tlsAnalyzer;
     private final SharedDataBus dataBus;
     private final MontoyaApi api;
     private final LogPanel logPanel;
@@ -76,6 +77,9 @@ public class MainPanel extends JPanel {
     // Wordlist Generator panel
     private WordlistGeneratorPanel wordlistPanel;
 
+    // TLS Analyzer panel
+    private com.omnistrike.ui.modules.TlsAnalyzerPanel tlsAnalyzerPanel;
+
     // Stats bar severity count labels
     private final JLabel critLabel;
     private final JLabel highLabel;
@@ -96,7 +100,9 @@ public class MainPanel extends JPanel {
     public MainPanel(ModuleRegistry registry, FindingsStore findingsStore, ScopeManager scopeManager,
                      ActiveScanExecutor executor, TrafficInterceptor interceptor,
                      CollaboratorManager collaboratorManager, SessionKeepAlive sessionKeepAlive,
-                     StepperEngine stepperEngine, SharedDataBus dataBus, MontoyaApi api) {
+                     StepperEngine stepperEngine,
+                     com.omnistrike.framework.tls.TlsAnalyzer tlsAnalyzer,
+                     SharedDataBus dataBus, MontoyaApi api) {
         this.registry = registry;
         this.findingsStore = findingsStore;
         this.scopeManager = scopeManager;
@@ -105,6 +111,7 @@ public class MainPanel extends JPanel {
         this.collaboratorManager = collaboratorManager;
         this.sessionKeepAlive = sessionKeepAlive;
         this.stepperEngine = stepperEngine;
+        this.tlsAnalyzer = tlsAnalyzer;
         this.dataBus = dataBus;
         this.api = api;
         this.logPanel = new LogPanel();
@@ -864,6 +871,15 @@ public class MainPanel extends JPanel {
                     "Generate POC Files & Payloads for Upload Testing");
         }
 
+        // Register TLS Analyzer as a framework tool (manual-trigger, out-of-band probe)
+        if (tlsAnalyzer != null) {
+            tlsAnalyzerPanel = new com.omnistrike.ui.modules.TlsAnalyzerPanel(tlsAnalyzer);
+            modulePanels.put("tls-analyzer", tlsAnalyzerPanel);
+            moduleDetailContainer.add(tlsAnalyzerPanel, "tls-analyzer");
+            moduleListPanel.addFrameworkEntry("tls-analyzer", "TLS Analyzer",
+                    "TLS / SSL Version, Cipher & Certificate Inspection");
+        }
+
         // Placeholder when no module selected
         JPanel placeholder = new JPanel(new GridBagLayout());
         placeholder.setBackground(BG_DARK);
@@ -1571,6 +1587,11 @@ public class MainPanel extends JPanel {
     /** Returns the custom DeserModulePanel, or null if not yet created. */
     public DeserModulePanel getDeserModulePanel() {
         return deserModulePanel;
+    }
+
+    /** Returns the TLS Analyzer panel, or null if not yet created. */
+    public com.omnistrike.ui.modules.TlsAnalyzerPanel getTlsAnalyzerPanel() {
+        return tlsAnalyzerPanel;
     }
 
     /** Programmatically switches to the given module's detail panel. */

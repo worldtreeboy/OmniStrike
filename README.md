@@ -97,13 +97,14 @@ These scanners **cannot be manually triggered**. They passively detect specific 
 | **Sensitive Data** | Credit cards (Luhn), SSNs (range-validated), emails, phones, internal IPs, JWTs, DB connection strings, AWS ARNs, crypto addresses, IBANs. All values redacted. |
 | **Error Disclosure** | Java stack traces + reflection errors (ClassNotFoundException, NoSuchMethodException, InvocationTargetException) + native serialization (InvalidClassException, StreamCorruptedException) + JAXB. Jackson deserialization errors: 12 exception types, 13 error messages, and polymorphic type-id errors (flags DefaultTyping/@JsonTypeInfo — Jackson gadget-chain attack surface, CVE-2017-7525 family). Spring Whitelabel, Python tracebacks, Django debug, Werkzeug debugger, PHP errors, Laravel Whoops, ASP.NET yellow pages, Node.js/Go/Ruby stack frames, database driver exceptions (ORA-, SQLSTATE, PSQLException, Hibernate, Sequelize, Sybase, Informix, Firebird, CockroachDB). One finding per host/path/category. Skips all 4xx. |
 
-### 3 Framework Tools
+### 4 Framework Tools
 
 | Tool | What It Does |
 |:-----|:-------------|
 | **AI Vulnerability Analyzer** | LLM-powered security analysis with smart fuzzing, WAF bypass generation, and adaptive multi-round scanning. Supports Claude Code, Gemini CLI, Codex CLI, OpenCode CLI. No API keys needed. Disabled by default. |
 | **File Payload Generator** | 39 file payloads (PDF XSS, SVG XXE, DOCX/XLSX XXE, PHP/JSP/ASPX/Python/Ruby/Perl/Node.js/Bash/PowerShell POC, 11 template engine injections, .htaccess/.user.ini/web.config hijack, CSV injection, LaTeX RCE, polyglot GIF/JS, EICAR) + 31 inline copy-paste payloads (SSTI probes for 8 engines, XXE, Log4j, EL/SpEL, OGNL, LFI/RFI, CRLF, polyglot). Collaborator URL support. |
 | **Wordlist Generator** | Passive word harvester from proxied traffic. Builds domain-specific wordlists for fuzzing/brute-forcing. |
+| **TLS Analyzer** | Out-of-band TLS / SSL inspection. Probes each protocol version individually (TLSv1.3 → SSLv3) so you see the full support matrix instead of just whichever version Burp happened to negotiate. Optional cipher-suite enumeration, certificate-chain inspection (subject/issuer/SANs/expiry/signature/key size), self-signed/expired/weak-signature detection, hostname-mismatch detection. Findings publish into the Dashboard. Right-click any HTTPS request → **Analyze TLS** to auto-fill host:port and run. |
 
 ---
 
@@ -295,6 +296,15 @@ Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chai
 ---
 
 ## Changelog
+
+### v1.71
+- **TLS Analyzer (new framework tool)** — out-of-band TLS / SSL inspection.
+  - Per-protocol probe matrix (TLSv1.3 → SSLv3) since Burp's Montoya API does not expose negotiated TLS metadata. Reports `BLOCKED_BY_JDK` for protocols the local JVM disables (so the user knows the server's posture is unknown rather than assumed-broken).
+  - Optional cipher-suite enumeration (off by default — slow). Built-in classifier flags NULL/anon/EXPORT/RC4/3DES/DES/MD5 ciphers.
+  - Certificate chain inspection: subject, issuer, SANs, signature algorithm, public-key algorithm + size, expiry. Self-signed / expired / SHA-1 / RSA <2048 / hostname-mismatch detection.
+  - Right-click any HTTPS request → **Analyze TLS (host:port)** to auto-fill and run.
+  - Findings publish into the Findings store + Burp Dashboard with severity-mapped remediations.
+- **Dashboard rendering fix** — finding descriptions and remediations no longer show literal `<br>`, `<b>`, `<table>` tags. Stripped HTML markup from `FindingsBundler`, `SecurityHeaderAnalyzer`, `TechFingerprinter` and made `OmniStrikeScanCheck.buildDetailHtml` convert plain-text newlines to `<br>` so multi-line descriptions render correctly.
 
 ### v1.70
 - **Stepper auto-extraction** — `{{name}}` placeholders now auto-resolve from earlier step responses without requiring an `ExtractionRule`. Resolution order: response header → Set-Cookie → JSON key (case-insensitive, nested objects + arrays) → regex fallback (`"name":"value"`, `name=value`). Most-recent response wins; resolved values cached for the chain run.

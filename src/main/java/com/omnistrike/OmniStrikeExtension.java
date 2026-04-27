@@ -7,6 +7,7 @@ import burp.api.montoya.scanner.BuiltInAuditConfiguration;
 import burp.api.montoya.scanner.audit.Audit;
 import com.omnistrike.framework.*;
 import com.omnistrike.framework.stepper.StepperEngine;
+import com.omnistrike.framework.tls.TlsAnalyzer;
 import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
 // WebSocket module removed
@@ -19,7 +20,7 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.70 — Entry Point
+ * OmniStrike v1.71 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 23 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -41,13 +42,14 @@ public class OmniStrikeExtension implements BurpExtension {
     private CollaboratorManager collaboratorManager;
     private SessionKeepAlive sessionKeepAlive;
     private StepperEngine stepperEngine;
+    private TlsAnalyzer tlsAnalyzer;
     private volatile MainPanel mainPanel;
     private volatile Audit persistentAudit;
 
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.70 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.71 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -235,6 +237,12 @@ public class OmniStrikeExtension implements BurpExtension {
         interceptor.setSessionKeepAlive(sessionKeepAlive);
         api.logging().logToOutput("Stepper engine initialized (disabled by default).");
 
+        // ==================== TLS ANALYZER ====================
+        // Out-of-band TLS prober — separate connection from the plugin process,
+        // since Burp's Montoya API does not expose negotiated TLS metadata.
+        tlsAnalyzer = new TlsAnalyzer(api, findingsStore);
+        api.logging().logToOutput("TLS Analyzer initialized.");
+
         // ==================== SESSION KEEP-ALIVE ====================
         sessionKeepAlive = new SessionKeepAlive(api);
         // uiLogger is wired below after MainPanel is created (it needs logPanel)
@@ -266,7 +274,7 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // ==================== CONTEXT MENU ====================
         OmniStrikeContextMenu contextMenu = new OmniStrikeContextMenu(
-                api, registry, interceptor, scanCheck, sessionKeepAlive, stepperEngine);
+                api, registry, interceptor, scanCheck, sessionKeepAlive, stepperEngine, tlsAnalyzer);
         contextMenu.setMainPanelSupplier(() -> mainPanel);
         api.userInterface().registerContextMenuItemsProvider(contextMenu);
         api.logging().logToOutput("Context menu registered (right-click > Send to OmniStrike).");
@@ -283,7 +291,7 @@ public class OmniStrikeExtension implements BurpExtension {
             mainPanel = new MainPanel(
                     registry, findingsStore, scopeManager,
                     executor, interceptor, collaboratorManager, sessionKeepAlive,
-                    stepperEngine, dataBus, api);
+                    stepperEngine, tlsAnalyzer, dataBus, api);
             api.userInterface().registerSuiteTab("OmniStrike", mainPanel);
             // Wire Stepper log messages to the Activity Log
             if (stepperEngine != null) {
@@ -299,6 +307,12 @@ public class OmniStrikeExtension implements BurpExtension {
             sessionKeepAlive.setUiLogger((module, message) ->
                     javax.swing.SwingUtilities.invokeLater(() ->
                             mainPanel.getLogPanel().log("INFO", module, message)));
+            // Wire TLS Analyzer log messages to the Activity Log
+            if (tlsAnalyzer != null) {
+                tlsAnalyzer.setUiLogger((module, message) ->
+                        javax.swing.SwingUtilities.invokeLater(() ->
+                                mainPanel.getLogPanel().log("INFO", module, message)));
+            }
             api.logging().logToOutput("UI tab registered. Theme: Default (Burp native).");
         });
 
@@ -320,6 +334,9 @@ public class OmniStrikeExtension implements BurpExtension {
             }
             registry.destroyAll();
             executor.shutdown();
+            if (tlsAnalyzer != null) {
+                tlsAnalyzer.shutdown();
+            }
             if (collaboratorManager != null) {
                 collaboratorManager.shutdown();
             }
@@ -336,7 +353,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.70 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.71 ready ===");
         String oobMode = collaboratorManager.getMode() == CollaboratorManager.OobMode.BURP_COLLABORATOR
                 ? "Burp Collaborator" : "Custom OOB (configure listener in UI)";
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()

@@ -302,10 +302,10 @@ public class TechFingerprinter implements ScanModule {
             String categoryLabel = formatCategory(tech.category);
 
             StringBuilder desc = new StringBuilder();
-            desc.append("<b>Technology:</b> ").append(tech.name);
+            desc.append("Technology: ").append(tech.name);
             if (hasVersion) desc.append(" ").append(tech.version);
-            desc.append("<br><b>Category:</b> ").append(categoryLabel);
-            desc.append("<br><b>Host:</b> ").append(host);
+            desc.append("\nCategory: ").append(categoryLabel);
+            desc.append("\nHost: ").append(host);
 
             String evidence = categoryLabel + ": " + tech.name + (hasVersion ? " " + tech.version : "");
 

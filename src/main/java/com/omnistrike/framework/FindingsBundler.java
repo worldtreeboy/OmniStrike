@@ -139,32 +139,32 @@ public class FindingsBundler implements FindingsStore.FindingsListener {
             }
         }
 
-        // Build combined HTML description
+        // Build combined plain-text description.
+        // Plain text is required: OmniStrikeScanCheck escapes the description
+        // before rendering in Burp's Dashboard, so any HTML markup here would
+        // be displayed literally as <p>, <br>, etc.
         StringBuilder desc = new StringBuilder();
-        desc.append("<p>OmniStrike consolidated <b>").append(findings.size())
-                .append("</b> low-severity findings for <b>").append(esc(host))
-                .append("</b> (").append(summary).append(").</p>");
+        desc.append("OmniStrike consolidated ").append(findings.size())
+                .append(" low-severity findings for ").append(host)
+                .append(" (").append(summary).append(").\n\n");
 
-        desc.append("<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse'>");
-        desc.append("<tr><th>#</th><th>Finding</th><th>Severity</th><th>Module</th></tr>");
+        desc.append("Summary:\n");
         for (int i = 0; i < findings.size(); i++) {
             Finding f = findings.get(i);
-            desc.append("<tr><td>").append(i + 1).append("</td>")
-                    .append("<td>").append(esc(f.getTitle())).append("</td>")
-                    .append("<td>").append(f.getSeverity()).append("</td>")
-                    .append("<td>").append(esc(f.getModuleId())).append("</td></tr>");
+            desc.append("  ").append(i + 1).append(". [").append(f.getSeverity()).append("] ")
+                    .append(f.getTitle())
+                    .append("  (").append(f.getModuleId()).append(")\n");
         }
-        desc.append("</table><br>");
 
-        // Add individual details
+        // Individual details
         for (int i = 0; i < findings.size(); i++) {
             Finding f = findings.get(i);
-            desc.append("<h4>").append(i + 1).append(". ").append(esc(f.getTitle())).append("</h4>");
+            desc.append("\n").append(i + 1).append(". ").append(f.getTitle()).append("\n");
             if (f.getDescription() != null && !f.getDescription().isEmpty()) {
-                desc.append("<p>").append(f.getDescription()).append("</p>");
+                desc.append(stripHtml(f.getDescription())).append("\n");
             }
             if (f.getEvidence() != null && !f.getEvidence().isEmpty()) {
-                desc.append("<pre>").append(esc(f.getEvidence())).append("</pre>");
+                desc.append("  Evidence: ").append(f.getEvidence()).append("\n");
             }
         }
 
@@ -219,9 +219,22 @@ public class FindingsBundler implements FindingsStore.FindingsListener {
         }
     }
 
-    private static String esc(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    /**
+     * Removes HTML tags from a string and decodes a small set of common
+     * entities so legacy HTML-formatted module descriptions render as
+     * readable plain text inside the bundled description.
+     */
+    private static String stripHtml(String s) {
+        if (s == null || s.isEmpty()) return "";
+        return s.replaceAll("<\\s*br\\s*/?>", "\n")
+                .replaceAll("</\\s*p\\s*>", "\n")
+                .replaceAll("</\\s*li\\s*>", "\n")
+                .replaceAll("<[^>]+>", "")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'");
     }
 
     /**

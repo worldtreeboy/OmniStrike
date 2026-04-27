@@ -315,16 +315,25 @@ public class OmniStrikeScanCheck implements ScanCheck {
         if (f.getParameter() != null && !f.getParameter().isEmpty())
             sb.append("<p><b>Parameter:</b> ").append(esc(f.getParameter())).append("</p>");
         if (f.getDescription() != null && !f.getDescription().isEmpty())
-            sb.append("<p><b>Description:</b><br>").append(esc(f.getDescription())).append("</p>");
+            sb.append("<p><b>Description:</b><br>").append(escMultiline(f.getDescription())).append("</p>");
         if (f.getEvidence() != null && !f.getEvidence().isEmpty())
             sb.append("<p><b>Evidence:</b></p><pre>").append(esc(f.getEvidence())).append("</pre>");
         if (f.getRemediation() != null && !f.getRemediation().isEmpty())
-            sb.append("<p><b>Remediation:</b><br>").append(esc(f.getRemediation())).append("</p>");
+            sb.append("<p><b>Remediation:</b><br>").append(escMultiline(f.getRemediation())).append("</p>");
         return sb.toString();
     }
 
     private static String esc(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /**
+     * HTML-escapes a string and converts newlines to {@code <br>} so the
+     * Dashboard renders multi-line plain-text descriptions/remediations
+     * with their original line breaks instead of collapsing whitespace.
+     */
+    private static String escMultiline(String s) {
+        return esc(s).replace("\n", "<br>");
     }
 }

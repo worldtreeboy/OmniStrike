@@ -158,8 +158,8 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                 hostFindings.add(hf);
                 missingHeaders.add(headerName);
                 evidence.append("- ").append(headerName).append("\n");
-                description.append("<b>").append(headerName).append("</b>: ")
-                        .append(required.getValue()).append("<br>");
+                description.append(headerName).append(": ")
+                        .append(required.getValue()).append("\n");
             }
         }
 
@@ -170,7 +170,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                     .url(url)
                     .evidence("Missing headers:\n" + evidence.toString().trim())
                     .description("The following security headers are missing from responses on "
-                            + host + ":<br><br>" + description)
+                            + host + ":\n\n" + description.toString().trim())
                     .build());
         }
     }
@@ -198,8 +198,8 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                     .evidence(evidence.toString().trim())
                     .responseEvidence(disclosedHeaders.get(0) + ": " + headers.get(disclosedHeaders.get(0)))
                     .description("Server/technology information disclosed via response headers. "
-                            + "Attackers can use this to identify known vulnerabilities.<br><br>"
-                            + "Disclosed headers:<br><pre>" + evidence.toString().trim() + "</pre>")
+                            + "Attackers can use this to identify known vulnerabilities.\n\n"
+                            + "Disclosed headers:\n" + evidence.toString().trim())
                     .build());
         }
     }
@@ -405,18 +405,18 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                         .url(url)
                         .evidence("Set-Cookie: " + cookieName + "=eyJ...")
                         .responseEvidence(cookieName + "=eyJ")
-                        .description("A JSON Web Token (JWT) was detected in the <code>Set-Cookie</code> "
-                                + "header for cookie '<b>" + cookieName + "</b>'. "
-                                + "JWTs should be transmitted via the <code>Authorization: Bearer</code> "
-                                + "header instead of cookies.<br><br>"
-                                + "<b>Why this matters:</b><br>"
-                                + "- <b>CSRF vulnerability</b>: Cookies are automatically attached by the browser "
+                        .description("A JSON Web Token (JWT) was detected in the Set-Cookie "
+                                + "header for cookie '" + cookieName + "'. "
+                                + "JWTs should be transmitted via the Authorization: Bearer "
+                                + "header instead of cookies.\n\n"
+                                + "Why this matters:\n"
+                                + "- CSRF vulnerability: Cookies are automatically attached by the browser "
                                 + "on every request to the domain, including cross-origin requests. An attacker's "
                                 + "page can forge authenticated requests without needing the JWT value. "
-                                + "The Authorization header is NOT auto-attached, making it inherently CSRF-safe.<br>"
-                                + "- <b>Cookie size limits</b>: Cookies are limited to ~4KB. JWTs can exceed this, "
-                                + "causing silent truncation and authentication failures.<br>"
-                                + "- <b>XSS exposure</b>: If the cookie lacks the HttpOnly flag, the JWT is "
+                                + "The Authorization header is NOT auto-attached, making it inherently CSRF-safe.\n"
+                                + "- Cookie size limits: Cookies are limited to ~4KB. JWTs can exceed this, "
+                                + "causing silent truncation and authentication failures.\n"
+                                + "- XSS exposure: If the cookie lacks the HttpOnly flag, the JWT is "
                                 + "accessible to JavaScript, enabling token theft via XSS.")
                         .remediation("Store JWTs in the Authorization header (Bearer scheme) instead of cookies. "
                                 + "Use localStorage or sessionStorage on the client side, and attach the token "
