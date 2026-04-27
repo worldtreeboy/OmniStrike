@@ -21,7 +21,7 @@ public class ActiveScanExecutor {
     private volatile java.util.function.Consumer<String> logger;
     private volatile boolean unloading = false;
 
-    /** When true, scan tasks are delayed until resumed (OmniMap priority mode) */
+    /** When true, scan tasks are delayed until resumed. */
     private volatile boolean paused = false;
     private final Object pauseLock = new Object();
 
@@ -98,7 +98,7 @@ public class ActiveScanExecutor {
      */
     private Runnable wrapWithRateLimit(Runnable task) {
         return () -> {
-            // OmniMap priority: block until unpaused
+            // Block until unpaused
             while (paused && !unloading) {
                 synchronized (pauseLock) {
                     try {
@@ -209,14 +209,13 @@ public class ActiveScanExecutor {
 
     /**
      * Pause all scan task execution. New tasks still queue but block before running.
-     * Used by OmniMap to get exclusive priority during exploitation.
      */
     public void pause() {
         paused = true;
     }
 
     /**
-     * Resume scan task execution after OmniMap finishes.
+     * Resume scan task execution.
      */
     public void resume() {
         paused = false;
@@ -225,7 +224,7 @@ public class ActiveScanExecutor {
         }
     }
 
-    /** Returns true if the executor is currently paused (OmniMap priority mode). */
+    /** Returns true if the executor is currently paused. */
     public boolean isPaused() {
         return paused;
     }

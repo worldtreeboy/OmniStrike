@@ -43,7 +43,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 
 ## What It Scans
 
-### 17 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
+### 14 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
 
 | Scanner | What It Does |
 |:--------|:-------------|
@@ -62,10 +62,10 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 | **HTTP Param Pollution** | Duplicate param precedence, privilege escalation patterns, WAF bypass via splitting. |
 | **Prototype Pollution** | Server-side `__proto__`/`constructor.prototype` with canary persistence verification, behavioral gadgets. |
 | **LDAP Injection** | 4-phase: error-based (2+ signature requirement), boolean differential (2-round), auth bypass (multi-signal), wildcard amplification. Zero FP design. |
-| **Bypass URL Parser** | 13 modes for 403/401 bypass: path manipulation, encoding variants, method override, IP spoofing, rewrite headers, user-agent rotation. |
-| **CSRF Manipulator** | 11 token manipulation tests: remove, empty, random, truncated, char flip, case swap, nonce reuse, Referer/Origin removal. |
 | **WebSocket** | *(Removed in v1.63)* |
-| **OmniMap** | Post-detection SQL exploitation engine. [Details below](#-omnimap--sql-exploitation-engine). |
+| **Bypass URL Parser** | *(Removed in v1.70)* |
+| **CSRF Manipulator** | *(Removed in v1.70)* |
+| **OmniMap** | *(Removed in v1.70)* |
 
 ### 11 Auto-Triggered Technology Scanners
 
@@ -137,21 +137,6 @@ This is the design principle behind every detection method in OmniStrike. We'd r
 
 ---
 
-## OmniMap -- SQL Exploitation Engine
-
-Found a SQL injection? OmniMap extracts the data. It's sqlmap built into your Burp tab.
-
-| Technique | Speed | How |
-|:----------|:------|:----|
-| **UNION** | Fastest | Full row per request. DBMS-aware hex markers. |
-| **Error-Based** | Fast | Data inside error messages. MySQL EXTRACTVALUE/UPDATEXML, PostgreSQL CAST, MSSQL CONVERT, Oracle XMLType. |
-| **Boolean Blind** | Medium | Parallel multi-threaded bisection. Adaptive character tiers. |
-| **Time-Based** | Slowest | DBMS-agnostic sleep probing with zero-sleep validation. |
-
-**5 DBMS dialects** (MySQL, PostgreSQL, MSSQL, Oracle, SQLite) with auto-detection, boundary analysis, 11 WAF tamper transforms, database tree view, and CSV export.
-
----
-
 ## Technology Profiling Engine
 
 Every HTTP response is passively analyzed for technology signals. Evidence accumulates per host with calibrated weights:
@@ -183,11 +168,78 @@ Multi-step auth flows (login, CSRF token, session refresh) produce single-use to
 | Feature | Detail |
 |:--------|:-------|
 | **Smart prerequisite detection** | Matches outgoing request by method + host + port + path. Sending step C automatically runs A and B first. No configuration needed. |
-| **Automatic cookie jar** | Every `Set-Cookie` from each chain step is collected and forwarded to subsequent steps and the final request. |
-| **`{{variable}}` substitution** | 4 extraction types: Body Regex (capture group 1), Header, Cookie, JSON Path (dot-notation). Substituted in headers and body. |
+| **Automatic cookie jar** | Every `Set-Cookie` from each chain step is collected and forwarded to subsequent steps and the final request. Newest value wins. |
+| **Auto-extraction (rule-free)** | Write `{{name}}` anywhere — URL path, header, cookie, body — and Stepper auto-finds the value in earlier responses (header / Set-Cookie / JSON key / regex fallback). No extraction rule needed. |
 | **TTL cache** | Configurable cache window (default 10s) prevents re-running the chain for every scanner request. Invalidated automatically when the prerequisite set changes. |
 | **Stop on Failure** | Optional: abort the chain immediately if any step returns no response, preventing downstream steps from running with incomplete state. |
 | **Recursion-safe** | ThreadLocal guard prevents chain requests from re-triggering the chain. ReentrantLock serializes concurrent execution. |
+
+### Stepper Manual
+
+#### 1. Enable Stepper
+
+Open the **Stepper** tab in OmniStrike → tick **Stepper Enabled** at the top. The "Send to Stepper" right-click menu becomes available everywhere in Burp.
+
+#### 2. Add prerequisite steps
+
+Right-click any request in Proxy / HTTP history / Repeater → **Send to Stepper**. The request appears in the **Prerequisite Steps** table. Add as many steps as your auth flow needs, in order. Use the ▲ / ▼ buttons to reorder, **Toggle** to enable/disable a step, **Remove** to drop one.
+
+#### 3. Reference values from earlier responses
+
+Anywhere in a later step or in your final outgoing request, write `{{name}}`. Stepper auto-finds the value from earlier responses in this order:
+
+1. Response **header** named `name`
+2. **Set-Cookie** with cookie name `name`
+3. **JSON key** named `name` (case-insensitive, walks nested objects + arrays)
+4. Regex fallback: `"name":"value"`, `"name":number`, or `name=value` in the body
+
+Most-recent response wins. Resolution is cached, so subsequent requests don't re-search.
+
+**Substitution works in:** URL path, query string, headers, cookies, request body.
+
+##### Example — single value
+
+| Step | Response excerpt | Outgoing target request |
+|:-----|:-----------------|:------------------------|
+| Step 1: `POST /login` | `{"id":"abcef"}` | `GET /api/{{id}}/xyz` → sent as `GET /api/abcef/xyz` |
+
+##### Example — multi-step chain
+
+| Step | Response | What downstream steps reference |
+|:-----|:---------|:--------------------------------|
+| 1: `POST /login` | `{"token":"AAA"}` | header `Authorization: Bearer {{token}}` |
+| 2: `GET /me` (uses `{{token}}`) | `{"userId":"u-42"}` | path `/api/users/{{userId}}/items` |
+| 3: `GET /api/users/{{userId}}/items` | `{"itemId":"x99"}` | final request `DELETE /api/items/{{itemId}}` |
+
+The final outgoing `DELETE /api/items/{{itemId}}` becomes `DELETE /api/items/x99`. Zero rules configured.
+
+#### 4. Cookies are fully automatic
+
+Every `Set-Cookie` from any chain response is collected into the **Cookie Jar** (bottom-left panel) and merged into the `Cookie:` header of every later step and your final request. Existing cookies in the request are preserved; jar values overwrite same-named cookies.
+
+- Click **+ Add** to manually pin a cookie that's not set by any chain response (e.g., a static API-key cookie). Pinned cookies survive chain re-runs.
+- Untick **Auto Cookie Jar** to disable.
+
+#### 5. Run, verify, debug
+
+- Click **Run Chain** to execute manually. The **Current Variables** box shows what was extracted and the **Activity Log** prints `Auto-resolved {{name}} = ...` for each placeholder filled in.
+- **Cache TTL** (default 10s) is how long captured values are reused before the chain re-runs. Set `0` to re-run every request (slow but always fresh). Click **Invalidate Cache** to force one re-run.
+- Tick **Stop on Failure** to abort the chain if a step gets no response.
+- A placeholder that can't be resolved is left as literal `{{name}}` in the outgoing request — easy to spot in Logger, and the log shows nothing was found.
+
+#### 6. (Optional) Explicit extraction rules
+
+Auto-extraction is the default. Add an explicit rule only when:
+
+| Situation | Rule type | Pattern example |
+|:----------|:----------|:----------------|
+| Same JSON key at multiple nesting levels — you want a specific one | `JSON_PATH` | `data.user.id` |
+| You want the variable named differently from the actual key (`access_token` → `{{auth}}`) | `JSON_PATH` / `BODY_REGEX` | `access_token` |
+| Value lives somewhere weird (meta tag, hidden input, JS variable) | `BODY_REGEX` | `name="csrf"\s+value="([^"]+)"` (capture group 1) |
+| You want the value of a specific named header | `HEADER` | `X-CSRF-Token` |
+| You want the value of a specific named cookie | `COOKIE` | `PHPSESSID` |
+
+Select the step, click **+ Add Rule**, fill in name + type + pattern. The explicit rule wins over auto-extraction for that variable.
 
 ---
 
@@ -243,6 +295,16 @@ Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chai
 ---
 
 ## Changelog
+
+### v1.70
+- **Stepper auto-extraction** — `{{name}}` placeholders now auto-resolve from earlier step responses without requiring an `ExtractionRule`. Resolution order: response header → Set-Cookie → JSON key (case-insensitive, nested objects + arrays) → regex fallback (`"name":"value"`, `name=value`). Most-recent response wins; resolved values cached for the chain run.
+- **Stepper URL path substitution fixed** — `{{var}}` previously only substituted in headers and body. Now also substituted in the request line / URL path, so `/api/{{id}}/xyz` works.
+- **Stepper docs** — full how-to manual added to the README (enable → add steps → reference values → cookies → debug → optional rules).
+- **Removed modules**:
+  - **CSRF Manipulator** — token-tampering scanner removed (manual fuzzing covers the same surface).
+  - **Bypass URL Parser** — 403/401 path-bypass scanner removed.
+  - **OmniMap Exploiter** — SQL extraction engine removed (use sqlmap directly).
+- **Cleanup** — `MANUAL_ONLY_IDS`, context menu filters, traffic interceptor module-shutdown hooks, executor pause/resume comments, and stale class files all updated.
 
 ### v1.69
 - **OOB LDAP Listener** added to the custom OOB server

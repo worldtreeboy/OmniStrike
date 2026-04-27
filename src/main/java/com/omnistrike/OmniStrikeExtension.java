@@ -9,8 +9,6 @@ import com.omnistrike.framework.*;
 import com.omnistrike.framework.stepper.StepperEngine;
 import com.omnistrike.model.ModuleConfig;
 import com.omnistrike.modules.injection.*;
-import com.omnistrike.modules.injection.BypassUrlParser;
-import com.omnistrike.framework.omnimap.OmniMapModule;
 // WebSocket module removed
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
 import com.omnistrike.framework.wordlist.WordlistGenerator;
@@ -21,16 +19,16 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.63 — Entry Point
+ * OmniStrike v1.70 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 23 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
  *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer,
  *       Technology Fingerprinter, Sensitive Data Exposure
- *   Injection (Active): SQLi Detector, OmniMap Exploiter, SSTI Scanner, SSRF Scanner, XSS Scanner,
+ *   Injection (Active): SQLi Detector, SSTI Scanner, SSRF Scanner, XSS Scanner,
  *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
- *       HTTP Parameter Pollution, Bypass URL Parser (403/401 bypass)
+ *       HTTP Parameter Pollution
  *
  * Built exclusively on the Montoya API.
  */
@@ -49,7 +47,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.63 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.70 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -116,12 +114,6 @@ public class OmniStrikeExtension implements BurpExtension {
         sqli.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(sqli);
 
-        // OmniMap — high-speed sqlmap variant for SQL injection exploitation
-        OmniMapModule omniMap = new OmniMapModule();
-        omniMap.setDependencies(dedup, findingsStore);
-        omniMap.setScanExecutor(executor);
-        registry.registerModule(omniMap);
-
         SstiScanner ssti = new SstiScanner();
         ssti.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(ssti);
@@ -169,16 +161,6 @@ public class OmniStrikeExtension implements BurpExtension {
         HttpParamPollutionScanner hpp = new HttpParamPollutionScanner();
         hpp.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(hpp);
-
-        // Bypass URL Parser — comprehensive 403/401 bypass scanner (manual trigger only)
-        BypassUrlParser bypassUrlParser = new BypassUrlParser();
-        bypassUrlParser.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(bypassUrlParser);
-
-        // CSRF Manipulator (right-click only — excluded from "All Modules" scan)
-        CsrfManipulator csrfManipulator = new CsrfManipulator();
-        csrfManipulator.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(csrfManipulator);
 
         // LDAP Injection Scanner (right-click only — excluded from "All Modules" scan)
         LdapInjectionScanner ldapi = new LdapInjectionScanner();
@@ -354,7 +336,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.63 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.70 ready ===");
         String oobMode = collaboratorManager.getMode() == CollaboratorManager.OobMode.BURP_COLLABORATOR
                 ? "Burp Collaborator" : "Custom OOB (configure listener in UI)";
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()

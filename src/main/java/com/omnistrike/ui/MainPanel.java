@@ -10,13 +10,9 @@ import com.omnistrike.framework.stepper.StepperEngine;
 import com.omnistrike.ui.modules.AiModulePanel;
 import com.omnistrike.ui.modules.DeserModulePanel;
 import com.omnistrike.ui.modules.GenericModulePanel;
-import com.omnistrike.ui.modules.OmniMapPanel;
 import com.omnistrike.ui.modules.StepperPanel;
-import com.omnistrike.ui.modules.BypassUrlParserPanel;
 import com.omnistrike.ui.modules.WordlistGeneratorPanel;
-import com.omnistrike.framework.omnimap.OmniMapModule;
 import com.omnistrike.framework.wordlist.WordlistGenerator;
-import com.omnistrike.modules.injection.BypassUrlParser;
 
 import com.omnistrike.framework.OobListener;
 import com.omnistrike.framework.CollaboratorManager.OobMode;
@@ -73,9 +69,6 @@ public class MainPanel extends JPanel {
 
     // Credit label pulse timer — tracked for cleanup on unload
     private Timer creditPulseTimer;
-
-    // Custom module panel for OmniMap (SQL injection exploitation)
-    private OmniMapPanel omniMapPanel;
 
     // Stepper panel (prerequisite request chain)
     private StepperPanel stepperPanel;
@@ -832,17 +825,9 @@ public class MainPanel extends JPanel {
             JPanel panel;
             if ("ai-vuln-analyzer".equals(module.getId()) && module instanceof AiVulnAnalyzer aiModule) {
                 panel = new AiModulePanel(aiModule, findingsStore, registry, api, scopeManager);
-            } else if ("omnimap-exploiter".equals(module.getId()) && module instanceof OmniMapModule omniMapMod) {
-                omniMapPanel = new OmniMapPanel(omniMapMod, findingsStore, api);
-                omniMapMod.setPanel(omniMapPanel);
-                panel = omniMapPanel;
             } else if ("deser-scanner".equals(module.getId())) {
                 deserModulePanel = new DeserModulePanel(api, findingsStore);
                 panel = deserModulePanel;
-            } else if ("bypass-url-parser".equals(module.getId()) && module instanceof BypassUrlParser bupModule) {
-                BypassUrlParserPanel bupPanel = new BypassUrlParserPanel(bupModule, findingsStore, api);
-                bupModule.setPanel(bupPanel);
-                panel = bupPanel;
             } else if ("wordlist-generator".equals(module.getId()) && module instanceof WordlistGenerator wlModule) {
                 wordlistPanel = new WordlistGeneratorPanel(wlModule);
                 panel = wordlistPanel;
@@ -862,21 +847,9 @@ public class MainPanel extends JPanel {
                     "Prerequisite Request Chain");
         }
 
-        // Register OmniMap as a framework tool (manual-trigger only via context menu)
-        moduleListPanel.addFrameworkEntry("omnimap-exploiter", "OmniMap Exploiter",
-                "SQL Injection Exploitation Engine");
-
         // Register GraphQL Tool as a framework tool
         moduleListPanel.addFrameworkEntry("graphql-tool", "GraphQL Tool",
                 "GraphQL Introspection & Security Scanner");
-
-        // Register CSRF Manipulator as a framework tool (right-click only)
-        moduleListPanel.addFrameworkEntry("csrf-manipulator", "CSRF Manipulator",
-                "CSRF Token Manipulation & Testing");
-
-        // Register Bypass URL Parser as a framework tool (manual-trigger only)
-        moduleListPanel.addFrameworkEntry("bypass-url-parser", "Bypass URL Parser",
-                "403/401 Bypass via URL Manipulation");
 
         // Register Wordlist Generator as a framework tool (passive word harvester)
         moduleListPanel.addFrameworkEntry("wordlist-generator", "Wordlist Generator",
@@ -1490,8 +1463,6 @@ public class MainPanel extends JPanel {
                 ((StepperPanel) panel).stopTimers();
             } else if (panel instanceof WordlistGeneratorPanel) {
                 ((WordlistGeneratorPanel) panel).stopTimers();
-            } else if (panel == omniMapPanel && omniMapPanel != null) {
-                try { panel.getClass().getMethod("stopTimers").invoke(panel); } catch (Exception ignored) {}
             }
         }
     }
@@ -1600,11 +1571,6 @@ public class MainPanel extends JPanel {
     /** Returns the custom DeserModulePanel, or null if not yet created. */
     public DeserModulePanel getDeserModulePanel() {
         return deserModulePanel;
-    }
-
-    /** Returns the custom OmniMapPanel, or null if not yet created. */
-    public JPanel getOmniMapPanel() {
-        return omniMapPanel;
     }
 
     /** Programmatically switches to the given module's detail panel. */

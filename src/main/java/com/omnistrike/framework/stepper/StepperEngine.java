@@ -6,6 +6,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import com.omnistrike.framework.ScopeManager;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -34,10 +35,19 @@ import java.util.regex.Pattern;
  */
 public class StepperEngine {
 
+    private static final Pattern PLACEHOLDER_PATTERN = Pattern.compile("\\{\\{([^}]+)\\}\\}");
+
     private final MontoyaApi api;
     private final ScopeManager scopeManager;
     private final StepperVariableStore variableStore = new StepperVariableStore();
     private final List<StepperStep> steps = new ArrayList<>();
+
+    /**
+     * Responses captured during the most recent chain run, in step order.
+     * Used by auto-extraction so {{varName}} placeholders resolve without
+     * requiring an explicit ExtractionRule.
+     */
+    private final List<HttpResponse> stepResponses = Collections.synchronizedList(new ArrayList<>());
 
     /**
      * Automatic cookie jar — accumulates all Set-Cookie values from chain responses.
@@ -163,6 +173,7 @@ public class StepperEngine {
         steps.clear();
         variableStore.clear();
         cookieJar.clear();
+        stepResponses.clear();
         lastChainRunTime = 0;
         lastChainPrereqCount = -1;
         uiLog("Stepper", "All steps cleared.");
@@ -316,6 +327,7 @@ public class StepperEngine {
         try {
             variableStore.clear();
             cookieJar.clear();
+            stepResponses.clear();
             // Restore manually-pinned cookies so they survive chain re-runs
             cookieJar.putAll(pinnedCookies);
             uiLog("Stepper", "Running chain (" + currentSteps.size() + " steps)...");
@@ -353,6 +365,10 @@ public class StepperEngine {
 
                     uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName()
                             + "] — " + response.statusCode() + " " + step.getUrlSummary());
+
+                    // Cache the response so later steps and the final outgoing
+                    // request can auto-resolve {{varName}} placeholders against it.
+                    stepResponses.add(response);
 
                     // Auto-collect Set-Cookie headers into the cookie jar
                     if (cookieJarEnabled) {
@@ -394,34 +410,16 @@ public class StepperEngine {
     // ── Variable Substitution ────────────────────────────────────────────────
 
     /**
-     * Substitutes {{variables}} in all headers and body of an HttpRequest.
+     * Substitutes {{variables}} in path, headers and body of an HttpRequest.
+     * Used to template each step's request before sending.
      */
     private HttpRequest substituteRequest(HttpRequest request) {
-        // Substitute in headers — snapshot the list to avoid issues if modified mutates it
-        HttpRequest modified = request;
-        for (var header : List.copyOf(request.headers())) {
-            String originalValue = header.value();
-            String substituted = variableStore.substitute(originalValue);
-            if (!originalValue.equals(substituted)) {
-                modified = modified.withRemovedHeader(header.name())
-                        .withAddedHeader(header.name(), substituted);
-            }
-        }
-
-        // Substitute in body
-        String body = modified.bodyToString();
-        if (body != null && !body.isEmpty()) {
-            String substitutedBody = variableStore.substitute(body);
-            if (!body.equals(substitutedBody)) {
-                modified = modified.withBody(substitutedBody);
-            }
-        }
-
-        return modified;
+        return substituteAll(request);
     }
 
     /**
-     * Applies stored variables and cookie jar to the outgoing request (the final target request).
+     * Applies stored/auto-resolved variables and the cookie jar to the final
+     * outgoing request.
      */
     private HttpRequest applyVariables(HttpRequest request) {
         HttpRequest modified = request;
@@ -431,29 +429,188 @@ public class StepperEngine {
             modified = injectCookies(modified);
         }
 
-        // Substitute {{variables}} in headers — iterate over modified (post-cookie-injection) headers
-        boolean hasVariables = !variableStore.getAll().isEmpty();
-        if (hasVariables) {
-            for (var header : List.copyOf(modified.headers())) {
-                String originalValue = header.value();
-                String substituted = variableStore.substitute(originalValue);
-                if (!originalValue.equals(substituted)) {
-                    modified = modified.withRemovedHeader(header.name())
-                            .withAddedHeader(header.name(), substituted);
+        // Always run substitution — auto-resolve can fill in placeholders even
+        // when the explicit variable store is empty.
+        return substituteAll(modified);
+    }
+
+    /**
+     * Replaces every {{varName}} placeholder in the request's path, headers,
+     * and body. Each placeholder is first looked up in the explicit variable
+     * store, then auto-resolved from previous step responses.
+     */
+    private HttpRequest substituteAll(HttpRequest request) {
+        HttpRequest modified = request;
+
+        // Path (URL path + query string) — fixes /api/{{id}}/xyz substitution
+        try {
+            String originalPath = request.path();
+            if (originalPath != null && originalPath.contains("{{")) {
+                String substituted = substituteString(originalPath);
+                if (!originalPath.equals(substituted)) {
+                    modified = modified.withPath(substituted);
                 }
             }
+        } catch (Exception ignored) {}
 
-            // Substitute in body
-            String body = modified.bodyToString();
-            if (body != null && !body.isEmpty()) {
-                String substitutedBody = variableStore.substitute(body);
-                if (!body.equals(substitutedBody)) {
-                    modified = modified.withBody(substitutedBody);
-                }
+        // Headers
+        for (var header : List.copyOf(modified.headers())) {
+            String originalValue = header.value();
+            if (originalValue == null || !originalValue.contains("{{")) continue;
+            String substituted = substituteString(originalValue);
+            if (!originalValue.equals(substituted)) {
+                modified = modified.withRemovedHeader(header.name())
+                        .withAddedHeader(header.name(), substituted);
+            }
+        }
+
+        // Body
+        String body = modified.bodyToString();
+        if (body != null && body.contains("{{")) {
+            String substitutedBody = substituteString(body);
+            if (!body.equals(substitutedBody)) {
+                modified = modified.withBody(substitutedBody);
             }
         }
 
         return modified;
+    }
+
+    /**
+     * Resolves every {{varName}} in {@code input}. Order:
+     *   1. Explicit variable store (populated by ExtractionRules + previous auto-resolves).
+     *   2. Auto-resolution against responses captured during the chain run
+     *      (matches header name, Set-Cookie name, JSON key, or "key":"value" / key=value in body).
+     * Unresolvable placeholders are left literal so the user can spot them.
+     */
+    private String substituteString(String input) {
+        if (input == null || input.isEmpty()) return input;
+        Matcher m = PLACEHOLDER_PATTERN.matcher(input);
+        if (!m.find()) return input;
+
+        StringBuilder sb = new StringBuilder();
+        m.reset();
+        while (m.find()) {
+            String varName = m.group(1).trim();
+            String value = variableStore.get(varName);
+            if (value == null) {
+                value = autoResolve(varName);
+                if (value != null) {
+                    // Cache so we don't re-search responses on every call.
+                    variableStore.set(varName, value);
+                    uiLog("Stepper", "  Auto-resolved {{" + varName + "}} = " + truncate(value, 50));
+                }
+            }
+            m.appendReplacement(sb, Matcher.quoteReplacement(value != null ? value : m.group(0)));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /**
+     * Searches captured step responses (most recent first) for a value matching
+     * {@code varName}. Match order within each response:
+     *   1. Response header named {@code varName}.
+     *   2. Set-Cookie whose cookie name equals {@code varName}.
+     *   3. JSON key named {@code varName} (case-insensitive, walks nested objects/arrays).
+     *   4. Regex fallback: "varName":"value", "varName":number, or varName=value.
+     */
+    private String autoResolve(String varName) {
+        if (varName == null || varName.isEmpty()) return null;
+
+        List<HttpResponse> snapshot;
+        synchronized (stepResponses) {
+            snapshot = new ArrayList<>(stepResponses);
+        }
+
+        for (int i = snapshot.size() - 1; i >= 0; i--) {
+            HttpResponse resp = snapshot.get(i);
+            String value = findInResponse(resp, varName);
+            if (value != null && !value.isEmpty()) return value;
+        }
+        return null;
+    }
+
+    private String findInResponse(HttpResponse resp, String varName) {
+        // 1. Response header
+        try {
+            String h = resp.headerValue(varName);
+            if (h != null && !h.isEmpty()) return h;
+        } catch (Exception ignored) {}
+
+        // 2. Set-Cookie name match
+        try {
+            for (var header : resp.headers()) {
+                if (!"Set-Cookie".equalsIgnoreCase(header.name())) continue;
+                String val = header.value();
+                int sc = val.indexOf(';');
+                String nv = (sc >= 0 ? val.substring(0, sc) : val).trim();
+                int eq = nv.indexOf('=');
+                if (eq > 0) {
+                    String name = nv.substring(0, eq).trim();
+                    if (name.equalsIgnoreCase(varName)) {
+                        return nv.substring(eq + 1).trim();
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // 3. JSON body key search
+        String body;
+        try {
+            body = resp.bodyToString();
+        } catch (Exception e) {
+            return null;
+        }
+        if (body == null || body.isEmpty()) return null;
+
+        try {
+            JsonElement root = JsonParser.parseString(body);
+            String found = findJsonKey(root, varName);
+            if (found != null) return found;
+        } catch (Exception ignored) {}
+
+        // 4. Regex fallback for non-JSON or HTML/script-embedded values
+        try {
+            String quoted = Pattern.quote(varName);
+            Matcher m = Pattern.compile("\"" + quoted + "\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
+            if (m.find()) return m.group(1);
+            m = Pattern.compile("\"" + quoted + "\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)").matcher(body);
+            if (m.find()) return m.group(1);
+            m = Pattern.compile("(?:^|[?&;\\s])" + quoted + "=([^&;\\s\"<>]+)").matcher(body);
+            if (m.find()) return m.group(1);
+        } catch (Exception ignored) {}
+
+        return null;
+    }
+
+    /**
+     * Recursively walks a JSON tree returning the first primitive value whose
+     * key (case-insensitive) matches {@code key}. Nested objects within arrays
+     * are also searched.
+     */
+    private String findJsonKey(JsonElement el, String key) {
+        if (el == null || el.isJsonNull()) return null;
+        if (el.isJsonObject()) {
+            JsonObject obj = el.getAsJsonObject();
+            for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+                if (entry.getKey().equalsIgnoreCase(key)) {
+                    JsonElement v = entry.getValue();
+                    if (v != null && v.isJsonPrimitive()) return v.getAsString();
+                }
+            }
+            for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+                String found = findJsonKey(entry.getValue(), key);
+                if (found != null) return found;
+            }
+        } else if (el.isJsonArray()) {
+            JsonArray arr = el.getAsJsonArray();
+            for (JsonElement child : arr) {
+                String found = findJsonKey(child, key);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     // ── Extraction Methods ───────────────────────────────────────────────────

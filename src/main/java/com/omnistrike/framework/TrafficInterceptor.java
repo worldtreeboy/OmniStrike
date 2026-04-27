@@ -490,7 +490,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             return t;
         });
 
-        // Stop internal thread pools inside modules (e.g., BypassUrlParser, OmniMap, WebSocket)
+        // Stop internal thread pools inside modules
         stopModuleInternalPools();
 
         uiLog("ManualScan", "Stopped " + cancelled + " running + " + purged
@@ -503,15 +503,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
      * Called by stopManualScans() to ensure module-internal work is also cancelled.
      */
     private void stopModuleInternalPools() {
-        for (ScanModule module : registry.getAllModules()) {
-            try {
-                if (module instanceof com.omnistrike.modules.injection.BypassUrlParser) {
-                    ((com.omnistrike.modules.injection.BypassUrlParser) module).stopScan();
-                } else if (module instanceof com.omnistrike.framework.omnimap.OmniMapModule) {
-                    ((com.omnistrike.framework.omnimap.OmniMapModule) module).stopExploit();
-                }
-            } catch (Exception ignored) {}
-        }
         executor.resume();
     }
 

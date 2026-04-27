@@ -9,9 +9,6 @@ import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.omnistrike.model.ScanModule;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
-import com.omnistrike.framework.omnimap.OmniMapModule;
-import com.omnistrike.modules.injection.BypassUrlParser;
-import com.omnistrike.ui.OmniMapConfigDialog;
 import com.omnistrike.ui.ScanConfigDialog;
 
 import com.omnistrike.framework.stepper.StepperEngine;
@@ -120,9 +117,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 // Active injection scanners (SQLi, XSS, etc.) are pointless against static file URLs.
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
-                    if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
-                    if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
-                    if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
                     if ("ldapi-scanner".equals(m.getId())) continue; // LDAP Injection is right-click only
                     if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
                     if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
@@ -143,9 +137,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             } else {
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
-                    if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
-                    if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
-                    if ("csrf-manipulator".equals(m.getId())) continue; // CSRF Manipulator is right-click only
                     if ("ldapi-scanner".equals(m.getId())) continue; // LDAP Injection is right-click only
                     if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
                     if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
@@ -308,69 +299,15 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
         // WebSocket Scanner removed
 
-        // ============ "Send to OmniMap" — SQL injection exploitation ============
-        {
-            Supplier<MainPanel> supplier = mainPanelSupplier;
-            JMenuItem omniMapItem = new JMenuItem("Send to OmniMap");
-            omniMapItem.setToolTipText("OmniMap — high-speed sqlmap variant: extract databases, tables, and data via SQL injection");
-            omniMapItem.addActionListener(e -> {
-                Frame parentFrame = null;
-                for (Frame f : Frame.getFrames()) {
-                    if (f.isVisible()) { parentFrame = f; break; }
-                }
-                OmniMapConfigDialog dialog = new OmniMapConfigDialog(parentFrame, reqResp, api);
-                dialog.setVisible(true);
-                if (dialog.isConfirmed()) {
-                    ScanModule mod = registry.getModule("omnimap-exploiter");
-                    if (mod instanceof OmniMapModule omniMapMod) {
-                        omniMapMod.exploit(reqResp, dialog.getConfig());
-                        if (supplier != null) {
-                            MainPanel mp = supplier.get();
-                            if (mp != null) mp.selectModule("omnimap-exploiter");
-                        }
-                        showToast("OmniMap",
-                                "Exploitation started on parameter '" + dialog.getConfig().getParameterName() + "'\n"
-                                + truncate(reqResp.request().url(), 60)
-                                + "\n\nResults in OmniMap panel.");
-                    }
-                }
-            });
-            items.add(omniMapItem);
-        }
-
-        // ============ "Send to Bypass URL Parser" — 403/401 bypass scanner ============
-        {
-            Supplier<MainPanel> supplier = mainPanelSupplier;
-            JMenuItem bupItem = new JMenuItem("Send to Bypass URL Parser");
-            bupItem.setToolTipText("Bypass URL Parser — test 13 bypass strategies against 403/401 pages");
-            bupItem.addActionListener(e -> {
-                ScanModule mod = registry.getModule("bypass-url-parser");
-                if (mod instanceof BypassUrlParser bup) {
-                    String targetUrl = reqResp.request().url();
-                    bup.populatePanel(targetUrl);
-                    if (supplier != null) {
-                        MainPanel mp = supplier.get();
-                        if (mp != null) mp.selectModule("bypass-url-parser");
-                    }
-                    showToast("Bypass URL Parser",
-                            "Target URL loaded: " + truncate(targetUrl, 60)
-                            + "\n\nSelect bypass modes and click 'Run Scan'.");
-                }
-            });
-            items.add(bupItem);
-        }
-
         // ============ "Scan This Parameter" — targeted parameter scanning ============
         // Build module lists: one set for parameter scanning (excludes right-click-only modules),
-        // another set for the per-module submenu (includes all except ws-scanner and omnimap).
+        // another set for the per-module submenu (includes all except ws-scanner).
         List<ScanModule> activeModules = new ArrayList<>();
         List<ScanModule> passiveModules = new ArrayList<>();
         List<ScanModule> activeModulesAll = new ArrayList<>();  // includes right-click-only modules
         List<ScanModule> passiveModulesAll = new ArrayList<>();
         for (ScanModule m : registry.getEnabledNonAiModules()) {
             if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
-            if ("omnimap-exploiter".equals(m.getId())) continue; // OmniMap uses its own dialog
-            if ("bypass-url-parser".equals(m.getId())) continue; // BUP uses its own panel
             if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
             if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
             if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
@@ -387,7 +324,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 passiveModules.add(m);
             } else {
                 activeModulesAll.add(m);
-                if ("csrf-manipulator".equals(m.getId())) continue; // Excluded from "Scan Parameter" + "All Modules"
                 if ("ldapi-scanner".equals(m.getId())) continue; // Excluded from "Scan Parameter" + "All Modules"
                 activeModules.add(m);
             }
@@ -535,7 +471,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         // ============ "Send to OmniStrike >" submenu — per-module with Normal/AI options ============
-        // Uses *All lists so right-click-only modules (CSRF Manipulator) appear here
         JMenu subMenu = new JMenu("Send to OmniStrike");
 
         // Group: Active Scanners

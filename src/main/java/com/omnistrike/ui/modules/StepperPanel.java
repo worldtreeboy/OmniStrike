@@ -138,12 +138,15 @@ public class StepperPanel extends JPanel {
                 BorderFactory.createEmptyBorder(4, 10, 4, 10)));
 
         JTextArea helpText = new JTextArea(
-                "HOW TO USE:\n"
+                "HOW TO USE (auto-extraction):\n"
                 + "  1. Enable Stepper (checkbox above)\n"
                 + "  2. Right-click requests in Proxy/Repeater -> 'Send to Stepper' to add prerequisite steps\n"
-                + "  3. Select each step and add extraction rules (e.g., COOKIE: PHPSESSID, BODY_REGEX for CSRF)\n"
-                + "  4. Use {{variable_name}} placeholders in later steps or your target request headers/body\n"
-                + "  5. Click 'Run Chain' to test, or just send a request — Stepper runs automatically");
+                + "  3. In a later step or target request, write {{name}} anywhere — URL path, header, cookie, body.\n"
+                + "     Stepper auto-finds 'name' in earlier responses (JSON key, header, cookie, or key=value pair).\n"
+                + "     Example: response has {\"id\":\"abc\"} -> next request /api/{{id}}/xyz becomes /api/abc/xyz.\n"
+                + "  4. Click 'Run Chain' to test, or just send a request — Stepper runs automatically.\n"
+                + "  5. (Optional) Add an explicit Extraction Rule only if auto-resolve picks the wrong value\n"
+                + "     (e.g. duplicate keys at different nesting levels — JSON_PATH 'data.id' lets you target one).");
         helpText.setEditable(false);
         helpText.setLineWrap(true);
         helpText.setWrapStyleWord(true);
