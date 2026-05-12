@@ -165,11 +165,6 @@ public class OmniStrikeExtension implements BurpExtension {
         hpp.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(hpp);
 
-        // LDAP Injection Scanner (right-click only — excluded from "All Modules" scan)
-        LdapInjectionScanner ldapi = new LdapInjectionScanner();
-        ldapi.setDependencies(dedup, findingsStore, collaboratorManager);
-        registry.registerModule(ldapi);
-
         // Dynamics 365 FetchXML Injection (auto-triggered, not user-triggerable)
         Dynamics365Scanner d365 = new Dynamics365Scanner();
         d365.setDependencies(dedup, findingsStore, collaboratorManager);

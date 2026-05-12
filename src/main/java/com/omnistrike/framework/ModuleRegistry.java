@@ -23,8 +23,7 @@ public class ModuleRegistry {
      * available for manual scans via scanRequest() which looks up by ID directly.
      */
     private static final Set<String> MANUAL_ONLY_IDS = Set.of(
-            "ws-scanner",          // WebSocket — user triggers fuzzing from panel
-            "ldapi-scanner"        // LDAP Injection — right-click only, no auto-scan
+            "ws-scanner"           // WebSocket — user triggers fuzzing from panel
     );
 
     /**

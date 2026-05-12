@@ -582,13 +582,19 @@ public class CommandInjectionScanner implements ScanModule {
             String technique = payloadInfo[2];
 
 
-            HttpRequestResponse result = sendPayload(original, target, target.originalValue + payload);
+            String injectedValue = target.originalValue + payload;
+            HttpRequestResponse result = sendPayload(original, target, injectedValue);
             if (result == null || result.response() == null) continue;
             if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
 
             String body = result.response().bodyToString();
             // Empty body is never evidence of command execution
             if (body == null || body.isEmpty()) continue;
+
+            // Anti-reflection: strip the injected parameter value from the response so a
+            // signature that only exists because the app echoed our payload back cannot
+            // trigger a finding. If after stripping the signature is gone, it was reflection.
+            String bodyStripped = stripReflection(body, injectedValue, payload);
 
             if (!expectedOutput.isEmpty()) {
                 boolean matched;
@@ -598,7 +604,7 @@ public class CommandInjectionScanner implements ScanModule {
                 if (expectedOutput.startsWith("REGEX:")) {
                     // Regex-based matching (e.g., for echo-wrapped whoami output)
                     Pattern regexPattern = Pattern.compile(expectedOutput.substring(6));
-                    java.util.regex.Matcher regexMatcher = regexPattern.matcher(body);
+                    java.util.regex.Matcher regexMatcher = regexPattern.matcher(bodyStripped);
                     matched = regexMatcher.find();
                     if (matched) {
                         matchedEvidence = regexMatcher.group();
@@ -607,8 +613,8 @@ public class CommandInjectionScanner implements ScanModule {
                     // If baseline is empty, we can't distinguish command output from natural content → skip
                     if (baselineBody.isEmpty()) { perHostDelay(); continue; }
                 } else {
-                    // Simple string contains matching
-                    matched = body.contains(expectedOutput);
+                    // Simple string contains matching (against reflection-stripped body)
+                    matched = bodyStripped.contains(expectedOutput);
                     matchedEvidence = expectedOutput;
                     baselineMatched = !baselineBody.isEmpty() && baselineBody.contains(expectedOutput);
                     if (baselineBody.isEmpty()) { perHostDelay(); continue; }
@@ -750,9 +756,14 @@ public class CommandInjectionScanner implements ScanModule {
             // making it independently unforgeable even without stdout confirmation.
             String fakeCmd     = randomAlpha(12);
             String errorPayload = pre + fakeCmd + suf;
-            HttpRequestResponse errorResult = sendPayload(original, target, target.originalValue + errorPayload);
+            String injectedB   = target.originalValue + errorPayload;
+            HttpRequestResponse errorResult = sendPayload(original, target, injectedB);
             if (errorResult != null && errorResult.response() != null && ResponseGuard.isUsableResponse(errorResult)) {
                 String errorBody = errorResult.response().bodyToString();
+                // Anti-reflection: strip our payload from the body. A real Windows shell
+                // error contains the suffix " is not recognized..." which the app
+                // never put in our input — so the suffix survives stripping.
+                String errorBodyStripped = stripReflection(errorBody, injectedB, errorPayload);
                 // Windows error phrase — check all single-quote encodings the app may emit:
                 //   literal: 'fakeCmd' is not recognized...
                 //   HTML decimal entity: &#39;fakeCmd&#39; is not recognized...
@@ -761,13 +772,13 @@ public class CommandInjectionScanner implements ScanModule {
                 String litForm      = "'" + suffix;
                 String htmlForm     = "&#39;" + fakeCmd + "&#39; is not recognized as an internal or external command";
                 String aposForm     = "&apos;" + fakeCmd + "&apos; is not recognized as an internal or external command";
-                boolean inBody      = errorBody != null &&
-                                      (errorBody.contains(litForm) || errorBody.contains(htmlForm) || errorBody.contains(aposForm));
+                boolean inBody      = errorBodyStripped != null &&
+                                      (errorBodyStripped.contains(litForm) || errorBodyStripped.contains(htmlForm) || errorBodyStripped.contains(aposForm));
                 boolean inBaseline  = baselineBody.contains(litForm) || baselineBody.contains(htmlForm) || baselineBody.contains(aposForm);
                 if (inBody && !inBaseline) {
                     // Use whichever form matched for evidence display
-                    String matchedForm = errorBody.contains(htmlForm) ? htmlForm
-                                       : errorBody.contains(aposForm) ? aposForm
+                    String matchedForm = errorBodyStripped.contains(htmlForm) ? htmlForm
+                                       : errorBodyStripped.contains(aposForm) ? aposForm
                                        : litForm;
                     findingsStore.addFinding(Finding.builder("cmdi-scanner",
                                     "OS Command Injection (Error Reflection) - Windows",
@@ -896,12 +907,16 @@ public class CommandInjectionScanner implements ScanModule {
             // Each shell variant contains our specific random fakeCmd — independently unforgeable.
             String fakeCmd     = randomAlpha(12);
             String errorPayload = pre + fakeCmd + suf;
-            HttpRequestResponse errorResult = sendPayload(original, target, target.originalValue + errorPayload);
+            String injectedB   = target.originalValue + errorPayload;
+            HttpRequestResponse errorResult = sendPayload(original, target, injectedB);
             if (errorResult != null && errorResult.response() != null && ResponseGuard.isUsableResponse(errorResult)) {
                 String errorBody    = errorResult.response().bodyToString();
-                boolean shForm      = errorBody != null && errorBody.contains(fakeCmd + ": not found");
-                boolean bashForm    = errorBody != null && errorBody.contains(fakeCmd + ": command not found");
-                boolean zshForm     = errorBody != null && errorBody.contains("command not found: " + fakeCmd);
+                // Anti-reflection: real shell errors have ": not found" / ": command not found"
+                // suffixes that our payload never contained — they survive stripping.
+                String errorBodyStripped = stripReflection(errorBody, injectedB, errorPayload);
+                boolean shForm      = errorBodyStripped != null && errorBodyStripped.contains(fakeCmd + ": not found");
+                boolean bashForm    = errorBodyStripped != null && errorBodyStripped.contains(fakeCmd + ": command not found");
+                boolean zshForm     = errorBodyStripped != null && errorBodyStripped.contains("command not found: " + fakeCmd);
                 boolean inBaseline  = baselineBody.contains(fakeCmd + ": not found")
                                    || baselineBody.contains(fakeCmd + ": command not found")
                                    || baselineBody.contains("command not found: " + fakeCmd);
@@ -930,6 +945,24 @@ public class CommandInjectionScanner implements ScanModule {
             perHostDelay();
         }
         return false;
+    }
+
+    /**
+     * Removes occurrences of the injected payload from a response body so signature
+     * matching cannot be triggered by mere reflection. We strip both the full
+     * injected parameter value and the bare payload (without {@code originalValue}
+     * prefix) because some apps URL-decode and re-emit just the payload portion.
+     */
+    private static String stripReflection(String body, String injectedValue, String payload) {
+        if (body == null || body.isEmpty()) return body;
+        String out = body;
+        if (injectedValue != null && !injectedValue.isEmpty() && out.contains(injectedValue)) {
+            out = out.replace(injectedValue, "");
+        }
+        if (payload != null && !payload.isEmpty() && out.contains(payload)) {
+            out = out.replace(payload, "");
+        }
+        return out;
     }
 
     /** Returns {@code len} random bytes encoded as lowercase hex. */

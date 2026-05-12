@@ -120,7 +120,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 // Active injection scanners (SQLi, XSS, etc.) are pointless against static file URLs.
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
-                    if ("ldapi-scanner".equals(m.getId())) continue; // LDAP Injection is right-click only
                     if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
                     if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
                     if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
@@ -140,7 +139,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             } else {
                 for (ScanModule m : nonAi) {
                     if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
-                    if ("ldapi-scanner".equals(m.getId())) continue; // LDAP Injection is right-click only
                     if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
                     if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
                     if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
@@ -358,7 +356,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 passiveModules.add(m);
             } else {
                 activeModulesAll.add(m);
-                if ("ldapi-scanner".equals(m.getId())) continue; // Excluded from "Scan Parameter" + "All Modules"
                 activeModules.add(m);
             }
         }

@@ -182,7 +182,7 @@ public class PathTraversalScanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) continue;
 
-            ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody);
+            ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody, absPath);
             if (confirmed != null) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "Direct File Read via Absolute Path: " + absPath,
@@ -253,7 +253,7 @@ public class PathTraversalScanner implements ScanModule {
                 String body = result.response().bodyToString();
                 if (body == null) continue;
 
-                ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody);
+                ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody, traversal);
                 if (confirmed != null) {
                     findingsStore.addFinding(Finding.builder("path-traversal",
                                     "Path Traversal: " + targetFile + " Read Confirmed",
@@ -310,7 +310,7 @@ public class PathTraversalScanner implements ScanModule {
                 String body = result.response().bodyToString();
                 if (body == null) continue;
 
-                ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody);
+                ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody, traversal);
                 if (confirmed != null) {
                     findingsStore.addFinding(Finding.builder("path-traversal",
                                     "Path Traversal: " + targetFile + " Read Confirmed (Windows)",
@@ -425,7 +425,7 @@ public class PathTraversalScanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) continue;
 
-            ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody);
+            ConfirmedRead confirmed = detectConfirmedRead(body, checkType, baselineBody, payload);
             if (confirmed != null) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "Path Traversal via " + technique,
@@ -810,9 +810,36 @@ public class PathTraversalScanner implements ScanModule {
     // ==================== DETECTION HELPERS ====================
 
     private ConfirmedRead detectConfirmedRead(String body, String checkType, String baselineBody) {
+        return detectConfirmedRead(body, checkType, baselineBody, null);
+    }
+
+    /**
+     * Detection with anti-reflection: when {@code payloadValue} is non-null, the
+     * payload string is stripped from the response body before any signature
+     * matching. This prevents false positives where the application merely
+     * echoes the user-supplied path back (e.g. "File not found: ../etc/passwd"),
+     * which would otherwise leak signature-like substrings into the body.
+     */
+    private ConfirmedRead detectConfirmedRead(String body, String checkType, String baselineBody,
+                                              String payloadValue) {
         // Universal baseline guard: never confirm a file read without a valid baseline to compare against.
         // Without baseline comparison, we cannot distinguish legitimate content from actual file reads.
         if (baselineBody == null || baselineBody.isEmpty()) return null;
+
+        // Anti-reflection: remove the injected payload (and its URL-decoded form)
+        // from the response so signatures only match real file content, not echoes
+        // of the user-supplied path.
+        if (payloadValue != null && !payloadValue.isEmpty() && body != null) {
+            if (body.contains(payloadValue)) {
+                body = body.replace(payloadValue, "");
+            }
+            try {
+                String decoded = java.net.URLDecoder.decode(payloadValue, java.nio.charset.StandardCharsets.UTF_8);
+                if (!decoded.equals(payloadValue) && body.contains(decoded)) {
+                    body = body.replace(decoded, "");
+                }
+            } catch (Exception ignored) {}
+        }
 
         // Avoid false positives: if the baseline already contains the pattern, skip
         switch (checkType) {
