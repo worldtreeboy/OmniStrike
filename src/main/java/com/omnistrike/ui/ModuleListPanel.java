@@ -53,7 +53,8 @@ public class ModuleListPanel extends JPanel {
         selectAllBtn.setMargin(new Insets(2, 6, 2, 6));
         selectAllBtn.addActionListener(e -> {
             for (ScanModule module : registry.getAllModules()) {
-                if (!registry.isManualOnly(module.getId())) {
+                if (!registry.isManualOnly(module.getId())
+                        && !registry.isAutoTriggered(module.getId())) {
                     registry.setEnabled(module.getId(), true);
                 }
             }
@@ -67,7 +68,8 @@ public class ModuleListPanel extends JPanel {
         deselectAllBtn.setMargin(new Insets(2, 6, 2, 6));
         deselectAllBtn.addActionListener(e -> {
             for (ScanModule module : registry.getAllModules()) {
-                if (!registry.isManualOnly(module.getId())) {
+                if (!registry.isManualOnly(module.getId())
+                        && !registry.isAutoTriggered(module.getId())) {
                     registry.setEnabled(module.getId(), false);
                 }
             }
@@ -219,12 +221,22 @@ public class ModuleListPanel extends JPanel {
 
         JCheckBox enableBox = new JCheckBox();
         boolean manualOnly = registry.isManualOnly(module.getId());
-        enableBox.setSelected(registry.isEnabled(module.getId()));
-        if (manualOnly) {
+        boolean autoTriggered = registry.isAutoTriggered(module.getId());
+        if (autoTriggered) {
+            // Auto-triggered modules fire on technology fingerprint; always enabled,
+            // not user-toggleable. Show the checkbox as ticked-and-disabled.
+            registry.setEnabled(module.getId(), true);
+            enableBox.setSelected(true);
+            enableBox.setEnabled(false);
+            enableBox.setToolTipText(module.getName()
+                    + " — auto-triggered by technology fingerprint (always on)");
+        } else if (manualOnly) {
             // Right-click only modules — checkbox is disabled (not part of auto-scan scope)
+            enableBox.setSelected(registry.isEnabled(module.getId()));
             enableBox.setEnabled(false);
             enableBox.setToolTipText(module.getName() + " — right-click only (not part of auto-scan)");
         } else {
+            enableBox.setSelected(registry.isEnabled(module.getId()));
             enableBox.setToolTipText("Enable/disable " + module.getName());
             enableBox.addActionListener(e -> registry.setEnabled(module.getId(), enableBox.isSelected()));
         }
@@ -241,6 +253,7 @@ public class ModuleListPanel extends JPanel {
         String tag = module.getCategory().name();
         String type = module.isPassive() ? "Passive" : "Active";
         String suffix = ModuleRegistry.AI_MODULE_ID.equals(module.getId()) ? " | Optional"
+                : autoTriggered ? " | Auto-triggered"
                 : manualOnly ? " | Right-click only" : "";
         JLabel descLabel = new JLabel(tag + " | " + type + suffix);
         descLabel.setFont(MONO_SMALL);

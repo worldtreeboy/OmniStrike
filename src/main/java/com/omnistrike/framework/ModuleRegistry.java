@@ -27,6 +27,27 @@ public class ModuleRegistry {
             "ldapi-scanner"        // LDAP Injection — right-click only, no auto-scan
     );
 
+    /**
+     * Modules that fire automatically based on technology fingerprinting and are
+     * NOT user-triggerable (no right-click entry, no custom-scan checkbox).
+     * They remain part of {@link #getEnabledActiveModules()} so the active-scan
+     * pipeline still calls them; each module self-filters by inspecting the
+     * request for its target fingerprint (e.g. D365 endpoints, Firebase URLs).
+     * The UI surfaces them as always-on (checkbox shown but disabled).
+     */
+    private static final Set<String> AUTO_TRIGGERED_IDS = Set.of(
+            "dynamics365-scanner",
+            "sap-odata-scanner",
+            "salesforce-soql-scanner",
+            "firebase-misconfig-scanner",
+            "sharepoint-caml-scanner",
+            "servicenow-glide-scanner",
+            "solr-query-scanner",
+            "odoo-domain-scanner",
+            "elasticsearch-query-scanner",
+            "spring-actuator-scanner"
+    );
+
     // ConcurrentLinkedHashMap preserves insertion order and is safe for concurrent reads.
     // Written at startup during registerModule(), read from proxy threads during scanning.
     // Using Collections.synchronizedMap wrapping LinkedHashMap ensures happens-before
@@ -126,6 +147,14 @@ public class ModuleRegistry {
     /** Returns true if the given module ID is manual-trigger-only (excluded from auto-scan). */
     public boolean isManualOnly(String moduleId) {
         return MANUAL_ONLY_IDS.contains(moduleId);
+    }
+
+    /**
+     * Returns true if the module is auto-triggered by technology fingerprint
+     * and should not expose a user-toggleable enable/disable switch.
+     */
+    public boolean isAutoTriggered(String moduleId) {
+        return AUTO_TRIGGERED_IDS.contains(moduleId);
     }
 
     private List<ScanModule> filterModules(Predicate<ScanModule> filter) {
