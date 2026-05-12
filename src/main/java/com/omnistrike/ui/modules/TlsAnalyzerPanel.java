@@ -88,7 +88,7 @@ public class TlsAnalyzerPanel extends JPanel {
         enumerateCiphersBox.setForeground(NEON_GREEN);
         enumerateCiphersBox.setFont(MONO_FONT);
         enumerateCiphersBox.setToolTipText("Probe each cipher suite individually (slower but complete weak-cipher list)");
-        enumerateCiphersBox.setSelected(false);
+        enumerateCiphersBox.setSelected(true);
         top.add(enumerateCiphersBox);
 
         publishFindingsBox = new JCheckBox("Publish findings");
@@ -363,13 +363,15 @@ public class TlsAnalyzerPanel extends JPanel {
     private static String classifyCipher(String cipher) {
         String lower = cipher.toLowerCase();
         if (lower.contains("_null_") || lower.contains("_anon_") || lower.contains("_export"))
-            return "CRITICAL";
-        if (lower.contains("_rc4_") || lower.contains("_des_") || lower.contains("_3des_"))
-            return "WEAK";
+            return "DANGEROUS (no/weak crypto)";
+        if (lower.contains("_rc4_") || lower.contains("_des_") || lower.contains("_3des_") || lower.contains("_rc2_"))
+            return "DANGEROUS (broken cipher)";
         if (lower.contains("_md5"))
-            return "WEAK (MD5)";
+            return "DANGEROUS (MD5 MAC)";
         if (lower.contains("_cbc_"))
-            return "OK (legacy CBC)";
+            return "DANGEROUS (CBC padding-oracle)";
+        if (lower.startsWith("tls_rsa_with") || lower.startsWith("ssl_rsa_with"))
+            return "WEAK (no forward secrecy)";
         if (lower.contains("_gcm_") || lower.contains("_chacha20"))
             return "STRONG (AEAD)";
         return "OK";

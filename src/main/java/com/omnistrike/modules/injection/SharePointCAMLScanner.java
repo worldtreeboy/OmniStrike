@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -630,7 +631,7 @@ public class SharePointCAMLScanner implements ScanModule {
                     return null;
             }
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -663,7 +664,7 @@ public class SharePointCAMLScanner implements ScanModule {
             probeRequest = probeRequest.withRemovedHeader("Accept")
                     .withAddedHeader("Accept", "application/json;odata=verbose");
 
-            HttpRequestResponse result = api.http().sendRequest(probeRequest);
+            HttpRequestResponse result = StepperHttp.sendRequest(probeRequest);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

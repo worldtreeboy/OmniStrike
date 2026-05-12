@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -882,7 +883,7 @@ public class LdapInjectionScanner implements ScanModule {
                 default:
                     return null;
             }
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

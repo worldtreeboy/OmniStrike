@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -549,7 +550,7 @@ public class SpringActuatorScanner implements ScanModule {
             probe = probe.withRemovedHeader("Accept")
                     .withAddedHeader("Accept", "application/json");
 
-            HttpRequestResponse result = api.http().sendRequest(probe);
+            HttpRequestResponse result = StepperHttp.sendRequest(probe);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

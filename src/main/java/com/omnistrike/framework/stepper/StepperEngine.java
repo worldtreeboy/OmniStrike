@@ -27,11 +27,21 @@ import java.util.regex.Pattern;
  * outgoing requests, extracting tokens/variables at each step and patching
  * them into the final outgoing request.
  *
- * Concurrency model:
- * - ThreadLocal EXECUTING_CHAIN prevents recursion when prerequisite requests
- *   flow back through handleHttpRequestToBeSent().
- * - ReentrantLock serializes chain execution so only one chain runs at a time.
- * - Token cache with TTL avoids re-running the chain for every request during scans.
+ * Two execution modes:
+ *
+ * 1) Cached mode (default) — One shared ChainContext (the displayContext) holds
+ *    extracted tokens. ReentrantLock serializes chain execution. TTL caches the
+ *    result so the chain doesn't re-run for every outgoing request. Good when
+ *    the chain produces reusable tokens (login session, persistent cookies).
+ *
+ * 2) Per-request mode — A fresh ChainContext is allocated for every outgoing
+ *    request, no lock, no cache. Multiple Burp scanner threads can run A->B->C->D
+ *    pipelines concurrently without clobbering each other. Required when each
+ *    probe needs its own single-use token (e.g. CSRF nonce burned per request).
+ *    The last completed run is snapshotted into displayContext for UI.
+ *
+ * Recursion is prevented in both modes via a ThreadLocal flag set while the
+ * engine itself is sending prerequisite requests.
  */
 public class StepperEngine {
 
@@ -39,35 +49,41 @@ public class StepperEngine {
 
     private final MontoyaApi api;
     private final ScopeManager scopeManager;
-    private final StepperVariableStore variableStore = new StepperVariableStore();
     private final List<StepperStep> steps = new ArrayList<>();
 
     /**
-     * Responses captured during the most recent chain run, in step order.
-     * Used by auto-extraction so {{varName}} placeholders resolve without
-     * requiring an explicit ExtractionRule.
+     * Shared cached context (cached mode) AND UI display snapshot (both modes).
+     * In per-request mode, after each per-thread chain completes, its state is
+     * copied here so the UI shows the latest result.
      */
-    private final List<HttpResponse> stepResponses = Collections.synchronizedList(new ArrayList<>());
+    private final ChainContext displayContext = new ChainContext();
+
+    /** Manually-added cookies that persist across chain re-runs. Shared across modes. */
+    private final ConcurrentHashMap<String, String> pinnedCookies = new ConcurrentHashMap<>();
 
     /**
-     * Automatic cookie jar — accumulates all Set-Cookie values from chain responses.
-     * Key: cookie name, Value: cookie value.
-     * Auto-injected into subsequent steps and the final outgoing request.
-     * Individual cookies can be added/removed at any time via the UI.
+     * Manually-added/overridden variables that persist across chain re-runs.
+     * Re-applied to the per-run context after {@code ctx.reset()} so they survive
+     * the "clear extracted vars" step at the start of each chain run.
+     * Pinned vars win over auto-resolved values when both exist.
      */
-    private final ConcurrentHashMap<String, String> cookieJar = new ConcurrentHashMap<>();
-    /** Manually-added cookies that persist across chain re-runs. */
-    private final ConcurrentHashMap<String, String> pinnedCookies = new ConcurrentHashMap<>();
-    private volatile boolean cookieJarEnabled = true;
+    private final ConcurrentHashMap<String, String> pinnedVariables = new ConcurrentHashMap<>();
 
+    private volatile boolean cookieJarEnabled = true;
     private volatile boolean enabled = false;
     private volatile int cacheTtlSeconds = 10;
-    private volatile long lastChainRunTime = 0;
-    // Tracks how many prerequisite steps ran last time — cache is invalidated when this changes
-    private volatile int lastChainPrereqCount = -1;
-    // When true, chain execution aborts immediately on a step that returns no response
     private volatile boolean stopOnFailure = false;
+    private volatile boolean perRequestMode = false;
 
+    /**
+     * When true, processOutgoingRequest is a no-op and in-flight chains break at
+     * the next step boundary. Set automatically when OmniStrike's scan is
+     * stopped, and toggleable from the UI for manual abort during Burp's
+     * built-in scans (which can't notify the extension when they pause).
+     */
+    private volatile boolean paused = false;
+
+    /** Serializes chain execution in cached mode only. Bypassed in per-request mode. */
     private final ReentrantLock chainLock = new ReentrantLock();
 
     /** Prevents recursion: when Stepper sends prerequisite requests, skip the hook. */
@@ -88,12 +104,27 @@ public class StepperEngine {
     public int getCacheTtlSeconds() { return cacheTtlSeconds; }
     public void setCacheTtlSeconds(int seconds) { this.cacheTtlSeconds = Math.max(0, seconds); }
 
-    public long getLastChainRunTime() { return lastChainRunTime; }
+    public long getLastChainRunTime() { return displayContext.lastChainRunTime; }
 
     public boolean isStopOnFailure() { return stopOnFailure; }
     public void setStopOnFailure(boolean stop) { this.stopOnFailure = stop; }
 
-    public StepperVariableStore getVariableStore() { return variableStore; }
+    public boolean isPerRequestMode() { return perRequestMode; }
+    public void setPerRequestMode(boolean on) {
+        this.perRequestMode = on;
+        displayContext.lastChainRunTime = 0;
+        displayContext.lastChainPrereqCount = -1;
+    }
+
+    public boolean isPaused() { return paused; }
+    public void setPaused(boolean p) {
+        boolean wasPaused = this.paused;
+        this.paused = p;
+        if (p && !wasPaused) uiLog("Stepper", "Paused — new chains blocked, in-flight chains will abort at next step.");
+        else if (!p && wasPaused) uiLog("Stepper", "Resumed.");
+    }
+
+    public StepperVariableStore getVariableStore() { return displayContext.variableStore; }
 
     public void setUiLogger(BiConsumer<String, String> logger) { this.uiLogger = logger; }
 
@@ -102,34 +133,61 @@ public class StepperEngine {
     public boolean isCookieJarEnabled() { return cookieJarEnabled; }
     public void setCookieJarEnabled(boolean enabled) { this.cookieJarEnabled = enabled; }
 
-    /** Returns an unmodifiable snapshot of the cookie jar. */
     public Map<String, String> getCookieJar() {
-        return Collections.unmodifiableMap(new LinkedHashMap<>(cookieJar));
+        return Collections.unmodifiableMap(new LinkedHashMap<>(displayContext.cookieJar));
     }
 
-    /** Manually add or update a cookie in the jar. Pinned cookies survive chain re-runs. */
     public void setCookie(String name, String value) {
         if (name != null && value != null) {
-            cookieJar.put(name, value);
             pinnedCookies.put(name, value);
+            displayContext.cookieJar.put(name, value);
         }
     }
 
-    /** Remove a single cookie from the jar (also unpins it). */
     public void removeCookie(String name) {
         if (name != null) {
-            cookieJar.remove(name);
             pinnedCookies.remove(name);
+            displayContext.cookieJar.remove(name);
         }
     }
 
-    /** Clear all cookies from the jar (including pinned). */
     public void clearCookieJar() {
-        cookieJar.clear();
         pinnedCookies.clear();
+        displayContext.cookieJar.clear();
     }
 
-    /** Returns true if the current thread is executing a Stepper chain. */
+    // ── Pinned Variables ─────────────────────────────────────────────────────
+
+    /** Manually set or override a variable. Survives chain re-runs. */
+    public void setVariable(String name, String value) {
+        if (name != null && value != null) {
+            pinnedVariables.put(name, value);
+            displayContext.variableStore.set(name, value);
+        }
+    }
+
+    /** Remove a manually-pinned variable. Auto-extracted vars with the same name will re-populate on next chain run. */
+    public void removeVariable(String name) {
+        if (name != null) {
+            pinnedVariables.remove(name);
+            // Don't remove from displayContext immediately — next chain run will rebuild it.
+            // But for UX clarity, remove from display too so the user sees the effect.
+            displayContext.variableStore.clear();
+            for (Map.Entry<String, String> e : pinnedVariables.entrySet()) {
+                displayContext.variableStore.set(e.getKey(), e.getValue());
+            }
+        }
+    }
+
+    /** Drop all pinned variables. */
+    public void clearPinnedVariables() {
+        pinnedVariables.clear();
+    }
+
+    public Map<String, String> getPinnedVariables() {
+        return Collections.unmodifiableMap(new LinkedHashMap<>(pinnedVariables));
+    }
+
     public static boolean isExecutingChain() {
         return Boolean.TRUE.equals(EXECUTING_CHAIN.get());
     }
@@ -171,40 +229,24 @@ public class StepperEngine {
 
     public synchronized void clearSteps() {
         steps.clear();
-        variableStore.clear();
-        cookieJar.clear();
-        stepResponses.clear();
-        lastChainRunTime = 0;
-        lastChainPrereqCount = -1;
+        displayContext.reset();
+        displayContext.lastChainRunTime = 0;
+        displayContext.lastChainPrereqCount = -1;
         uiLog("Stepper", "All steps cleared.");
     }
 
     public void invalidateCache() {
-        lastChainRunTime = 0;
-        lastChainPrereqCount = -1;
+        displayContext.lastChainRunTime = 0;
+        displayContext.lastChainPrereqCount = -1;
     }
 
     // ── Core: Process Outgoing Request ───────────────────────────────────────
 
-    /**
-     * Called from TrafficInterceptor.handleHttpRequestToBeSent().
-     * If Stepper is enabled and the request is in scope, runs the prerequisite
-     * chain (if cache is stale) and patches variables into the outgoing request.
-     *
-     * Prerequisite detection: if the outgoing request matches one of the configured
-     * steps (by method + host + path), only the steps BEFORE it are used as
-     * prerequisites. For example, if steps are [A, B, C, D, E] and the outgoing
-     * request matches C (index 2), only A and B run. If no match is found, all
-     * steps run (pure-prerequisite mode, backwards compatible).
-     */
     public HttpRequest processOutgoingRequest(HttpRequest request) {
         if (!enabled) return request;
-
-        // Skip if this thread is already executing a chain (recursion prevention)
+        if (paused) return request;
         if (isExecutingChain()) return request;
 
-        // Scope check — only filter by scope if a scope is actually configured.
-        // When no scope is set, Stepper injects into ALL requests (user explicitly enabled it).
         try {
             String host = request.httpService().host();
             if (scopeManager.hasScope() && !scopeManager.isInScope(host)) return request;
@@ -212,37 +254,42 @@ public class StepperEngine {
             return request;
         }
 
-        // Get a snapshot of steps
         List<StepperStep> currentSteps;
         synchronized (this) {
             if (steps.isEmpty()) return request;
             currentSteps = new ArrayList<>(steps);
         }
 
-        // Determine which prerequisite steps to run.
-        // If the outgoing request matches step[i], run steps[0..i-1] only.
-        // If no match, run all steps (pure-prerequisite mode).
         int matchIdx = findMatchingStepIndex(request, currentSteps);
-        List<StepperStep> prereqSteps;
         if (matchIdx < 0) {
-            prereqSteps = currentSteps;                          // no match → run all
-        } else if (matchIdx == 0) {
-            prereqSteps = Collections.emptyList();              // first step → no prerequisites
+            // No configured step matches this outgoing request. Pass through
+            // unchanged. (Previously this fell back to "run all steps as prereqs"
+            // which caused unrelated browser traffic to trigger the chain.)
+            return request;
+        }
+        List<StepperStep> prereqSteps;
+        if (matchIdx == 0) {
+            prereqSteps = Collections.emptyList();
         } else {
-            prereqSteps = currentSteps.subList(0, matchIdx);   // run only preceding steps
+            prereqSteps = currentSteps.subList(0, matchIdx);
         }
 
-        int prereqCount = prereqSteps.size();
+        if (perRequestMode) {
+            return processPerRequest(request, prereqSteps);
+        }
+        return processCached(request, prereqSteps);
+    }
 
-        // Check if cache is still valid — also invalidated when the prerequisite set changes
+    /** Cached / shared-state mode: cache the chain output, serialize chain runs. */
+    private HttpRequest processCached(HttpRequest request, List<StepperStep> prereqSteps) {
+        int prereqCount = prereqSteps.size();
         long now = System.currentTimeMillis();
-        long age = now - lastChainRunTime;
+        long age = now - displayContext.lastChainRunTime;
         boolean cacheValid = cacheTtlSeconds > 0
                 && age < (cacheTtlSeconds * 1000L)
-                && lastChainPrereqCount == prereqCount;
+                && displayContext.lastChainPrereqCount == prereqCount;
 
         if (!cacheValid && !prereqSteps.isEmpty()) {
-            // Run the chain — serialize with lock so only one thread runs it
             try {
                 chainLock.lockInterruptibly();
             } catch (InterruptedException e) {
@@ -250,56 +297,126 @@ public class StepperEngine {
                 return request;
             }
             try {
-                // Double-check after acquiring lock (another thread may have just run it)
-                long ageAfterLock = System.currentTimeMillis() - lastChainRunTime;
+                long ageAfterLock = System.currentTimeMillis() - displayContext.lastChainRunTime;
                 if (cacheTtlSeconds <= 0
                         || ageAfterLock >= (cacheTtlSeconds * 1000L)
-                        || lastChainPrereqCount != prereqCount) {
-                    executeChain(prereqSteps);
-                    lastChainPrereqCount = prereqCount;
+                        || displayContext.lastChainPrereqCount != prereqCount) {
+                    executeChain(prereqSteps, displayContext);
                 }
             } finally {
                 chainLock.unlock();
             }
         }
-
-        // Apply variables to the outgoing request
-        return applyVariables(request);
+        return applyVariables(request, displayContext);
     }
 
     /**
-     * Identifies which step the outgoing request corresponds to by matching
-     * method + host + path (without query string). Returns the step index, or
-     * -1 if the request doesn't match any configured step.
+     * Per-request mode: fresh ChainContext per call. No global lock, no cache.
+     * Each Burp scanner thread runs its own A->B->C->D pipeline in parallel.
+     * The completed context is snapshotted into displayContext for UI display.
+     */
+    private HttpRequest processPerRequest(HttpRequest request, List<StepperStep> prereqSteps) {
+        ChainContext ctx = new ChainContext();
+        if (!prereqSteps.isEmpty()) {
+            executeChain(prereqSteps, ctx);
+            HttpRequest result = applyVariables(request, ctx);
+            snapshotForDisplay(ctx);
+            return result;
+        }
+        // No prereqs to run for this request — pull pinned cookies and any
+        // previously-extracted variables from displayContext so substitution
+        // still works. Do NOT snapshot back: ctx's lastChainRunTime is 0 and
+        // would wipe displayContext's state.
+        ctx.cookieJar.putAll(pinnedCookies);
+        for (Map.Entry<String, String> e : displayContext.variableStore.getAll().entrySet()) {
+            ctx.variableStore.set(e.getKey(), e.getValue());
+        }
+        return applyVariables(request, ctx);
+    }
+
+    /** Copy completed per-request context state into displayContext for the UI. */
+    private void snapshotForDisplay(ChainContext src) {
+        displayContext.variableStore.clear();
+        for (Map.Entry<String, String> e : src.variableStore.getAll().entrySet()) {
+            displayContext.variableStore.set(e.getKey(), e.getValue());
+        }
+        displayContext.cookieJar.clear();
+        displayContext.cookieJar.putAll(src.cookieJar);
+        synchronized (displayContext.stepResponses) {
+            displayContext.stepResponses.clear();
+            synchronized (src.stepResponses) {
+                displayContext.stepResponses.addAll(src.stepResponses);
+            }
+        }
+        displayContext.lastChainRunTime = src.lastChainRunTime;
+        displayContext.lastChainPrereqCount = src.lastChainPrereqCount;
+    }
+
+    /**
+     * Identifies which step the outgoing request corresponds to. Two-pass:
+     *
+     *   1. EXACT — method + host + port + full path (with query) + body match.
+     *      Catches Repeater-style "send the exact configured request" so that
+     *      multiple steps differing only in query/body params (postid=1, =2, =3)
+     *      are distinguishable.
+     *
+     *   2. LOOSE — method + host + port + path-without-query. Returns the
+     *      HIGHEST matching index, since users add the scan target as the last
+     *      step by convention. Catches scanner-mutated probes whose body differs
+     *      because of payload injection.
+     *
+     * Returns -1 if neither pass matches.
      */
     private int findMatchingStepIndex(HttpRequest request, List<StepperStep> steps) {
-        String method, host, path;
+        String method, host, fullPath, pathOnly, body;
         int port;
         try {
-            method = request.method();
-            host   = request.httpService().host();
-            port   = request.httpService().port();
-            path   = request.pathWithoutQuery();
+            method   = request.method();
+            host     = request.httpService().host();
+            port     = request.httpService().port();
+            fullPath = request.path();
+            pathOnly = request.pathWithoutQuery();
+            body     = request.bodyToString();
+            if (body == null) body = "";
         } catch (Exception e) {
             return -1;
         }
+
+        // Pass 1: exact match (path + query + body)
         for (int i = 0; i < steps.size(); i++) {
             try {
                 HttpRequest s = steps.get(i).getOriginalRequest();
                 if (method.equalsIgnoreCase(s.method())
                         && host.equalsIgnoreCase(s.httpService().host())
                         && port == s.httpService().port()
-                        && path.equals(s.pathWithoutQuery())) {
-                    return i;
+                        && fullPath.equals(s.path())) {
+                    String stepBody = s.bodyToString();
+                    if (stepBody == null) stepBody = "";
+                    if (body.equals(stepBody)) return i;
                 }
             } catch (Exception ignored) {}
         }
-        return -1;
+
+        // Pass 2: loose match — same method + path-without-query. Return last
+        // matching index (convention: target step is added last).
+        int lastLoose = -1;
+        for (int i = 0; i < steps.size(); i++) {
+            try {
+                HttpRequest s = steps.get(i).getOriginalRequest();
+                if (method.equalsIgnoreCase(s.method())
+                        && host.equalsIgnoreCase(s.httpService().host())
+                        && port == s.httpService().port()
+                        && pathOnly.equals(s.pathWithoutQuery())) {
+                    lastLoose = i;
+                }
+            } catch (Exception ignored) {}
+        }
+        return lastLoose;
     }
 
     /**
-     * Runs the chain manually (e.g., from the "Run Chain" button).
-     * Returns true if the chain completed successfully.
+     * Runs the chain manually (e.g., from the "Run Chain" button). Always
+     * targets displayContext regardless of mode, so the user sees the result.
      */
     public boolean runChainManually() {
         List<StepperStep> currentSteps;
@@ -310,7 +427,7 @@ public class StepperEngine {
 
         chainLock.lock();
         try {
-            executeChain(currentSteps);
+            executeChain(currentSteps, displayContext);
             return true;
         } catch (Exception e) {
             uiLog("Stepper", "Manual chain run failed: " + e.getMessage());
@@ -322,18 +439,23 @@ public class StepperEngine {
 
     // ── Chain Execution ──────────────────────────────────────────────────────
 
-    private void executeChain(List<StepperStep> currentSteps) {
+    private void executeChain(List<StepperStep> currentSteps, ChainContext ctx) {
         EXECUTING_CHAIN.set(true);
         try {
-            variableStore.clear();
-            cookieJar.clear();
-            stepResponses.clear();
-            // Restore manually-pinned cookies so they survive chain re-runs
-            cookieJar.putAll(pinnedCookies);
+            ctx.reset();
+            ctx.cookieJar.putAll(pinnedCookies);
+            // Re-apply pinned variables so manual overrides survive the reset.
+            for (Map.Entry<String, String> e : pinnedVariables.entrySet()) {
+                ctx.variableStore.set(e.getKey(), e.getValue());
+            }
             uiLog("Stepper", "Running chain (" + currentSteps.size() + " steps)...");
 
             for (int i = 0; i < currentSteps.size(); i++) {
                 if (Thread.currentThread().isInterrupted()) break;
+                if (paused) {
+                    uiLog("Stepper", "  Chain aborted at step " + (i + 1) + " (paused).");
+                    break;
+                }
                 StepperStep step = currentSteps.get(i);
                 if (!step.isEnabled()) {
                     uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName() + "] — SKIPPED (disabled)");
@@ -341,15 +463,12 @@ public class StepperEngine {
                 }
 
                 try {
-                    // Substitute variables into the step's request template
-                    HttpRequest templated = substituteRequest(step.getOriginalRequest());
+                    HttpRequest templated = substituteAll(step.getOriginalRequest(), ctx);
 
-                    // Inject accumulated cookies from previous steps
-                    if (cookieJarEnabled && !cookieJar.isEmpty()) {
-                        templated = injectCookies(templated);
+                    if (cookieJarEnabled && !ctx.cookieJar.isEmpty()) {
+                        templated = injectCookies(templated, ctx);
                     }
 
-                    // Send the request
                     HttpRequestResponse result = api.http().sendRequest(templated);
                     HttpResponse response = result.response();
 
@@ -366,20 +485,16 @@ public class StepperEngine {
                     uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName()
                             + "] — " + response.statusCode() + " " + step.getUrlSummary());
 
-                    // Cache the response so later steps and the final outgoing
-                    // request can auto-resolve {{varName}} placeholders against it.
-                    stepResponses.add(response);
+                    ctx.stepResponses.add(response);
 
-                    // Auto-collect Set-Cookie headers into the cookie jar
                     if (cookieJarEnabled) {
-                        collectCookies(response, i + 1, step.getName());
+                        collectCookies(response, i + 1, step.getName(), ctx);
                     }
 
-                    // Extract values from explicit extraction rules
                     for (ExtractionRule rule : step.getExtractionRules()) {
                         String value = extractValue(response, rule);
                         if (value != null && !value.isEmpty()) {
-                            variableStore.set(rule.getVariableName(), value);
+                            ctx.variableStore.set(rule.getVariableName(), value);
                             uiLog("Stepper", "    Extracted {{" + rule.getVariableName()
                                     + "}} = " + truncate(value, 50));
                         } else {
@@ -397,9 +512,16 @@ public class StepperEngine {
                 }
             }
 
-            lastChainRunTime = System.currentTimeMillis();
-            int varCount = variableStore.getAll().size();
-            int cookieCount = cookieJar.size();
+            // Re-apply pinned variables one more time so they win over anything
+            // the chain extracted under the same name (user explicitly pinned them).
+            for (Map.Entry<String, String> e : pinnedVariables.entrySet()) {
+                ctx.variableStore.set(e.getKey(), e.getValue());
+            }
+
+            ctx.lastChainRunTime = System.currentTimeMillis();
+            ctx.lastChainPrereqCount = currentSteps.size();
+            int varCount = ctx.variableStore.getAll().size();
+            int cookieCount = ctx.cookieJar.size();
             uiLog("Stepper", "Chain complete. " + varCount + " variable(s), "
                     + cookieCount + " cookie(s) collected.");
         } finally {
@@ -409,65 +531,40 @@ public class StepperEngine {
 
     // ── Variable Substitution ────────────────────────────────────────────────
 
-    /**
-     * Substitutes {{variables}} in path, headers and body of an HttpRequest.
-     * Used to template each step's request before sending.
-     */
-    private HttpRequest substituteRequest(HttpRequest request) {
-        return substituteAll(request);
-    }
-
-    /**
-     * Applies stored/auto-resolved variables and the cookie jar to the final
-     * outgoing request.
-     */
-    private HttpRequest applyVariables(HttpRequest request) {
+    private HttpRequest applyVariables(HttpRequest request, ChainContext ctx) {
         HttpRequest modified = request;
-
-        // Inject cookies from the jar
-        if (cookieJarEnabled && !cookieJar.isEmpty()) {
-            modified = injectCookies(modified);
+        if (cookieJarEnabled && !ctx.cookieJar.isEmpty()) {
+            modified = injectCookies(modified, ctx);
         }
-
-        // Always run substitution — auto-resolve can fill in placeholders even
-        // when the explicit variable store is empty.
-        return substituteAll(modified);
+        return substituteAll(modified, ctx);
     }
 
-    /**
-     * Replaces every {{varName}} placeholder in the request's path, headers,
-     * and body. Each placeholder is first looked up in the explicit variable
-     * store, then auto-resolved from previous step responses.
-     */
-    private HttpRequest substituteAll(HttpRequest request) {
+    private HttpRequest substituteAll(HttpRequest request, ChainContext ctx) {
         HttpRequest modified = request;
 
-        // Path (URL path + query string) — fixes /api/{{id}}/xyz substitution
         try {
             String originalPath = request.path();
             if (originalPath != null && originalPath.contains("{{")) {
-                String substituted = substituteString(originalPath);
+                String substituted = substituteString(originalPath, ctx);
                 if (!originalPath.equals(substituted)) {
                     modified = modified.withPath(substituted);
                 }
             }
         } catch (Exception ignored) {}
 
-        // Headers
         for (var header : List.copyOf(modified.headers())) {
             String originalValue = header.value();
             if (originalValue == null || !originalValue.contains("{{")) continue;
-            String substituted = substituteString(originalValue);
+            String substituted = substituteString(originalValue, ctx);
             if (!originalValue.equals(substituted)) {
                 modified = modified.withRemovedHeader(header.name())
                         .withAddedHeader(header.name(), substituted);
             }
         }
 
-        // Body
         String body = modified.bodyToString();
         if (body != null && body.contains("{{")) {
-            String substitutedBody = substituteString(body);
+            String substitutedBody = substituteString(body, ctx);
             if (!body.equals(substitutedBody)) {
                 modified = modified.withBody(substitutedBody);
             }
@@ -476,14 +573,7 @@ public class StepperEngine {
         return modified;
     }
 
-    /**
-     * Resolves every {{varName}} in {@code input}. Order:
-     *   1. Explicit variable store (populated by ExtractionRules + previous auto-resolves).
-     *   2. Auto-resolution against responses captured during the chain run
-     *      (matches header name, Set-Cookie name, JSON key, or "key":"value" / key=value in body).
-     * Unresolvable placeholders are left literal so the user can spot them.
-     */
-    private String substituteString(String input) {
+    private String substituteString(String input, ChainContext ctx) {
         if (input == null || input.isEmpty()) return input;
         Matcher m = PLACEHOLDER_PATTERN.matcher(input);
         if (!m.find()) return input;
@@ -492,12 +582,11 @@ public class StepperEngine {
         m.reset();
         while (m.find()) {
             String varName = m.group(1).trim();
-            String value = variableStore.get(varName);
+            String value = ctx.variableStore.get(varName);
             if (value == null) {
-                value = autoResolve(varName);
+                value = autoResolve(varName, ctx);
                 if (value != null) {
-                    // Cache so we don't re-search responses on every call.
-                    variableStore.set(varName, value);
+                    ctx.variableStore.set(varName, value);
                     uiLog("Stepper", "  Auto-resolved {{" + varName + "}} = " + truncate(value, 50));
                 }
             }
@@ -507,20 +596,12 @@ public class StepperEngine {
         return sb.toString();
     }
 
-    /**
-     * Searches captured step responses (most recent first) for a value matching
-     * {@code varName}. Match order within each response:
-     *   1. Response header named {@code varName}.
-     *   2. Set-Cookie whose cookie name equals {@code varName}.
-     *   3. JSON key named {@code varName} (case-insensitive, walks nested objects/arrays).
-     *   4. Regex fallback: "varName":"value", "varName":number, or varName=value.
-     */
-    private String autoResolve(String varName) {
+    private String autoResolve(String varName, ChainContext ctx) {
         if (varName == null || varName.isEmpty()) return null;
 
         List<HttpResponse> snapshot;
-        synchronized (stepResponses) {
-            snapshot = new ArrayList<>(stepResponses);
+        synchronized (ctx.stepResponses) {
+            snapshot = new ArrayList<>(ctx.stepResponses);
         }
 
         for (int i = snapshot.size() - 1; i >= 0; i--) {
@@ -532,13 +613,11 @@ public class StepperEngine {
     }
 
     private String findInResponse(HttpResponse resp, String varName) {
-        // 1. Response header
         try {
             String h = resp.headerValue(varName);
             if (h != null && !h.isEmpty()) return h;
         } catch (Exception ignored) {}
 
-        // 2. Set-Cookie name match
         try {
             for (var header : resp.headers()) {
                 if (!"Set-Cookie".equalsIgnoreCase(header.name())) continue;
@@ -555,7 +634,6 @@ public class StepperEngine {
             }
         } catch (Exception ignored) {}
 
-        // 3. JSON body key search
         String body;
         try {
             body = resp.bodyToString();
@@ -570,7 +648,6 @@ public class StepperEngine {
             if (found != null) return found;
         } catch (Exception ignored) {}
 
-        // 4. Regex fallback for non-JSON or HTML/script-embedded values
         try {
             String quoted = Pattern.quote(varName);
             Matcher m = Pattern.compile("\"" + quoted + "\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
@@ -584,11 +661,6 @@ public class StepperEngine {
         return null;
     }
 
-    /**
-     * Recursively walks a JSON tree returning the first primitive value whose
-     * key (case-insensitive) matches {@code key}. Nested objects within arrays
-     * are also searched.
-     */
     private String findJsonKey(JsonElement el, String key) {
         if (el == null || el.isJsonNull()) return null;
         if (el.isJsonObject()) {
@@ -628,7 +700,6 @@ public class StepperEngine {
         }
     }
 
-    /** Extracts capture group 1 from a regex match against the response body. */
     private String extractBodyRegex(HttpResponse response, String regex) {
         String body = response.bodyToString();
         if (body == null || body.isEmpty()) return null;
@@ -639,17 +710,14 @@ public class StepperEngine {
         return null;
     }
 
-    /** Extracts the value of a named response header. */
     private String extractHeader(HttpResponse response, String headerName) {
         return response.headerValue(headerName);
     }
 
-    /** Extracts the value of a named cookie from Set-Cookie headers. */
     private String extractCookie(HttpResponse response, String cookieName) {
         for (var header : response.headers()) {
             if ("Set-Cookie".equalsIgnoreCase(header.name())) {
                 String val = header.value();
-                // Parse "name=value; ..." format
                 String[] parts = val.split(";");
                 if (parts.length > 0) {
                     String nameValue = parts[0].trim();
@@ -666,7 +734,6 @@ public class StepperEngine {
         return null;
     }
 
-    /** Extracts a value via simple dot-notation JSON path (e.g., "data.token"). */
     private String extractJsonPath(HttpResponse response, String jsonPath) {
         String body = response.bodyToString();
         if (body == null || body.isEmpty()) return null;
@@ -692,11 +759,7 @@ public class StepperEngine {
 
     // ── Cookie Jar Helpers ─────────────────────────────────────────────────
 
-    /**
-     * Collects all Set-Cookie headers from a response into the cookie jar.
-     * Later cookies with the same name overwrite earlier ones (newest wins).
-     */
-    private void collectCookies(HttpResponse response, int stepNum, String stepName) {
+    private void collectCookies(HttpResponse response, int stepNum, String stepName, ChainContext ctx) {
         for (var header : response.headers()) {
             if ("Set-Cookie".equalsIgnoreCase(header.name())) {
                 String val = header.value();
@@ -707,7 +770,7 @@ public class StepperEngine {
                     if (eq > 0) {
                         String name = nameValue.substring(0, eq).trim();
                         String value = nameValue.substring(eq + 1).trim();
-                        cookieJar.put(name, value);
+                        ctx.cookieJar.put(name, value);
                         uiLog("Stepper", "    Cookie: " + name + "=" + truncate(value, 40));
                     }
                 }
@@ -715,13 +778,7 @@ public class StepperEngine {
         }
     }
 
-    /**
-     * Merges the cookie jar into the request's Cookie header.
-     * Preserves any existing cookies in the request that aren't in the jar,
-     * and overwrites those that are (jar wins — it has the freshest values).
-     */
-    private HttpRequest injectCookies(HttpRequest request) {
-        // Parse existing Cookie header
+    private HttpRequest injectCookies(HttpRequest request, ChainContext ctx) {
         Map<String, String> merged = new LinkedHashMap<>();
         String existingCookie = request.headerValue("Cookie");
         if (existingCookie != null && !existingCookie.isEmpty()) {
@@ -734,10 +791,8 @@ public class StepperEngine {
             }
         }
 
-        // Overlay with cookie jar (jar wins)
-        merged.putAll(cookieJar);
+        merged.putAll(ctx.cookieJar);
 
-        // Build the new Cookie header
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, String> entry : merged.entrySet()) {
             if (sb.length() > 0) sb.append("; ");

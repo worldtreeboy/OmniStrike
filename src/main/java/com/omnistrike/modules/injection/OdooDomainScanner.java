@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -638,7 +639,7 @@ public class OdooDomainScanner implements ScanModule {
                     .withAddedHeader("Content-Length",
                             String.valueOf(jsonBody.getBytes(StandardCharsets.UTF_8).length));
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -679,7 +680,7 @@ public class OdooDomainScanner implements ScanModule {
             HttpRequest req = HttpRequest.httpRequest(originalRequest.httpService(),
                     headers.toString());
 
-            HttpRequestResponse result = api.http().sendRequest(req);
+            HttpRequestResponse result = StepperHttp.sendRequest(req);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

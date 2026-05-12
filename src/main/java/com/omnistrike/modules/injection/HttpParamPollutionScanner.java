@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -510,7 +511,7 @@ public class HttpParamPollutionScanner implements ScanModule {
     private HttpRequestResponse sendRequest(HttpRequest request) {
         if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
-            HttpRequestResponse result = api.http().sendRequest(request);
+            HttpRequestResponse result = StepperHttp.sendRequest(request);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -160,7 +161,7 @@ public class HostHeaderScanner implements ScanModule {
             HttpRequest modified = original.request()
                     .withRemovedHeader("Host")
                     .withAddedHeader("Host", collabPayload);
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (ResponseGuard.isUsableResponse(result)) {
                 sentRequest.set(result);
             }
@@ -180,7 +181,7 @@ public class HostHeaderScanner implements ScanModule {
                 HttpRequest modified = original.request()
                         .withRemovedHeader("Host")
                         .withAddedHeader("Host", internalHost);
-                HttpRequestResponse result = api.http().sendRequest(modified);
+                HttpRequestResponse result = StepperHttp.sendRequest(modified);
                 if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result == null || result.response() == null) continue;
 
@@ -290,7 +291,7 @@ public class HostHeaderScanner implements ScanModule {
         String baselineBody = "";
         try {
             if (com.omnistrike.framework.ScanState.isCancelled()) return;
-            HttpRequestResponse baseline = api.http().sendRequest(original.request());
+            HttpRequestResponse baseline = StepperHttp.sendRequest(original.request());
             if (ResponseGuard.isUsableResponse(baseline) && baseline != null && baseline.response() != null) {
                 baselineBody = baseline.response().bodyToString();
                 if (baselineBody == null) baselineBody = "";
@@ -303,7 +304,7 @@ public class HostHeaderScanner implements ScanModule {
             // Add a second Host header (keep the original, add attacker's)
             HttpRequest modified = original.request()
                     .withAddedHeader("Host", attackerHost);
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
             if (result == null || result.response() == null) return;
 
@@ -346,7 +347,7 @@ public class HostHeaderScanner implements ScanModule {
         String baselineBody = "";
         try {
             if (com.omnistrike.framework.ScanState.isCancelled()) return;
-            HttpRequestResponse baseline = api.http().sendRequest(original.request());
+            HttpRequestResponse baseline = StepperHttp.sendRequest(original.request());
             if (ResponseGuard.isUsableResponse(baseline) && baseline != null && baseline.response() != null) {
                 baselineBody = baseline.response().bodyToString();
                 if (baselineBody == null) baselineBody = "";
@@ -365,7 +366,7 @@ public class HostHeaderScanner implements ScanModule {
                 HttpRequest modified = original.request()
                         .withRemovedHeader(header)
                         .withAddedHeader(header, headerValue);
-                HttpRequestResponse result = api.http().sendRequest(modified);
+                HttpRequestResponse result = StepperHttp.sendRequest(modified);
                 if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result != null && result.response() != null && result.response().statusCode() < 400) {
                     // Structural proof: injected value must appear in security-sensitive location
@@ -422,7 +423,7 @@ public class HostHeaderScanner implements ScanModule {
                         HttpRequest oobModified = original.request()
                                 .withRemovedHeader(header)
                                 .withAddedHeader(header, oobHeaderValue);
-                        HttpRequestResponse oobResult = api.http().sendRequest(oobModified);
+                        HttpRequestResponse oobResult = StepperHttp.sendRequest(oobModified);
                         if (ResponseGuard.isUsableResponse(oobResult)) {
                             oobSent.set(oobResult);
                         }

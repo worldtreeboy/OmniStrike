@@ -1,4 +1,5 @@
 package com.omnistrike.framework;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.handler.*;
@@ -186,7 +187,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived response) {
         // Only process proxy-originating traffic via the ProxyResponseHandler below.
-        // Requests sent by modules via api.http().sendRequest() also flow through here,
+        // Requests sent by modules via StepperHttp.sendRequest() also flow through here,
         // which would cause every module's test request to re-trigger all other modules,
         // flooding the thread pool with cascading tasks. Skip them.
         return ResponseReceivedAction.continueWith(response);
@@ -278,6 +279,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
         ScanState.reset();
+        // Resume Stepper in case a prior stop paused it.
+        StepperEngine ssr = stepperEngine;
+        if (ssr != null) ssr.setPaused(false);
 
         // Clean up completed futures before adding new ones
         manualScanFutures.removeIf(Future::isDone);
@@ -324,6 +328,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
         ScanState.reset();
+        // Resume Stepper in case a prior stop paused it.
+        StepperEngine ssr = stepperEngine;
+        if (ssr != null) ssr.setPaused(false);
         manualScanFutures.removeIf(Future::isDone);
 
         List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
@@ -463,6 +470,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         manualScansCancelled = true;
         ScanState.cancel();
         running = false;
+        // Tell Stepper to pause so in-flight chains abort and new ones are blocked.
+        StepperEngine s = stepperEngine;
+        if (s != null) s.setPaused(true);
 
         // Then cancel futures (handles queued-but-not-yet-started tasks)
         int cancelled = 0;

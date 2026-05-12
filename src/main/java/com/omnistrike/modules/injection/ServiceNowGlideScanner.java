@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -581,7 +582,7 @@ public class ServiceNowGlideScanner implements ScanModule {
                     return null;
             }
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -613,7 +614,7 @@ public class ServiceNowGlideScanner implements ScanModule {
             String newPath = extractFullPath(newUrl);
             HttpRequest modified = original.request().withPath(newPath);
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -632,7 +633,7 @@ public class ServiceNowGlideScanner implements ScanModule {
             HttpRequest modified = original.request().withUpdatedParameters(
                     HttpParameter.urlParameter("sysparm_fields", fields));
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

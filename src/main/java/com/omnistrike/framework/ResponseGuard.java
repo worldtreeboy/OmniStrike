@@ -1,4 +1,5 @@
 package com.omnistrike.framework;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -113,7 +114,7 @@ public final class ResponseGuard {
      *
      * Modules should call this BEFORE checking response body for vuln patterns:
      * <pre>
-     *   HttpRequestResponse result = api.http().sendRequest(modified);
+     *   HttpRequestResponse result = StepperHttp.sendRequest(modified);
      *   if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
      *   // Safe to analyze result.response().bodyToString()
      * </pre>

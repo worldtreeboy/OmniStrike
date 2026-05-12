@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.Interaction;
@@ -311,7 +312,7 @@ public class SsrfScanner implements ScanModule {
                 HttpRequest modified = original.request()
                         .withRemovedHeader("Host")
                         .withAddedHeader("Host", headerCollab);
-                HttpRequestResponse hostResult = api.http().sendRequest(modified);
+                HttpRequestResponse hostResult = StepperHttp.sendRequest(modified);
                 if (ResponseGuard.isUsableResponse(hostResult)) {
                     hostSentRequest.set(hostResult);
                 }
@@ -430,7 +431,7 @@ public class SsrfScanner implements ScanModule {
         if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -452,7 +453,7 @@ public class SapODataScanner implements ScanModule {
                 }
             }
 
-            HttpRequestResponse result = api.http().sendRequest(metadataRequest);
+            HttpRequestResponse result = StepperHttp.sendRequest(metadataRequest);
             if (result == null || result.response() == null) return;
             if (!ResponseGuard.isUsableResponse(result)) return;
 
@@ -605,7 +606,7 @@ public class SapODataScanner implements ScanModule {
                     return null;
             }
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -630,7 +631,7 @@ public class SapODataScanner implements ScanModule {
             HttpRequest modified = original.request().withPath(
                     extractFullPath(modifiedUrl));
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -649,7 +650,7 @@ public class SapODataScanner implements ScanModule {
             HttpRequest modified = original.request().withUpdatedParameters(
                     HttpParameter.urlParameter("$expand", expandValue));
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

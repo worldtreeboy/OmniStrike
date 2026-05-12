@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -326,7 +327,7 @@ public class CachePoisonScanner implements ScanModule {
             HttpRequest poisonRequest = busteredRequest
                     .withRemovedHeader(headerName)
                     .withAddedHeader(headerName, confirmCanary);
-            HttpRequestResponse poisonResult = api.http().sendRequest(poisonRequest);
+            HttpRequestResponse poisonResult = StepperHttp.sendRequest(poisonRequest);
             if (!ResponseGuard.isUsableResponse(poisonResult)) return false;
         } catch (Exception e) {
             return false;
@@ -335,7 +336,7 @@ public class CachePoisonScanner implements ScanModule {
 
         // Send clean request (no injected header, same cache buster)
         try {
-            HttpRequestResponse cleanResult = api.http().sendRequest(busteredRequest);
+            HttpRequestResponse cleanResult = StepperHttp.sendRequest(busteredRequest);
             if (!ResponseGuard.isUsableResponse(cleanResult)) return false;
             if (cleanResult != null && cleanResult.response() != null) {
                 return isCanaryReflected(cleanResult, confirmCanary);
@@ -439,7 +440,7 @@ public class CachePoisonScanner implements ScanModule {
             HttpRequest modified = original.request()
                     .withRemovedHeader(headerName)
                     .withAddedHeader(headerName, value);
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -453,7 +454,7 @@ public class CachePoisonScanner implements ScanModule {
             HttpRequest modified = original.request()
                     .withUpdatedParameters(
                             burp.api.montoya.http.message.params.HttpParameter.urlParameter(paramName, PayloadEncoder.encode(value)));
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

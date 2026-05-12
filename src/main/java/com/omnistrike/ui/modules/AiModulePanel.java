@@ -1,4 +1,5 @@
 package com.omnistrike.ui.modules;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -789,7 +790,7 @@ public class AiModulePanel extends JPanel {
                                     if (rr.response() == null) {
                                         if (hasJsOrHtmlExtension(url)) {
                                             try {
-                                                rr = api.http().sendRequest(rr.request());
+                                                rr = StepperHttp.sendRequest(rr.request());
                                                 api.logging().logToOutput("[Scrape] Fetched missing response: " + url);
                                             } catch (Exception fetchEx) {
                                                 api.logging().logToOutput("[Scrape] Fetch failed: " + url);

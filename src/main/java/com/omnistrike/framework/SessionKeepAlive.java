@@ -1,4 +1,5 @@
 package com.omnistrike.framework;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -320,7 +321,7 @@ public class SessionKeepAlive {
         while (redirectCount <= MAX_REDIRECTS) {
             HttpResponse response;
             try {
-                HttpRequestResponse result = api.http().sendRequest(currentRequest);
+                HttpRequestResponse result = StepperHttp.sendRequest(currentRequest);
                 response = result.response();
             } catch (Exception e) {
                 handleFailure("Request failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());

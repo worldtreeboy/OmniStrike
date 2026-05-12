@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection.deser;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.HttpService;
@@ -260,7 +261,7 @@ public class DeserEngine {
         try {
             HttpService service = HttpService.httpService(host, port, useHttps);
             HttpRequest req = HttpRequest.httpRequest(service, modifiedRequest);
-            var rr = api.http().sendRequest(req);
+            var rr = StepperHttp.sendRequest(req);
             HttpResponse resp = rr.response();
             long elapsed = System.currentTimeMillis() - startMs;
 

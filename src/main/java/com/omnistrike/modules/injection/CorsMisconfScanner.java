@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -344,7 +345,7 @@ public class CorsMisconfScanner implements ScanModule {
             HttpRequest simpleGet = HttpRequest.httpRequestFromUrl(url)
                     .withAddedHeader("Origin", attackerOrigin);
 
-            HttpRequestResponse result = api.http().sendRequest(simpleGet);
+            HttpRequestResponse result = StepperHttp.sendRequest(simpleGet);
             if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
             if (result == null || result.response() == null) { perHostDelay(); return; }
 
@@ -514,7 +515,7 @@ public class CorsMisconfScanner implements ScanModule {
                     .withAddedHeader("Origin", trustedOrigin)
                     .withAddedHeader("Origin", attackerOrigin);
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
             if (result == null || result.response() == null) { perHostDelay(); return; }
 
@@ -752,7 +753,7 @@ public class CorsMisconfScanner implements ScanModule {
 
             try {
                 HttpRequest req = HttpRequest.httpRequestFromUrl(testUrl);
-                HttpRequestResponse result = api.http().sendRequest(req);
+                HttpRequestResponse result = StepperHttp.sendRequest(req);
                 if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result == null || result.response() == null) { perHostDelay(); continue; }
 
@@ -822,7 +823,7 @@ public class CorsMisconfScanner implements ScanModule {
                     modified = modified.withAddedHeader("Access-Control-Request-Method", "GET");
                 }
 
-                HttpRequestResponse result = api.http().sendRequest(modified);
+                HttpRequestResponse result = StepperHttp.sendRequest(modified);
                 if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result == null || result.response() == null) { perHostDelay(); continue; }
 
@@ -922,7 +923,7 @@ public class CorsMisconfScanner implements ScanModule {
             HttpRequest modified = original.request()
                     .withRemovedHeader("Origin")
                     .withAddedHeader("Origin", origin);
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

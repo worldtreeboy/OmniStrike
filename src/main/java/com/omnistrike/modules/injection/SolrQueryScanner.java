@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -666,7 +667,7 @@ public class SolrQueryScanner implements ScanModule {
                     return null;
             }
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -686,7 +687,7 @@ public class SolrQueryScanner implements ScanModule {
             HttpRequest modified = original.request().withAddedParameters(
                     HttpParameter.urlParameter(paramName, paramValue));
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -711,7 +712,7 @@ public class SolrQueryScanner implements ScanModule {
             HttpRequest modified = original.request().withAddedParameters(
                     extraParams.toArray(new HttpParameter[0]));
 
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -739,7 +740,7 @@ public class SolrQueryScanner implements ScanModule {
                 }
             }
 
-            HttpRequestResponse result = api.http().sendRequest(probe);
+            HttpRequestResponse result = StepperHttp.sendRequest(probe);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

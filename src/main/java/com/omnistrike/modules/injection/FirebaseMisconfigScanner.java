@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -533,7 +534,7 @@ public class FirebaseMisconfigScanner implements ScanModule {
         if (ScanState.isCancelled()) return null;
         try {
             HttpRequest request = HttpRequest.httpRequestFromUrl(targetUrl);
-            HttpRequestResponse result = api.http().sendRequest(request);
+            HttpRequestResponse result = StepperHttp.sendRequest(request);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -550,7 +551,7 @@ public class FirebaseMisconfigScanner implements ScanModule {
                     .withRemovedHeader("Content-Type")
                     .withAddedHeader("Content-Type", "application/json")
                     .withBody(jsonBody);
-            HttpRequestResponse result = api.http().sendRequest(request);
+            HttpRequestResponse result = StepperHttp.sendRequest(request);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -567,7 +568,7 @@ public class FirebaseMisconfigScanner implements ScanModule {
                     .withRemovedHeader("Content-Type")
                     .withAddedHeader("Content-Type", "application/json")
                     .withBody(jsonBody);
-            HttpRequestResponse result = api.http().sendRequest(request);
+            HttpRequestResponse result = StepperHttp.sendRequest(request);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -581,7 +582,7 @@ public class FirebaseMisconfigScanner implements ScanModule {
         try {
             HttpRequest request = HttpRequest.httpRequestFromUrl(targetUrl)
                     .withMethod("DELETE");
-            HttpRequestResponse result = api.http().sendRequest(request);
+            HttpRequestResponse result = StepperHttp.sendRequest(request);
             // Don't care about response for cleanup
             return result;
         } catch (Exception e) {

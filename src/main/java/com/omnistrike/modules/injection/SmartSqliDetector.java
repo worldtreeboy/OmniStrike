@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.Interaction;
@@ -1145,7 +1146,7 @@ public class SmartSqliDetector implements ScanModule {
         if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), ip, payload);
-            return api.http().sendRequest(modified);
+            return StepperHttp.sendRequest(modified);
         } catch (Exception e) {
             api.logging().logToError("Failed to send request: " + e.getMessage());
             return null;

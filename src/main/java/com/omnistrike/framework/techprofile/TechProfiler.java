@@ -1,4 +1,5 @@
 package com.omnistrike.framework.techprofile;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -435,7 +436,7 @@ public final class TechProfiler implements TechRegistry.TechUpdateListener {
                             + "User-Agent: Mozilla/5.0\r\n"
                             + "Accept: */*\r\n"
                             + "Connection: close\r\n\r\n");
-            return api.http().sendRequest(req);
+            return StepperHttp.sendRequest(req);
         } catch (Exception e) {
             return null;
         }

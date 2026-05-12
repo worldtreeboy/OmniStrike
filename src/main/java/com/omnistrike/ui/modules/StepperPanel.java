@@ -32,6 +32,8 @@ public class StepperPanel extends JPanel {
     private final JTable rulesTable;
 
     private JCheckBox stopOnFailureBox;
+    private JCheckBox perRequestModeBox;
+    private JButton pauseBtn;
 
     // Cookie jar table
     private JCheckBox cookieJarCheckBox;
@@ -39,7 +41,9 @@ public class StepperPanel extends JPanel {
     private JTable cookieTable;
 
     // Current variables display
-    private final JTextArea variablesArea;
+    private DefaultTableModel variablesModel;
+    private JTable variablesTable;
+    private JLabel lastRunLabel;
 
     // Refresh timer
     private Timer refreshTimer;
@@ -119,6 +123,18 @@ public class StepperPanel extends JPanel {
         invalidateBtn.addActionListener(e -> engine.invalidateCache());
         topPanel.add(invalidateBtn);
 
+        pauseBtn = new JButton(engine.isPaused() ? "Resume" : "Pause Now");
+        styleButton(pauseBtn, NEON_RED);
+        pauseBtn.setToolTipText(
+                "<html>Pause Stepper — new requests bypass the engine and in-flight chains abort at the next step.<br>"
+                + "Auto-set when OmniStrike's scan is stopped. Use this manually when pausing Burp's built-in scanner<br>"
+                + "(Burp doesn't notify extensions of pause/stop, so you have to hit this yourself).</html>");
+        pauseBtn.addActionListener(e -> {
+            engine.setPaused(!engine.isPaused());
+            pauseBtn.setText(engine.isPaused() ? "Resume" : "Pause Now");
+        });
+        topPanel.add(pauseBtn);
+
         topPanel.add(Box.createHorizontalStrut(20));
 
         stopOnFailureBox = new JCheckBox("Stop on Failure");
@@ -129,6 +145,22 @@ public class StepperPanel extends JPanel {
         stopOnFailureBox.setToolTipText("Abort the chain immediately if any step returns no response (connection error or timeout)");
         stopOnFailureBox.addActionListener(e -> engine.setStopOnFailure(stopOnFailureBox.isSelected()));
         topPanel.add(stopOnFailureBox);
+
+        perRequestModeBox = new JCheckBox("Per-Request Mode");
+        perRequestModeBox.setSelected(engine.isPerRequestMode());
+        styleCheckBox(perRequestModeBox);
+        perRequestModeBox.setForeground(NEON_MAGENTA);
+        perRequestModeBox.setFont(MONO_BOLD);
+        perRequestModeBox.setToolTipText(
+                "<html>Run the chain BEFORE every outgoing request (no cache, no global lock).<br>"
+                + "Required when prereq steps produce single-use tokens (CSRF nonces) that the target burns per request.<br>"
+                + "Each Burp scanner thread runs its own A->B->C->D pipeline in parallel.<br><br>"
+                + "<b>WARNING:</b> multiplies auth-server load by scanner concurrency. Some servers will rate-limit or lock the account.</html>");
+        perRequestModeBox.addActionListener(e -> {
+            engine.setPerRequestMode(perRequestModeBox.isSelected());
+            updateControlStates();
+        });
+        topPanel.add(perRequestModeBox);
 
         // ════════════════════ EXPLANATION BANNER (collapsible) ════════════════════
         JPanel bannerPanel = new JPanel(new BorderLayout(0, 0));
@@ -253,6 +285,21 @@ public class StepperPanel extends JPanel {
             }
         });
         stepsBtnPanel.add(toggleBtn);
+
+        JButton editBtn = new JButton("Edit Request");
+        styleButton(editBtn, NEON_MAGENTA);
+        editBtn.setMargin(new Insets(2, 8, 2, 8));
+        editBtn.setToolTipText("Edit the raw HTTP request for this step. Insert {{varName}} placeholders to substitute values extracted from earlier steps.");
+        editBtn.addActionListener(e -> {
+            int sel = stepsTable.getSelectedRow();
+            if (sel >= 0) {
+                List<StepperStep> steps = engine.getSteps();
+                if (sel < steps.size()) {
+                    showEditRequestDialog(steps.get(sel));
+                }
+            }
+        });
+        stepsBtnPanel.add(editBtn);
 
         JButton removeBtn = new JButton("\u2715 Remove");
         styleButton(removeBtn, NEON_RED);
@@ -417,13 +464,67 @@ public class StepperPanel extends JPanel {
         varPanel.setBackground(BG_DARK);
         styleTitledBorder(varPanel, "Current Variables", NEON_GREEN);
 
-        variablesArea = new JTextArea(4, 40);
-        variablesArea.setEditable(false);
-        styleTextArea(variablesArea);
-        variablesArea.setFont(MONO_FONT);
-        JScrollPane varScroll = new JScrollPane(variablesArea);
+        // Top button row: +Add / -Remove / Clear
+        JPanel varTopPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
+        varTopPanel.setBackground(BG_DARK);
+
+        JButton addVarBtn = new JButton("+ Add");
+        styleButton(addVarBtn, NEON_GREEN);
+        addVarBtn.setMargin(new Insets(2, 8, 2, 8));
+        addVarBtn.setToolTipText("Manually set or override a variable. Pinned vars survive chain re-runs and win over auto-extracted values.");
+        addVarBtn.addActionListener(e -> showAddVariableDialog());
+        varTopPanel.add(addVarBtn);
+
+        JButton removeVarBtn = new JButton("- Remove");
+        styleButton(removeVarBtn, NEON_RED);
+        removeVarBtn.setMargin(new Insets(2, 8, 2, 8));
+        removeVarBtn.addActionListener(e -> {
+            int sel = variablesTable.getSelectedRow();
+            if (sel >= 0) {
+                String name = (String) variablesModel.getValueAt(sel, 0);
+                // Strip the {{ }} wrapper
+                if (name.startsWith("{{") && name.endsWith("}}")) {
+                    name = name.substring(2, name.length() - 2);
+                }
+                engine.removeVariable(name);
+                refreshVariablesDisplay();
+            }
+        });
+        varTopPanel.add(removeVarBtn);
+
+        JButton clearVarBtn = new JButton("Clear Pinned");
+        styleButton(clearVarBtn, NEON_RED);
+        clearVarBtn.setMargin(new Insets(2, 8, 2, 8));
+        clearVarBtn.setToolTipText("Remove all manually-pinned variables. Auto-extracted vars stay until the next chain run.");
+        clearVarBtn.addActionListener(e -> {
+            engine.clearPinnedVariables();
+            refreshVariablesDisplay();
+        });
+        varTopPanel.add(clearVarBtn);
+
+        varPanel.add(varTopPanel, BorderLayout.NORTH);
+
+        variablesModel = new DefaultTableModel(new String[]{"Variable", "Value", "Source"}, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) { return false; }
+        };
+        variablesTable = new JTable(variablesModel);
+        styleTable(variablesTable);
+        variablesTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        variablesTable.getColumnModel().getColumn(0).setPreferredWidth(140);
+        variablesTable.getColumnModel().getColumn(1).setPreferredWidth(220);
+        variablesTable.getColumnModel().getColumn(2).setPreferredWidth(80);
+
+        JScrollPane varScroll = new JScrollPane(variablesTable);
         styleScrollPane(varScroll);
         varPanel.add(varScroll, BorderLayout.CENTER);
+
+        // Status label at bottom — "Last chain run" info
+        lastRunLabel = new JLabel(" ");
+        lastRunLabel.setForeground(FG_SECONDARY);
+        lastRunLabel.setFont(MONO_SMALL);
+        lastRunLabel.setBorder(BorderFactory.createEmptyBorder(2, 8, 2, 8));
+        varPanel.add(lastRunLabel, BorderLayout.SOUTH);
 
         // Split cookie jar and variables side by side
         JSplitPane bottomSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, cookiePanel, varPanel);
@@ -440,6 +541,12 @@ public class StepperPanel extends JPanel {
             refreshVariablesDisplay();
             refreshStepsTable();
             refreshCookieTable();
+            // Sync the pause button label — engine may have been paused externally
+            // (e.g. when OmniStrike's scan stop fired TrafficInterceptor.setPaused(true)).
+            if (pauseBtn != null) {
+                String desired = engine.isPaused() ? "Resume" : "Pause Now";
+                if (!desired.equals(pauseBtn.getText())) pauseBtn.setText(desired);
+            }
         });
         refreshTimer.start();
 
@@ -492,36 +599,150 @@ public class StepperPanel extends JPanel {
 
     private void refreshVariablesDisplay() {
         SwingUtilities.invokeLater(() -> {
+            int sel = variablesTable.getSelectedRow();
+            variablesModel.setRowCount(0);
             Map<String, String> vars = engine.getVariableStore().getAll();
-            StringBuilder sb = new StringBuilder();
-            if (vars.isEmpty()) {
-                sb.append("(no variables extracted yet)");
-            } else {
-                for (Map.Entry<String, String> entry : vars.entrySet()) {
-                    sb.append("{{").append(entry.getKey()).append("}} = ")
-                            .append(truncate(entry.getValue(), 80)).append("\n");
-                }
+            Map<String, String> pinned = engine.getPinnedVariables();
+            for (Map.Entry<String, String> entry : vars.entrySet()) {
+                String source = pinned.containsKey(entry.getKey()) ? "pinned" : "extracted";
+                variablesModel.addRow(new Object[]{
+                        "{{" + entry.getKey() + "}}",
+                        truncate(entry.getValue(), 120),
+                        source
+                });
+            }
+            if (sel >= 0 && sel < variablesModel.getRowCount()) {
+                variablesTable.setRowSelectionInterval(sel, sel);
             }
 
             long lastRun = engine.getLastChainRunTime();
+            StringBuilder status = new StringBuilder();
             if (lastRun > 0) {
                 long ageMs = System.currentTimeMillis() - lastRun;
                 long ageSec = ageMs / 1000;
                 int ttl = engine.getCacheTtlSeconds();
                 String timeStr = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(lastRun));
-                sb.append("\nLast chain run: ").append(timeStr);
-                if (ttl > 0) {
+                status.append("Last chain run: ").append(timeStr);
+                if (ttl > 0 && !engine.isPerRequestMode()) {
                     long remaining = ttl - ageSec;
-                    if (remaining > 0) {
-                        sb.append(" (cached for ").append(remaining).append("s)");
-                    } else {
-                        sb.append(" (cache expired)");
-                    }
+                    if (remaining > 0) status.append(" (cached for ").append(remaining).append("s)");
+                    else                status.append(" (cache expired)");
+                } else if (engine.isPerRequestMode()) {
+                    status.append(" (per-request mode — no cache)");
                 }
+            } else {
+                status.append("Chain has not run yet.");
             }
-
-            variablesArea.setText(sb.toString());
+            lastRunLabel.setText(status.toString());
         });
+    }
+
+    private void showEditRequestDialog(StepperStep step) {
+        burp.api.montoya.http.message.requests.HttpRequest current = step.getOriginalRequest();
+        if (current == null) {
+            JOptionPane.showMessageDialog(this, "Step has no request.", "Edit Request",
+                    JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        // Show the raw HTTP request as text. Body included.
+        String rawText;
+        try {
+            rawText = current.toString();
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this,
+                    "Could not render request: " + ex.getMessage(),
+                    "Edit Request", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        JTextArea editor = new JTextArea(rawText, 24, 80);
+        editor.setFont(MONO_FONT);
+        styleTextArea(editor);
+        editor.setEditable(true);
+        editor.setLineWrap(false);
+        JScrollPane scroll = new JScrollPane(editor);
+        styleScrollPane(scroll);
+        scroll.setPreferredSize(new Dimension(800, 480));
+
+        JLabel hint = new JLabel(
+                "<html><b>Insert {{name}} anywhere</b> (path, headers, body) to substitute "
+                + "values extracted from earlier steps.<br>"
+                + "Service: " + current.httpService().secure() + "://"
+                + current.httpService().host() + ":" + current.httpService().port() + " (preserved)</html>");
+        hint.setForeground(FG_SECONDARY);
+        hint.setFont(MONO_SMALL);
+        hint.setBorder(BorderFactory.createEmptyBorder(0, 0, 6, 0));
+
+        JPanel dialogPanel = new JPanel(new BorderLayout(0, 4));
+        dialogPanel.setBackground(BG_DARK);
+        dialogPanel.add(hint, BorderLayout.NORTH);
+        dialogPanel.add(scroll, BorderLayout.CENTER);
+
+        int result = JOptionPane.showConfirmDialog(this, dialogPanel,
+                "Edit Step: " + step.getName(),
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+
+        if (result != JOptionPane.OK_OPTION) return;
+
+        String edited = editor.getText();
+        // Normalize line endings — HTTP wants CRLF but text editors often produce LF.
+        // Re-CRLF the whole thing; Burp's parser tolerates both but is stricter for headers.
+        String normalized = edited.replace("\r\n", "\n").replace("\n", "\r\n");
+
+        try {
+            burp.api.montoya.core.ByteArray bytes =
+                    burp.api.montoya.core.ByteArray.byteArray(normalized);
+            burp.api.montoya.http.message.requests.HttpRequest parsed =
+                    burp.api.montoya.http.message.requests.HttpRequest.httpRequest(
+                            current.httpService(), bytes);
+            step.setOriginalRequest(parsed);
+            engine.invalidateCache();
+            refreshStepsTable();
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this,
+                    "Could not parse edited request:\n" + ex.getMessage()
+                            + "\n\nThe step was not modified.",
+                    "Edit Request — Parse Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void showAddVariableDialog() {
+        JPanel dialogPanel = new JPanel(new GridLayout(2, 2, 8, 6));
+        dialogPanel.setBackground(BG_DARK);
+
+        JLabel nameLabel = new JLabel("Variable Name:");
+        nameLabel.setForeground(FG_PRIMARY);
+        nameLabel.setFont(MONO_FONT);
+        dialogPanel.add(nameLabel);
+        JTextField nameField = new JTextField(15);
+        styleTextField(nameField);
+        nameField.setToolTipText("Reference as {{name}} in step templates. Don't include the braces here.");
+        dialogPanel.add(nameField);
+
+        JLabel valLabel = new JLabel("Value:");
+        valLabel.setForeground(FG_PRIMARY);
+        valLabel.setFont(MONO_FONT);
+        dialogPanel.add(valLabel);
+        JTextField valField = new JTextField(20);
+        styleTextField(valField);
+        dialogPanel.add(valField);
+
+        int result = JOptionPane.showConfirmDialog(this, dialogPanel,
+                "Add / Override Variable", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+
+        if (result == JOptionPane.OK_OPTION) {
+            String name = nameField.getText().trim();
+            // Tolerate users pasting "{{name}}" — strip the braces
+            if (name.startsWith("{{") && name.endsWith("}}")) {
+                name = name.substring(2, name.length() - 2).trim();
+            }
+            String value = valField.getText();
+            if (!name.isEmpty()) {
+                engine.setVariable(name, value);
+                refreshVariablesDisplay();
+            }
+        }
     }
 
     private void refreshCookieTable() {
@@ -573,9 +794,12 @@ public class StepperPanel extends JPanel {
 
     private void updateControlStates() {
         boolean on = enabledCheckBox.isSelected();
-        cacheTtlField.setEnabled(on);
+        boolean perReq = perRequestModeBox != null && perRequestModeBox.isSelected();
+        // Cache TTL is meaningless in per-request mode (chain always re-runs)
+        cacheTtlField.setEnabled(on && !perReq);
         runChainBtn.setEnabled(on);
         stopOnFailureBox.setEnabled(on);
+        if (perRequestModeBox != null) perRequestModeBox.setEnabled(on);
         stepsTable.setEnabled(on);
         rulesTable.setEnabled(on);
         enabledCheckBox.setForeground(on ? NEON_GREEN : NEON_RED);

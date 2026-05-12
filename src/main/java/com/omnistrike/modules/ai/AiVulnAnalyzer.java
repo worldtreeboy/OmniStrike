@@ -1,4 +1,5 @@
 package com.omnistrike.modules.ai;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -854,7 +855,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     FuzzPayload resolvedPayload = resolveCollaboratorPlaceholders(payload, exchange.getUrl(), reqRespRef, targetModuleId);
                     HttpRequest modified = injectPayload(originalReqResp.request(), resolvedPayload);
                     long startTime = System.currentTimeMillis();
-                    HttpRequestResponse response = api.http().sendRequest(modified);
+                    HttpRequestResponse response = StepperHttp.sendRequest(modified);
                     long elapsed = System.currentTimeMillis() - startTime;
                     reqRespRef.set(response); // Now OOB callback can read the request/response
                     fuzzRequestsSent.incrementAndGet();
@@ -993,7 +994,7 @@ public class AiVulnAnalyzer implements ScanModule {
 
                     HttpRequest modified = injectPayload(originalRequest, bypassPayload);
                     long startTime = System.currentTimeMillis();
-                    HttpRequestResponse response = api.http().sendRequest(modified);
+                    HttpRequestResponse response = StepperHttp.sendRequest(modified);
                     long elapsed = System.currentTimeMillis() - startTime;
                     reqRespRef.set(response);
                     fuzzRequestsSent.incrementAndGet();
@@ -1074,7 +1075,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     FuzzPayload resolved = resolveCollaboratorPlaceholders(payload, originalRequest.url(), reqRespRef, targetModuleId);
                     HttpRequest modified = injectPayload(originalRequest, resolved);
                     long startTime = System.currentTimeMillis();
-                    HttpRequestResponse response = api.http().sendRequest(modified);
+                    HttpRequestResponse response = StepperHttp.sendRequest(modified);
                     long elapsed = System.currentTimeMillis() - startTime;
                     reqRespRef.set(response);
                     fuzzRequestsSent.incrementAndGet();
@@ -1507,7 +1508,7 @@ public class AiVulnAnalyzer implements ScanModule {
                 FuzzPayload probe = new FuzzPayload(
                         parameterName, injectionPoint, WAF_PROBE_PAYLOADS[i], "probe", WAF_PROBE_LABELS[i]);
                 HttpRequest modified = injectPayload(originalRequest, probe);
-                HttpRequestResponse response = api.http().sendRequest(modified);
+                HttpRequestResponse response = StepperHttp.sendRequest(modified);
                 fuzzRequestsSent.incrementAndGet();
 
                 if (response.response() != null) {
@@ -2445,7 +2446,7 @@ public class AiVulnAnalyzer implements ScanModule {
                            String targetModuleId, String targetParameter) {
         cancelled = false; // Reset cancellation for new scan
 
-        // Run everything off the EDT — Burp blocks api.http().sendRequest() on Swing thread.
+        // Run everything off the EDT — Burp blocks StepperHttp.sendRequest() on Swing thread.
         // Use llmExecutor for the setup (re-fetch + capture) then submit analysis/fuzz tasks.
         try {
             llmExecutor.submit(() -> {
@@ -2515,7 +2516,7 @@ public class AiVulnAnalyzer implements ScanModule {
                         .withRemovedHeader("Pragma")
                         .withAddedHeader("Cache-Control", "no-cache")
                         .withAddedHeader("Pragma", "no-cache");
-                effectiveReqResp = api.http().sendRequest(freshReq);
+                effectiveReqResp = StepperHttp.sendRequest(freshReq);
                 if (effectiveReqResp.response() != null) {
                     String aiBody = effectiveReqResp.response().bodyToString();
                     logInfo("Manual scan: Got response — status " + effectiveReqResp.response().statusCode()
@@ -2579,7 +2580,7 @@ public class AiVulnAnalyzer implements ScanModule {
                         .withRemovedHeader("Pragma")
                         .withAddedHeader("Cache-Control", "no-cache")
                         .withAddedHeader("Pragma", "no-cache");
-                effectiveReqResp = api.http().sendRequest(freshReq);
+                effectiveReqResp = StepperHttp.sendRequest(freshReq);
             } catch (Exception e) {
                 logError("Custom prompt scan: Failed to fetch response - " + e.getMessage());
             }
@@ -2847,7 +2848,7 @@ public class AiVulnAnalyzer implements ScanModule {
                             .withRemovedHeader("Pragma")
                             .withAddedHeader("Cache-Control", "no-cache")
                             .withAddedHeader("Pragma", "no-cache");
-                    HttpRequestResponse freshResp = api.http().sendRequest(freshReq);
+                    HttpRequestResponse freshResp = StepperHttp.sendRequest(freshReq);
 
                     if (freshResp.response() != null) {
                         String body = freshResp.response().bodyToString();
@@ -3168,7 +3169,7 @@ public class AiVulnAnalyzer implements ScanModule {
                         FuzzPayload resolved = resolveCollaboratorPlaceholders(ep, url, ref, null);
                         HttpRequest modified = injectPayload(reqResp.request(), resolved);
                         long start = System.currentTimeMillis();
-                        HttpRequestResponse response = api.http().sendRequest(modified);
+                        HttpRequestResponse response = StepperHttp.sendRequest(modified);
                         long elapsed = System.currentTimeMillis() - start;
                         ref.set(response);
                         fuzzRequestsSent.incrementAndGet();

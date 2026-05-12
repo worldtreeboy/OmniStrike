@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -240,7 +241,7 @@ public class PrototypePollutionScanner implements ScanModule {
         // Get baseline status
         HttpRequestResponse baseline;
         try {
-            baseline = api.http().sendRequest(original.request());
+            baseline = StepperHttp.sendRequest(original.request());
         } catch (Exception e) { return; }
         if (!ResponseGuard.isUsableResponse(baseline)) return;
         if (baseline == null || baseline.response() == null) return;
@@ -260,7 +261,7 @@ public class PrototypePollutionScanner implements ScanModule {
 
         // Send clean probe to check if status changed globally
         try {
-            HttpRequestResponse probe = api.http().sendRequest(original.request());
+            HttpRequestResponse probe = StepperHttp.sendRequest(original.request());
             if (!ResponseGuard.isUsableResponse(probe)) { perHostDelay(); return; }
             if (probe != null && probe.response() != null && probe.response().statusCode() == 510
                     && baselineStatus != 510) {
@@ -298,7 +299,7 @@ public class PrototypePollutionScanner implements ScanModule {
         // Get baseline content-type for comparison
         String baselineContentType = null;
         try {
-            HttpRequestResponse baselineProbe = api.http().sendRequest(original.request());
+            HttpRequestResponse baselineProbe = StepperHttp.sendRequest(original.request());
             if (ResponseGuard.isUsableResponse(baselineProbe) && baselineProbe != null && baselineProbe.response() != null) {
                 for (var h : baselineProbe.response().headers()) {
                     if (h.name().equalsIgnoreCase("Content-Type")) {
@@ -322,7 +323,7 @@ public class PrototypePollutionScanner implements ScanModule {
 
         // Check if follow-up response has the modified content-type
         try {
-            HttpRequestResponse probe = api.http().sendRequest(original.request());
+            HttpRequestResponse probe = StepperHttp.sendRequest(original.request());
             if (!ResponseGuard.isUsableResponse(probe)) { perHostDelay(); return; }
             if (probe != null && probe.response() != null) {
                 for (var h : probe.response().headers()) {
@@ -362,7 +363,7 @@ public class PrototypePollutionScanner implements ScanModule {
         // Get baseline JSON formatting
         HttpRequestResponse baseline;
         try {
-            baseline = api.http().sendRequest(original.request());
+            baseline = StepperHttp.sendRequest(original.request());
         } catch (Exception e) { return; }
         if (!ResponseGuard.isUsableResponse(baseline)) return;
         if (baseline == null || baseline.response() == null) return;
@@ -384,7 +385,7 @@ public class PrototypePollutionScanner implements ScanModule {
 
         // Check if subsequent JSON response has altered indentation
         try {
-            HttpRequestResponse probe = api.http().sendRequest(original.request());
+            HttpRequestResponse probe = StepperHttp.sendRequest(original.request());
             if (!ResponseGuard.isUsableResponse(probe)) { perHostDelay(); return; }
             if (probe != null && probe.response() != null) {
                 String probeBody = probe.response().bodyToString();
@@ -471,7 +472,7 @@ public class PrototypePollutionScanner implements ScanModule {
                 probe = original.request();
             }
 
-            HttpRequestResponse result = api.http().sendRequest(probe);
+            HttpRequestResponse result = StepperHttp.sendRequest(probe);
             if (!ResponseGuard.isUsableResponse(result)) return false;
             if (result != null && result.response() != null) {
                 String body = result.response().bodyToString();
@@ -509,7 +510,7 @@ public class PrototypePollutionScanner implements ScanModule {
         if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = original.request().withBody(body);
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

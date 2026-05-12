@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.Interaction;
@@ -1338,7 +1339,7 @@ public class XxeScanner implements ScanModule {
                             .withRemovedHeader("Content-Type")
                             .withAddedHeader("Content-Type", "application/xml; charset=utf-16le")
                             .withBody(ByteArray.byteArray(payload));
-                    HttpRequestResponse result = api.http().sendRequest(modified);
+                    HttpRequestResponse result = StepperHttp.sendRequest(modified);
                     if (!ResponseGuard.isUsableResponse(result)) return;
                     sentUtf16Oob.set(result);
                 } catch (Exception e) {
@@ -1372,7 +1373,7 @@ public class XxeScanner implements ScanModule {
                     .withRemovedHeader("Content-Type")
                     .withAddedHeader("Content-Type", "application/xml; charset=" + charsetName)
                     .withBody(ByteArray.byteArray(payload));
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return;
 
             if (result != null && result.response() != null) {
@@ -1548,7 +1549,7 @@ public class XxeScanner implements ScanModule {
                     .withAddedHeader("Content-Type", "text/xml")
                     .withBody(winEntity);
             try {
-                HttpRequestResponse result4 = api.http().sendRequest(winBypassReq);
+                HttpRequestResponse result4 = StepperHttp.sendRequest(winBypassReq);
                 if (!ResponseGuard.isUsableResponse(result4)) { perHostDelay(); return; }
                 if (result4 != null && result4.response() != null) {
                     String body = result4.response().bodyToString();
@@ -1791,7 +1792,7 @@ public class XxeScanner implements ScanModule {
 
             HttpRequestResponse xmlResult = null;
             try {
-                xmlResult = api.http().sendRequest(xmlRequest);
+                xmlResult = StepperHttp.sendRequest(xmlRequest);
             } catch (Exception e) {
                 continue;
             }
@@ -1849,7 +1850,7 @@ public class XxeScanner implements ScanModule {
                     .withBody(xxePayloadBody);
 
             try {
-                HttpRequestResponse result = api.http().sendRequest(xxeRequest);
+                HttpRequestResponse result = StepperHttp.sendRequest(xxeRequest);
                 if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
                 if (result != null && result.response() != null) {
                     String body = result.response().bodyToString();
@@ -1893,7 +1894,7 @@ public class XxeScanner implements ScanModule {
                     .withBody(winIniPayload);
 
             try {
-                HttpRequestResponse winIniResult = api.http().sendRequest(winIniRequest);
+                HttpRequestResponse winIniResult = StepperHttp.sendRequest(winIniRequest);
                 if (!ResponseGuard.isUsableResponse(winIniResult)) { perHostDelay(); return; }
                 if (winIniResult != null && winIniResult.response() != null) {
                     String body = winIniResult.response().bodyToString();
@@ -1964,7 +1965,7 @@ public class XxeScanner implements ScanModule {
                         .withAddedHeader("Content-Type", contentType)
                         .withBody(oobPayload);
                 try {
-                    HttpRequestResponse ctOobResult = api.http().sendRequest(oobRequest);
+                    HttpRequestResponse ctOobResult = StepperHttp.sendRequest(oobRequest);
                     if (ResponseGuard.isUsableResponse(ctOobResult)) {
                         sentCtConvertOob.set(ctOobResult);
                     }
@@ -2004,7 +2005,7 @@ public class XxeScanner implements ScanModule {
                     .withBody(probeXml);
 
             try {
-                probeResult = api.http().sendRequest(probeRequest);
+                probeResult = StepperHttp.sendRequest(probeRequest);
             } catch (Exception e) {
                 continue;
             }
@@ -2043,7 +2044,7 @@ public class XxeScanner implements ScanModule {
         String probeResponseBody = "";
 
         try {
-            entityResult = api.http().sendRequest(entityProbeRequest);
+            entityResult = StepperHttp.sendRequest(entityProbeRequest);
         } catch (Exception e) {
             return;
         }
@@ -2107,7 +2108,7 @@ public class XxeScanner implements ScanModule {
                     .withBody(passwdDtd);
 
             try {
-                HttpRequestResponse passwdResult = api.http().sendRequest(passwdRequest);
+                HttpRequestResponse passwdResult = StepperHttp.sendRequest(passwdRequest);
                 if (!ResponseGuard.isUsableResponse(passwdResult)) { perHostDelay(); return; }
                 if (passwdResult != null && passwdResult.response() != null) {
                     String body = passwdResult.response().bodyToString();
@@ -2148,7 +2149,7 @@ public class XxeScanner implements ScanModule {
                     .withBody(winIniDtd);
 
             try {
-                HttpRequestResponse winIniResult = api.http().sendRequest(winIniRequest);
+                HttpRequestResponse winIniResult = StepperHttp.sendRequest(winIniRequest);
                 if (!ResponseGuard.isUsableResponse(winIniResult)) { perHostDelay(); return; }
                 if (winIniResult != null && winIniResult.response() != null) {
                     String body = winIniResult.response().bodyToString();
@@ -2207,7 +2208,7 @@ public class XxeScanner implements ScanModule {
                         .withAddedHeader("Content-Type", finalAcceptedCt)
                         .withBody(oobDtd);
                 try {
-                    HttpRequestResponse oobResult = api.http().sendRequest(oobRequest);
+                    HttpRequestResponse oobResult = StepperHttp.sendRequest(oobRequest);
                     if (ResponseGuard.isUsableResponse(oobResult)) {
                         sentForceOob1.set(oobResult);
                     }
@@ -2241,7 +2242,7 @@ public class XxeScanner implements ScanModule {
                         .withAddedHeader("Content-Type", finalAcceptedCt)
                         .withBody(directOobDtd);
                 try {
-                    HttpRequestResponse directOobResult = api.http().sendRequest(directOobRequest);
+                    HttpRequestResponse directOobResult = StepperHttp.sendRequest(directOobRequest);
                     if (ResponseGuard.isUsableResponse(directOobResult)) {
                         sentForceOob2.set(directOobResult);
                     }
@@ -2261,7 +2262,7 @@ public class XxeScanner implements ScanModule {
         if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = original.request().withBody(newBody);
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {
@@ -2276,7 +2277,7 @@ public class XxeScanner implements ScanModule {
         if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
-            HttpRequestResponse result = api.http().sendRequest(modified);
+            HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;
         } catch (Exception e) {

@@ -168,12 +168,18 @@ Multi-step auth flows (login, CSRF token, session refresh) produce single-use to
 
 | Feature | Detail |
 |:--------|:-------|
-| **Smart prerequisite detection** | Matches outgoing request by method + host + port + path. Sending step C automatically runs A and B first. No configuration needed. |
-| **Automatic cookie jar** | Every `Set-Cookie` from each chain step is collected and forwarded to subsequent steps and the final request. Newest value wins. |
+| **Two-pass step matching** | **Exact pass** compares method + host + port + path + query + body, so multiple steps that differ only by query/body params (e.g. `postId=1` vs `=2` vs `=3`) are distinguishable. **Loose pass** falls back to method + path-without-query, returning the highest matching index (target = last step) so scanner-mutated probes still match. |
+| **No-match is a no-op** | If an outgoing request doesn't match any configured step, Stepper does nothing. Unrelated browser/extension traffic won't trigger the chain. |
+| **Per-Request Mode** | Optional toggle: every matched outgoing request gets its own fresh chain run on its own thread (no cache, no global lock). Required when prereqs produce single-use tokens (CSRF nonces) that the target burns per request. |
+| **Pause / Resume** | One-click "Pause Now" button halts new chains and aborts in-flight ones at the next step boundary. Auto-paused when OmniStrike's scan is stopped. |
+| **Works with OmniStrike's own scanner** | A `StepperHttp` wrapper is used by every OmniStrike scan module so their `sendRequest()` calls also trigger Stepper, not just Burp's native tools. |
+| **Automatic cookie jar** | Every `Set-Cookie` from each chain step is collected and forwarded to subsequent steps and the final request. Newest value wins. Pinned cookies survive chain re-runs. |
 | **Auto-extraction (rule-free)** | Write `{{name}}` anywhere — URL path, header, cookie, body — and Stepper auto-finds the value in earlier responses (header / Set-Cookie / JSON key / regex fallback). No extraction rule needed. |
-| **TTL cache** | Configurable cache window (default 10s) prevents re-running the chain for every scanner request. Invalidated automatically when the prerequisite set changes. |
+| **Pinned variables (manual override)** | Set or override any `{{name}}` from the UI. Pinned vars survive chain re-runs and win over auto-extracted values with the same name. |
+| **Edit Request dialog** | Edit any captured step's raw HTTP request after the fact — useful for inserting `{{varName}}` placeholders into the URL/headers/body where literal values were captured. |
+| **TTL cache** | Configurable cache window (default 10s, cached mode only) prevents re-running the chain for every scanner request. Invalidated automatically when the prerequisite set changes. |
 | **Stop on Failure** | Optional: abort the chain immediately if any step returns no response, preventing downstream steps from running with incomplete state. |
-| **Recursion-safe** | ThreadLocal guard prevents chain requests from re-triggering the chain. ReentrantLock serializes concurrent execution. |
+| **Recursion-safe** | ThreadLocal guard prevents chain requests from re-triggering the chain. ReentrantLock serializes concurrent execution in cached mode. |
 
 ### Stepper Manual
 
@@ -221,14 +227,52 @@ Every `Set-Cookie` from any chain response is collected into the **Cookie Jar** 
 - Click **+ Add** to manually pin a cookie that's not set by any chain response (e.g., a static API-key cookie). Pinned cookies survive chain re-runs.
 - Untick **Auto Cookie Jar** to disable.
 
-#### 5. Run, verify, debug
+#### 5. Edit captured requests after the fact
 
-- Click **Run Chain** to execute manually. The **Current Variables** box shows what was extracted and the **Activity Log** prints `Auto-resolved {{name}} = ...` for each placeholder filled in.
-- **Cache TTL** (default 10s) is how long captured values are reused before the chain re-runs. Set `0` to re-run every request (slow but always fresh). Click **Invalidate Cache** to force one re-run.
+Right-click → **Send to Stepper** captures the request **as-is** — with literal values, not placeholders. If you want a step's URL/header/body to reference a value extracted from an earlier step, click **Edit Request** in the steps toolbar:
+
+1. Select the step in the table.
+2. Click **Edit Request**. A raw HTTP editor opens.
+3. Replace the literal value with `{{varName}}`. Example: `/api/abcde/check` → `/api/{{token}}/check`.
+4. Click **OK**. The step's request is updated; the original `HttpService` (host/port/scheme) is preserved.
+
+Save errors (malformed HTTP) are reported in a dialog and the step is left untouched.
+
+#### 6. Pinned variables (manual override / seed)
+
+The **Current Variables** table at the bottom-right shows every variable Stepper currently has — both auto-extracted ones and manually pinned ones. The **Source** column tells them apart.
+
+- **+ Add** opens a dialog to set `name` = `value`. Pinned vars survive every chain re-run, and **win over auto-extracted values with the same name**. Use this to test with a known-good token, or to seed a value the chain can't produce on its own.
+- **- Remove** unpins the selected variable. The next chain run will re-extract it if the response still has it.
+- **Clear Pinned** drops all pinned vars at once.
+
+#### 7. Per-Request Mode (single-use tokens / fresh chain per probe)
+
+Default ("cached") mode runs the chain once, then reuses the result for **Cache TTL** seconds. This is fast and right for *reusable* tokens (login session, persistent cookies).
+
+If your prereqs produce **single-use tokens** (a CSRF nonce the server burns per request, a one-time `_token` field, etc.), tick **Per-Request Mode** at the top of the panel. Every matched outgoing request then triggers its **own** fresh chain run on its own thread. Multiple Burp scanner threads run their A→B→C→D pipelines in parallel without clobbering each other's state.
+
+| | Cached mode (default) | Per-Request Mode |
+|:--|:--|:--|
+| Chain runs | Once per TTL window | Once per matched outgoing request |
+| Throughput | Full Burp scanner speed | Capped at `(scanner_threads) × (1 / chain_duration)` |
+| Auth-server load | Minimal | High — multiplied by scanner concurrency |
+| Required for | Reusable tokens | Single-use / per-request tokens |
+
+#### 8. Pause / Resume
+
+- **Pause Now** halts new chains immediately and aborts in-flight chains at the next step boundary (the current step's HTTP send can't be cancelled mid-call, so you may see 1-2 stragglers per in-flight chain).
+- **Auto-paused** when OmniStrike's scan is stopped (`Stop Scan` button) — and auto-resumed when a new scan starts.
+- Use the button manually when pausing Burp's built-in scanner, since Burp doesn't notify extensions of pause/stop.
+
+#### 9. Run, verify, debug
+
+- Click **Run Chain** to execute the configured prereqs manually (against the displayContext). The **Current Variables** table populates and the **Activity Log** prints `Auto-resolved {{name}} = ...` for each placeholder filled in.
+- **Cache TTL** (default 10s, cached mode only) is how long captured values are reused before the chain re-runs. Click **Invalidate Cache** to force one re-run. The field is disabled while Per-Request Mode is on.
 - Tick **Stop on Failure** to abort the chain if a step gets no response.
 - A placeholder that can't be resolved is left as literal `{{name}}` in the outgoing request — easy to spot in Logger, and the log shows nothing was found.
 
-#### 6. (Optional) Explicit extraction rules
+#### 10. (Optional) Explicit extraction rules
 
 Auto-extraction is the default. Add an explicit rule only when:
 
@@ -296,6 +340,15 @@ Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chai
 ---
 
 ## Changelog
+
+### v1.72
+- **Stepper — Per-Request Mode** — new concurrency model for single-use tokens. Each matched outgoing request gets its own fresh `ChainContext` and runs the chain in parallel on its own thread (no global lock, no cache). Required when prereqs produce nonces the target burns per request.
+- **Stepper — Pause / Resume** — `paused` flag with inter-step abort check. New chains are blocked and in-flight chains exit at the next step boundary. Auto-paused when OmniStrike's `stopManualScans()` fires; auto-resumed on new scan start. Manual `Pause Now` / `Resume` button in the panel for Burp's built-in scan (Burp doesn't notify extensions of pause/stop).
+- **Stepper — Pinned variables** — `+ Add` button in the Variables table to manually set or override any `{{name}}`. Pinned values survive chain re-runs and win over auto-extracted values with the same name. Mirrors the existing pinned-cookies UX.
+- **Stepper — Edit Request dialog** — `Edit Request` button on the steps table opens a raw HTTP editor for the captured request. Insert `{{varName}}` placeholders into the URL / headers / body after capture; the original `HttpService` is preserved. Parse errors are reported and the step is left untouched.
+- **Stepper — Two-pass step matching** — exact pass compares method + host + port + full path + body (so `postId=1` vs `=2` vs `=3` are distinguishable); loose pass falls back to method + path-without-query and returns the *highest* matching index (convention: target = last step). No-match now returns the request unchanged instead of running all steps — unrelated browser/extension traffic no longer triggers chains.
+- **Stepper integration with OmniStrike's own scanner** — new `StepperHttp` wrapper around `api.http().sendRequest()`. Burp's `HttpHandler` is bypassed by `api.http().sendRequest()` (Montoya design), so OmniStrike's 32 scan modules (92 call sites) previously sent probes without Stepper preprocessing. They all now route through `StepperHttp.sendRequest()` which preprocesses via the engine before sending. Burp's built-in tools (Proxy/Repeater/Intruder/Scanner) continue to work through the existing `HttpHandler`.
+- **TLS Analyzer — Cipher classification overhaul** — `Enumerate ciphers` is now ON by default so the full server-supported cipher list is collected without ticking a hidden option. `classifyCipher` overhauled: CBC suites are now marked `DANGEROUS (CBC padding-oracle)` instead of the misleading `OK (legacy CBC)`. New `DANGEROUS (MD5 MAC)`, `DANGEROUS (broken cipher)` (RC4/DES/3DES/RC2), and `WEAK (no forward secrecy)` (`TLS_RSA_WITH_*`) categories. GCM / ChaCha20 still `STRONG (AEAD)`.
 
 ### v1.71
 - **TLS Analyzer (new framework tool)** — out-of-band TLS / SSL inspection.

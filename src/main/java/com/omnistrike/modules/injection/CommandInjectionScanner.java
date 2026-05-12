@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.Interaction;
@@ -1194,7 +1195,7 @@ public class CommandInjectionScanner implements ScanModule {
         if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         try {
             HttpRequest modified = injectPayload(original.request(), target, payload);
-            return api.http().sendRequest(modified);
+            return StepperHttp.sendRequest(modified);
         } catch (Exception e) {
             return null;
         }

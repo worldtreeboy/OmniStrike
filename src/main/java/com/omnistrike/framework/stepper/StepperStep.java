@@ -13,7 +13,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class StepperStep {
 
     private String name;
-    private final HttpRequest originalRequest;
+    private volatile HttpRequest originalRequest;
     private final CopyOnWriteArrayList<ExtractionRule> extractionRules = new CopyOnWriteArrayList<>();
     private boolean enabled = true;
 
@@ -26,6 +26,11 @@ public class StepperStep {
     public void setName(String name) { this.name = name; }
 
     public HttpRequest getOriginalRequest() { return originalRequest; }
+
+    /** Replace the captured request — used by the "Edit Request" dialog. */
+    public void setOriginalRequest(HttpRequest request) {
+        if (request != null) this.originalRequest = request;
+    }
 
     public List<ExtractionRule> getExtractionRules() {
         return List.copyOf(extractionRules);

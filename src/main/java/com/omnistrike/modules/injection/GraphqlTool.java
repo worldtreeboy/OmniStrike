@@ -1,4 +1,5 @@
 package com.omnistrike.modules.injection;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
@@ -2131,14 +2132,14 @@ public class GraphqlTool implements ScanModule {
     }
 
     /**
-     * Wrapper around api.http().sendRequest() that filters out WAF/infrastructure responses.
+     * Wrapper around StepperHttp.sendRequest() that filters out WAF/infrastructure responses.
      * Returns null if the response is not usable (WAF block, rate limit, etc.).
      */
     private HttpRequestResponse guardedSendRequest(HttpRequest request) {
         if (com.omnistrike.framework.ScanState.isCancelled()) return null;
         if (Thread.currentThread().isInterrupted()) return null;
         try {
-            HttpRequestResponse result = api.http().sendRequest(request);
+            HttpRequestResponse result = StepperHttp.sendRequest(request);
             if (Thread.currentThread().isInterrupted()) return null;
             if (!ResponseGuard.isUsableResponse(result)) return null;
             return result;

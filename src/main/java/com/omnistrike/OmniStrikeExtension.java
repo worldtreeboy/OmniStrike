@@ -1,4 +1,5 @@
 package com.omnistrike;
+import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
@@ -235,6 +236,9 @@ public class OmniStrikeExtension implements BurpExtension {
         stepperEngine = new StepperEngine(api, scopeManager);
         interceptor.setStepperEngine(stepperEngine);
         interceptor.setSessionKeepAlive(sessionKeepAlive);
+        // Wire the StepperHttp wrapper so scan modules' sendRequest calls also
+        // route through Stepper (Montoya's api.http().sendRequest bypasses HttpHandler).
+        com.omnistrike.framework.stepper.StepperHttp.init(api, stepperEngine);
         api.logging().logToOutput("Stepper engine initialized (disabled by default).");
 
         // ==================== TLS ANALYZER ====================
