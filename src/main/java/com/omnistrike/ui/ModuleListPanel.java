@@ -53,7 +53,8 @@ public class ModuleListPanel extends JPanel {
         selectAllBtn.setMargin(new Insets(2, 6, 2, 6));
         selectAllBtn.addActionListener(e -> {
             for (ScanModule module : registry.getAllModules()) {
-                if (!registry.isManualOnly(module.getId())
+                if (module.isPassive()
+                        && !registry.isManualOnly(module.getId())
                         && !registry.isAutoTriggered(module.getId())) {
                     registry.setEnabled(module.getId(), true);
                 }
@@ -68,7 +69,8 @@ public class ModuleListPanel extends JPanel {
         deselectAllBtn.setMargin(new Insets(2, 6, 2, 6));
         deselectAllBtn.addActionListener(e -> {
             for (ScanModule module : registry.getAllModules()) {
-                if (!registry.isManualOnly(module.getId())
+                if (module.isPassive()
+                        && !registry.isManualOnly(module.getId())
                         && !registry.isAutoTriggered(module.getId())) {
                     registry.setEnabled(module.getId(), false);
                 }
@@ -109,8 +111,8 @@ public class ModuleListPanel extends JPanel {
         listContainer.removeAll();
         moduleEntries.clear();
 
-        // Group modules into categories: Active Scanners, Passive Analyzers, AI
-        java.util.List<ScanModule> activeModules = new java.util.ArrayList<>();
+        // Group modules into categories: Passive Analyzers, AI.
+        // Active scanners are intentionally NOT shown — they run via right-click only.
         java.util.List<ScanModule> passiveModules = new java.util.ArrayList<>();
         ScanModule aiModule = null;
 
@@ -125,24 +127,14 @@ public class ModuleListPanel extends JPanel {
                 aiModule = module;
             } else if (module.isPassive()) {
                 passiveModules.add(module);
-            } else {
-                activeModules.add(module);
             }
+            // Active scanners omitted — scan them via right-click → Send to OmniStrike.
         }
 
         // --- AI section (top of the list) ---
         if (aiModule != null) {
             listContainer.add(createSectionHeader("AI Analysis"));
             listContainer.add(createModuleEntry(aiModule));
-        }
-
-        // --- Active Scanners section ---
-        if (!activeModules.isEmpty()) {
-            listContainer.add(createSectionSeparator());
-            listContainer.add(createSectionHeader("Active Scanners"));
-            for (ScanModule module : activeModules) {
-                listContainer.add(createModuleEntry(module));
-            }
         }
 
         // --- Passive Analyzers section ---

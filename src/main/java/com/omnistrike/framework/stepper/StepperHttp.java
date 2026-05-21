@@ -3,6 +3,7 @@ package com.omnistrike.framework.stepper;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import com.omnistrike.framework.SessionKeepAlive;
 
 /**
  * Drop-in replacement for {@code api.http().sendRequest(request)} that routes
@@ -28,6 +29,7 @@ public final class StepperHttp {
 
     private static volatile MontoyaApi api;
     private static volatile StepperEngine stepper;
+    private static volatile SessionKeepAlive sessionKeepAlive;
 
     private StepperHttp() {}
 
@@ -38,8 +40,22 @@ public final class StepperHttp {
     }
 
     /**
+     * Wires the Session Keep-Alive so module sends also receive fresh session
+     * cookies. Set after the extension constructs the {@link SessionKeepAlive}.
+     */
+    public static void setSessionKeepAlive(SessionKeepAlive keepAlive) {
+        sessionKeepAlive = keepAlive;
+    }
+
+    /**
      * Sends the request, applying Stepper preprocessing (prereq chain + variable
-     * substitution + cookie injection) first if Stepper is enabled.
+     * substitution + cookie injection) first if Stepper is enabled, then overlaying
+     * the latest Session Keep-Alive cookies for the request's domain.
+     *
+     * <p>Order matters: Stepper runs to completion first so its variable
+     * substitution and chain logic are never disturbed; Session Keep-Alive then
+     * has the final say on session cookies. This keeps keep-alive from interfering
+     * with Stepper while still guaranteeing fresh cookies on every module send.
      *
      * Falls back to a raw send if {@link #init} was never called (e.g. during
      * an unusual load order) so modules don't NPE.
@@ -54,6 +70,13 @@ public final class StepperHttp {
             throw new IllegalStateException("StepperHttp.init() was never called");
         }
         HttpRequest finalReq = preprocess(request);
+        // Overlay fresh session cookies AFTER Stepper, so keep-alive never
+        // disturbs Stepper's processing. No-op when keep-alive is disabled or
+        // the host doesn't match the saved login domain.
+        SessionKeepAlive ka = sessionKeepAlive;
+        if (ka != null) {
+            finalReq = ka.applyFreshCookies(finalReq);
+        }
         return a.http().sendRequest(finalReq);
     }
 

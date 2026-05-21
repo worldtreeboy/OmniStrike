@@ -52,6 +52,12 @@ public class SessionKeepAlive {
     private ScheduledFuture<?> scheduledTask;
     private final Object schedulerLock = new Object();
 
+    // Set on the scheduler thread while a login replay is in flight, so the
+    // replay's own sends (which go through StepperHttp) don't get fresh cookies
+    // injected back into them — the replay must stay faithful to the captured
+    // request, and its redirect cookies are handled explicitly below.
+    private final ThreadLocal<Boolean> replaying = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
     // Retry interval on failure (seconds)
     private static final int RETRY_INTERVAL_SECONDS = 30;
 
@@ -103,6 +109,35 @@ public class SessionKeepAlive {
      */
     public boolean hasFreshCookiesForHost(String requestHost) {
         return !getFreshCookiesForHost(requestHost).isEmpty();
+    }
+
+    /**
+     * Overlays the latest session cookies onto an outgoing request, returning the
+     * (possibly) modified request. Fresh cookies replace same-named cookies already
+     * present and are added if missing; all other cookies are preserved.
+     *
+     * <p>Returns the request unchanged when keep-alive is disabled, no fresh cookies
+     * exist, the request's host doesn't match the login domain, or the call comes
+     * from our own login replay.
+     *
+     * <p>This is the counterpart to the injection in {@code TrafficInterceptor}'s
+     * HttpHandler. The HttpHandler covers requests from Burp's built-in tools
+     * (Proxy, Repeater, Intruder, Scanner); this method is invoked from
+     * {@code StepperHttp} so requests sent by OmniStrike's own modules — which use
+     * {@code api.http().sendRequest()} and therefore bypass the HttpHandler — also
+     * carry the freshest cookies. Together they cover all traffic leaving Burp.
+     */
+    public HttpRequest applyFreshCookies(HttpRequest request) {
+        if (request == null || replaying.get()) return request;
+        try {
+            Map<String, String> fresh = getFreshCookiesForHost(request.httpService().host());
+            if (fresh.isEmpty()) return request;
+            return injectCookiesIntoRequest(request, fresh);
+        } catch (Exception e) {
+            // Never break a module's send because cookie injection threw.
+            log("SessionKeepAlive", "Cookie injection skipped: " + e.getMessage());
+            return request;
+        }
     }
 
     /**
@@ -293,11 +328,14 @@ public class SessionKeepAlive {
      * doesn't silently kill the recurring task on an uncaught error.
      */
     private void replayLoginRequestSafe() {
+        replaying.set(Boolean.TRUE);
         try {
             replayLoginRequest();
         } catch (Exception e) {
             log("SessionKeepAlive", "Unexpected error during replay: "
                     + e.getClass().getSimpleName() + ": " + e.getMessage());
+        } finally {
+            replaying.set(Boolean.FALSE);
         }
     }
 

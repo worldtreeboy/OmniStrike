@@ -32,6 +32,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     private volatile BiConsumer<String, String> uiLogger;
     private volatile StepperEngine stepperEngine;
     private volatile SessionKeepAlive sessionKeepAlive;
+    // Used to bypass dedup for explicit manual scans (right-click), so re-scanning
+    // a target already covered by automatic scanning actually re-tests it.
+    private volatile DeduplicationStore dedup;
 
     // Static file extensions — active injection scanners are skipped for these.
     // Passive analyzers still run (Client-Side Analyzer, Hidden Endpoint Finder, etc.)
@@ -104,6 +107,10 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
     public void setSessionKeepAlive(SessionKeepAlive keepAlive) {
         this.sessionKeepAlive = keepAlive;
+    }
+
+    public void setDeduplicationStore(DeduplicationStore dedup) {
+        this.dedup = dedup;
     }
 
     public void setRunning(boolean running) {
@@ -341,6 +348,152 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         processWithModulesTracked(reqResp, passiveModules, activeModules, null);
     }
 
+    /**
+     * Manual scan from the parameter-selection dialog.
+     *
+     * <p>Each selected ACTIVE module runs once per selected parameter (targeted
+     * injection via {@code processHttpFlowForParameter}) — so the user scans
+     * exactly the parameters they ticked, individually. Each (module, parameter)
+     * pair is its own cancellable task. Selected PASSIVE modules run once over the
+     * whole request. Dedup is bypassed on the worker thread since this is an
+     * explicit, user-triggered scan that must re-test even already-seen targets.
+     */
+    public void scanRequestParameters(HttpRequestResponse reqResp,
+                                      List<String> activeModuleIds,
+                                      List<String> passiveModuleIds,
+                                      List<String> parameters) {
+        if (reqResp == null) return;
+
+        String reqUrl = reqResp.request().url();
+        if (scopeManager.isExcludedPath(reqUrl)) {
+            uiLog("ManualScan", "SKIPPED (excluded path): " + reqUrl);
+            return;
+        }
+        if (!scopeManager.isIncludedPath(reqUrl)) {
+            uiLog("ManualScan", "SKIPPED (not in include list): " + reqUrl);
+            return;
+        }
+
+        // Reset cancellation flags — new scan is starting
+        manualScansCancelled = false;
+        ScanState.reset();
+        StepperEngine ssr = stepperEngine;
+        if (ssr != null) ssr.setPaused(false);
+        manualScanFutures.removeIf(Future::isDone);
+
+        // Resolve ids -> modules (defensive: keep only the matching kind)
+        List<ScanModule> activeModules = new ArrayList<>();
+        if (activeModuleIds != null) {
+            for (String id : activeModuleIds) {
+                ScanModule m = registry.getModule(id);
+                if (m != null && !m.isPassive()) activeModules.add(m);
+            }
+        }
+        List<ScanModule> passiveModules = new ArrayList<>();
+        if (passiveModuleIds != null) {
+            for (String id : passiveModuleIds) {
+                ScanModule m = registry.getModule(id);
+                if (m != null && m.isPassive()) passiveModules.add(m);
+            }
+        }
+
+        // Distinct, non-empty parameter targets
+        List<String> params = new ArrayList<>();
+        if (parameters != null) {
+            for (String p : parameters) {
+                if (p != null && !p.isEmpty() && !params.contains(p)) params.add(p);
+            }
+        }
+
+        if (activeModules.isEmpty() && passiveModules.isEmpty()) {
+            uiLog("ManualScan", "Nothing to scan — no modules selected.");
+            return;
+        }
+
+        uiLog("ManualScan", "Scanning " + reqUrl + " — " + activeModules.size()
+                + " active module(s) x " + params.size() + " param(s) + "
+                + passiveModules.size() + " passive module(s)");
+
+        // ---- Passive modules: run once over the whole request ----
+        for (ScanModule module : passiveModules) {
+            Future<?> f = passiveExecutor.submit(() -> {
+                if (manualScansCancelled) return;
+                DeduplicationStore d = dedup;
+                if (d != null) d.setBypass(true);
+                try {
+                    List<Finding> findings = module.processHttpFlow(reqResp, api);
+                    if (manualScansCancelled) return;
+                    if (findings != null && !findings.isEmpty()) {
+                        findingsStore.addFindings(autoFillReqResp(findings, reqResp));
+                    }
+                } catch (NullPointerException e) {
+                    if (running && !manualScansCancelled) {
+                        uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
+                    }
+                } catch (Exception e) {
+                    if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
+                    uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName() + ": " + e.getMessage());
+                } finally {
+                    if (d != null) d.setBypass(false);
+                }
+            });
+            manualScanFutures.add(f);
+        }
+
+        // ---- Active modules ----
+        // Modules that override processHttpFlowForParameter run once per selected
+        // parameter (true per-parameter targeting). Modules that DON'T override it
+        // would otherwise fall back to a full processHttpFlow per parameter — i.e.
+        // redundant whole-request scans — so we run those exactly once instead.
+        for (ScanModule module : activeModules) {
+            boolean perParam = supportsParameterTargeting(module) && !params.isEmpty();
+            List<String> targets = perParam ? params : java.util.Collections.singletonList(null);
+            for (String param : targets) {
+                Future<?> f = executor.submitTracked(() -> {
+                    if (manualScansCancelled) return;
+                    DeduplicationStore d = dedup;
+                    if (d != null) d.setBypass(true);
+                    try {
+                        String label = param != null ? " [param: " + param + "]" : " [whole request]";
+                        uiLog(module.getId(), "Processing: " + reqUrl + label);
+                        List<Finding> findings = (param != null)
+                                ? module.processHttpFlowForParameter(reqResp, param, api)
+                                : module.processHttpFlow(reqResp, api);
+                        if (manualScansCancelled) return;
+                        if (findings != null && !findings.isEmpty()) {
+                            findingsStore.addFindings(autoFillReqResp(findings, reqResp));
+                            uiLog(module.getId(), "Found " + findings.size() + " issue(s)"
+                                    + (param != null ? " on '" + param + "'" : ""));
+                        }
+                    } catch (Exception e) {
+                        if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
+                        uiLog(module.getId(), "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
+                    } finally {
+                        if (d != null) d.setBypass(false);
+                    }
+                });
+                if (f != null) manualScanFutures.add(f);
+            }
+        }
+    }
+
+    /**
+     * True if the module overrides {@code processHttpFlowForParameter} (i.e. it can
+     * target a single parameter). Modules that rely on the interface default would
+     * just re-scan the whole request, so callers run them once instead of per-param.
+     */
+    private boolean supportsParameterTargeting(ScanModule module) {
+        try {
+            java.lang.reflect.Method m = module.getClass().getMethod(
+                    "processHttpFlowForParameter",
+                    HttpRequestResponse.class, String.class,
+                    burp.api.montoya.MontoyaApi.class);
+            return m.getDeclaringClass() != ScanModule.class;
+        } catch (Exception e) {
+            return true; // assume targeting works — matches prior behavior
+        }
+    }
+
     private void processWithModules(HttpRequestResponse reqResp,
                                     List<ScanModule> passiveModules,
                                     List<ScanModule> activeModules) {
@@ -424,6 +577,10 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         for (ScanModule module : activeModules) {
             Future<?> f = executor.submitTracked(() -> {
                 if (manualScansCancelled) return; // Check before starting
+                // Explicit manual scan: bypass dedup so targets already covered by
+                // automatic scanning are re-tested. Reset in finally — threads are pooled.
+                DeduplicationStore d = dedup;
+                if (d != null) d.setBypass(true);
                 try {
                     uiLog(module.getId(), "Processing: " + reqResp.request().url()
                             + (targetParameter != null ? " [param: " + targetParameter + "]" : ""));
@@ -441,6 +598,8 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 } catch (Exception e) {
                     if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
                     uiLog(module.getId(), "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
+                } finally {
+                    if (d != null) d.setBypass(false);
                 }
             });
             if (f != null) {

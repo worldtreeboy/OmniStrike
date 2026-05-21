@@ -16,8 +16,24 @@ public class DeduplicationStore {
     private final AtomicBoolean fullWarningLogged = new AtomicBoolean(false);
     private volatile Consumer<String> warningLogger;
 
+    // Per-thread bypass. When set, markIfNew() reports every combination as "new"
+    // (while still recording it) so explicit user-triggered scans — e.g. right-click
+    // "Scan Parameter" — re-test targets even if an automatic scan already covered
+    // them. Set on the worker thread that runs a manual scan, and ALWAYS reset in a
+    // finally block since scan threads are pooled and reused.
+    private final ThreadLocal<Boolean> bypass = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
     public void setWarningLogger(Consumer<String> logger) {
         this.warningLogger = logger;
+    }
+
+    /** Enable/disable dedup bypass for the CURRENT thread. Must be reset in a finally. */
+    public void setBypass(boolean on) {
+        bypass.set(on);
+    }
+
+    public boolean isBypass() {
+        return bypass.get();
     }
 
     /**
@@ -32,6 +48,7 @@ public class DeduplicationStore {
         }
         String normalizedPath = normalizePath(urlPath);
         String key = moduleId + ":" + normalizedPath + ":" + (parameterName != null ? parameterName : "");
+        if (bypass.get()) { seen.put(key, Boolean.TRUE); return true; }
         return seen.putIfAbsent(key, Boolean.TRUE) == null;
     }
 
@@ -45,6 +62,7 @@ public class DeduplicationStore {
         String normalizedPath = normalizePath(urlPath);
         String m = method != null ? method.toUpperCase() : "GET";
         String key = moduleId + ":" + m + ":" + normalizedPath + ":" + (parameterName != null ? parameterName : "");
+        if (bypass.get()) { seen.put(key, Boolean.TRUE); return true; }
         return seen.putIfAbsent(key, Boolean.TRUE) == null;
     }
 
@@ -60,6 +78,7 @@ public class DeduplicationStore {
      */
     public synchronized boolean markIfNewRaw(String rawKey) {
         if (seen.size() >= MAX_ENTRIES) { logFullWarning(); return false; }
+        if (bypass.get()) { seen.put(rawKey, Boolean.TRUE); return true; }
         return seen.putIfAbsent(rawKey, Boolean.TRUE) == null;
     }
 

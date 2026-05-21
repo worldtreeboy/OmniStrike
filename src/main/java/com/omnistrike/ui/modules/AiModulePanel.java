@@ -752,10 +752,14 @@ public class AiModulePanel extends JPanel {
 
     private void scrapeSiteMap() {
         if (scopeManager.getTargetDomains().isEmpty()) {
-            JOptionPane.showMessageDialog(this,
-                    "Set target scope first (top bar) so the extension knows which domains to scrape.",
-                    "No Scope Configured", JOptionPane.WARNING_MESSAGE);
-            return;
+            String input = JOptionPane.showInputDialog(this,
+                    "Enter target domain(s) to scrape from Burp's site map\n"
+                    + "(comma-separated, e.g. example.com, api.example.com):",
+                    "Scrape Site Map", JOptionPane.QUESTION_MESSAGE);
+            if (input == null) return;            // user cancelled
+            input = input.trim();
+            if (input.isEmpty()) return;
+            scopeManager.setTargetDomains(input);
         }
 
         batchStatusLabel.setText("Scraping site map...");

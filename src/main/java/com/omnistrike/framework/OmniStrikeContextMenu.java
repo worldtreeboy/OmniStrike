@@ -9,7 +9,7 @@ import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import com.omnistrike.model.ScanModule;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
-import com.omnistrike.ui.ScanConfigDialog;
+import com.omnistrike.ui.ParameterScanDialog;
 
 import com.omnistrike.framework.stepper.StepperEngine;
 import com.omnistrike.framework.stepper.StepperStep;
@@ -58,11 +58,19 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
     private final MontoyaApi api;
     private final ModuleRegistry registry;
     private final TrafficInterceptor interceptor;
-    private final OmniStrikeScanCheck scanCheck;
     private final SessionKeepAlive sessionKeepAlive;
     private final StepperEngine stepperEngine;
-    private final com.omnistrike.framework.tls.TlsAnalyzer tlsAnalyzer;
     private volatile Supplier<MainPanel> mainPanelSupplier;
+
+    // Modules excluded from manual right-click scanning: WS scanner (own panel),
+    // auto-triggered tech-specific scanners, and the passive wordlist harvester.
+    private static final Set<String> MANUAL_SCAN_EXCLUDED = Set.of(
+            "ws-scanner",
+            "dynamics365-scanner", "sap-odata-scanner", "salesforce-soql-scanner",
+            "firebase-misconfig-scanner", "sharepoint-caml-scanner", "servicenow-glide-scanner",
+            "solr-query-scanner", "odoo-domain-scanner", "elasticsearch-query-scanner",
+            "spring-actuator-scanner", "wordlist-generator"
+    );
 
     // Static file extensions where active injection testing is pointless
     private static final Set<String> STATIC_EXTENSIONS = Set.of(
@@ -74,17 +82,13 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
     public OmniStrikeContextMenu(MontoyaApi api, ModuleRegistry registry,
                                   TrafficInterceptor interceptor,
-                                  OmniStrikeScanCheck scanCheck,
                                   SessionKeepAlive sessionKeepAlive,
-                                  StepperEngine stepperEngine,
-                                  com.omnistrike.framework.tls.TlsAnalyzer tlsAnalyzer) {
+                                  StepperEngine stepperEngine) {
         this.api = api;
         this.registry = registry;
         this.interceptor = interceptor;
-        this.scanCheck = scanCheck;
         this.sessionKeepAlive = sessionKeepAlive;
         this.stepperEngine = stepperEngine;
-        this.tlsAnalyzer = tlsAnalyzer;
     }
 
     public void setMainPanelSupplier(Supplier<MainPanel> supplier) {
@@ -107,120 +111,74 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         AiVulnAnalyzer aiAnalyzer = findAiAnalyzer();
         boolean aiAvailable = aiAnalyzer != null && aiAnalyzer.isAiConfigured();
 
-        // ============ "Send to OmniStrike (All Modules)" — runs all non-AI modules ============
+        // ============ "Send to OmniStrike (All Modules)" — opens parameter/module picker ============
         boolean staticResource = isStaticResource(reqResp.request().url());
         JMenuItem scanAll = new JMenuItem("Send to OmniStrike (All Modules)");
+        scanAll.setToolTipText("Pick which parameters and modules to scan");
         scanAll.addActionListener(e -> {
-            List<ScanModule> nonAi = registry.getEnabledNonAiModules();
-            List<String> moduleIds = new ArrayList<>();
-            int passive = 0, active = 0;
+            List<ScanModule> activeMods = new ArrayList<>();
+            List<ScanModule> passiveMods = new ArrayList<>();
+            collectScannableModules(activeMods, passiveMods);
 
+            // Static resource (JS, CSS, images): active injection is pointless —
+            // run passive analyzers directly over the whole response, no dialog.
             if (staticResource) {
-                // Static resource (JS, CSS, HTML, etc.) — only run passive analyzers.
-                // Active injection scanners (SQLi, XSS, etc.) are pointless against static file URLs.
-                for (ScanModule m : nonAi) {
-                    if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
-                    if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
-                    if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
-                    if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
-                    if ("firebase-misconfig-scanner".equals(m.getId())) continue; // Firebase is auto-triggered only
-                    if ("sharepoint-caml-scanner".equals(m.getId())) continue; // SharePoint CAML is auto-triggered only
-                    if ("servicenow-glide-scanner".equals(m.getId())) continue; // ServiceNow is auto-triggered only
-                    if ("solr-query-scanner".equals(m.getId())) continue; // Solr is auto-triggered only
-                    if ("odoo-domain-scanner".equals(m.getId())) continue; // Odoo is auto-triggered only
-                    if ("elasticsearch-query-scanner".equals(m.getId())) continue; // ES is auto-triggered only
-                    if ("spring-actuator-scanner".equals(m.getId())) continue; // Spring Actuator is auto-triggered only
-                    if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
-                    if (m.isPassive()) {
-                        moduleIds.add(m.getId());
-                        passive++;
-                    }
+                List<String> passiveIds = new ArrayList<>();
+                for (ScanModule m : passiveMods) passiveIds.add(m.getId());
+                if (passiveIds.isEmpty()) {
+                    showToast("OmniStrike", "No passive analyzers enabled.");
+                    return;
                 }
-            } else {
-                for (ScanModule m : nonAi) {
-                    if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
-                    if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
-                    if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
-                    if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
-                    if ("firebase-misconfig-scanner".equals(m.getId())) continue; // Firebase is auto-triggered only
-                    if ("sharepoint-caml-scanner".equals(m.getId())) continue; // SharePoint CAML is auto-triggered only
-                    if ("servicenow-glide-scanner".equals(m.getId())) continue; // ServiceNow is auto-triggered only
-                    if ("solr-query-scanner".equals(m.getId())) continue; // Solr is auto-triggered only
-                    if ("odoo-domain-scanner".equals(m.getId())) continue; // Odoo is auto-triggered only
-                    if ("elasticsearch-query-scanner".equals(m.getId())) continue; // ES is auto-triggered only
-                    if ("spring-actuator-scanner".equals(m.getId())) continue; // Spring Actuator is auto-triggered only
-                    if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
-                    moduleIds.add(m.getId());
-                    if (m.isPassive()) passive++;
-                    else active++;
-                }
+                interceptor.scanRequest(reqResp, passiveIds);
+                showToast("Sent to OmniStrike",
+                        "Static resource — scanning with " + passiveIds.size()
+                        + " passive analyzer(s)\n" + url);
+                return;
             }
-            int total = passive + active;
 
-            // Run modules directly via the interceptor's thread pool.
-            // Previously this used scanCheck.queueForScan() + startAuditSafe(), which
-            // relied on Burp's scanner calling passiveAudit() — but Burp's scanner queue
-            // is unreliable and the URL matching is fragile. Direct execution is instant.
-            // Findings still appear in Dashboard via DashboardReporter.
-            interceptor.scanRequest(reqResp, moduleIds);
+            List<ParameterScanDialog.ParamItem> paramItems = collectParamItems(reqResp);
 
-            String staticNote = staticResource
-                    ? "\n(Static resource — active scanners skipped)" : "";
+            // No parameters to target — fall back to a whole-request scan with all modules.
+            if (paramItems.isEmpty()) {
+                List<String> ids = new ArrayList<>();
+                for (ScanModule m : activeMods) ids.add(m.getId());
+                for (ScanModule m : passiveMods) ids.add(m.getId());
+                if (ids.isEmpty()) { showToast("OmniStrike", "No modules enabled."); return; }
+                interceptor.scanRequest(reqResp, ids);
+                showToast("Sent to OmniStrike",
+                        "No parameters found — scanning whole request with "
+                        + ids.size() + " module(s)\n" + url);
+                return;
+            }
+
+            // Open the picker so the user ticks the exact parameters + modules to scan.
+            ParameterScanDialog dialog = new ParameterScanDialog(
+                    findVisibleFrame(), reqResp, paramItems, activeMods, passiveMods);
+            dialog.setVisible(true); // modal — blocks until closed
+
+            if (!dialog.isConfirmed()) return;
+
+            List<String> selParams = dialog.getSelectedParameters();
+            List<String> selActive = dialog.getSelectedActiveModuleIds();
+            List<String> selPassive = dialog.getSelectedPassiveModuleIds();
+
+            if (selActive.isEmpty() && selPassive.isEmpty()) {
+                showToast("OmniStrike", "No modules selected — nothing scanned.");
+                return;
+            }
+            if (!selActive.isEmpty() && selParams.isEmpty() && selPassive.isEmpty()) {
+                showToast("OmniStrike", "No parameters selected for the active scanners.");
+                return;
+            }
+
+            interceptor.scanRequestParameters(reqResp, selActive, selPassive, selParams);
             showToast("Sent to OmniStrike",
-                    "Scanning with " + total + " module(s) (" + active + " active, " + passive + " passive)\n"
-                    + url + staticNote
+                    "Scanning " + selParams.size() + " parameter(s) with "
+                    + selActive.size() + " active + " + selPassive.size() + " passive module(s)\n"
+                    + url
                     + "\n\nResults will appear in Dashboard and OmniStrike tab.");
         });
         items.add(scanAll);
-
-        // ============ "Send to OmniStrike (Custom)" — opens config dialog ============
-        JMenuItem scanCustom = new JMenuItem("Send to OmniStrike (Custom)");
-        scanCustom.setToolTipText("Choose modules and configure settings before scanning");
-        scanCustom.addActionListener(e -> {
-            Frame parentFrame = null;
-            for (Frame f : Frame.getFrames()) {
-                if (f.isVisible()) { parentFrame = f; break; }
-            }
-            ScanConfigDialog dialog = new ScanConfigDialog(
-                    parentFrame, registry, api, reqResp, interceptor, scanCheck);
-            dialog.setVisible(true); // blocks until closed (modal)
-
-            if (dialog.isConfirmed()) {
-                List<String> selectedIds = dialog.getSelectedModuleIds();
-                if (selectedIds.isEmpty()) {
-                    showToast("Custom Scan", "No modules selected.");
-                    return;
-                }
-
-                // Separate AI module from the rest — AI needs manualScan(), not processHttpFlow()
-                boolean aiSelected = selectedIds.remove(ModuleRegistry.AI_MODULE_ID);
-                List<String> nonAiIds = selectedIds;
-
-                // Run non-AI modules directly via interceptor thread pool
-                if (!nonAiIds.isEmpty()) {
-                    interceptor.scanRequest(reqResp, nonAiIds);
-                }
-
-                // Run AI analysis via manualScan() if AI was selected
-                if (aiSelected && aiAnalyzer != null && aiAvailable) {
-                    if (nonAiIds.size() == 1) {
-                        // Single non-AI module: focused AI analysis on that module type
-                        aiAnalyzer.manualScan(reqResp, true, false, false, false, nonAiIds.get(0));
-                    } else {
-                        // Multiple modules or AI alone: general AI analysis
-                        aiAnalyzer.manualScan(reqResp, true, false, false, false, null);
-                    }
-                }
-
-                int totalCount = nonAiIds.size() + (aiSelected ? 1 : 0);
-                String aiNote = aiSelected ? "\nAI analysis: enabled" : "";
-                showToast("Custom Scan",
-                        "Scanning with " + totalCount + " module(s)\n" + url
-                        + aiNote
-                        + "\n\nResults will appear in Dashboard and OmniStrike tab.");
-            }
-        });
-        items.add(scanCustom);
 
         // ============ "Queue for AI Batch Scan" — adds selected request(s) to batch queue ============
         if (aiAvailable) {
@@ -299,207 +257,14 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         // WebSocket Scanner removed
+        // TLS analysis is available via the TLS Analyzer panel (Framework Tools) — no context menu item.
 
-        // ============ "Analyze TLS" — out-of-band TLS / SSL inspection ============
-        if (tlsAnalyzer != null && reqResp.request().httpService() != null
-                && reqResp.request().httpService().secure()) {
-            String tlsHost = reqResp.request().httpService().host();
-            int tlsPort = reqResp.request().httpService().port();
-            JMenuItem tlsItem = new JMenuItem("Analyze TLS (" + tlsHost + ":" + tlsPort + ")");
-            tlsItem.setToolTipText("Probe TLS protocol versions, ciphers, and certificate chain. Findings appear in Dashboard.");
-            Supplier<MainPanel> supplier = mainPanelSupplier;
-            tlsItem.addActionListener(e -> {
-                MainPanel mp = supplier != null ? supplier.get() : null;
-                if (mp != null) {
-                    var panel = mp.getTlsAnalyzerPanel();
-                    if (panel != null) {
-                        panel.runForTarget(tlsHost, tlsPort, true);
-                        mp.selectModule("tls-analyzer");
-                        showToast("TLS Analyzer",
-                                "Scanning " + tlsHost + ":" + tlsPort
-                                + "\n\nResults appear in TLS Analyzer panel.");
-                        return;
-                    }
-                }
-                // Fallback: kick off the scan even if the panel isn't ready
-                tlsAnalyzer.invalidate(tlsHost, tlsPort);
-                tlsAnalyzer.analyze(tlsHost, tlsPort, false, true, null);
-                showToast("TLS Analyzer",
-                        "Scan started for " + tlsHost + ":" + tlsPort
-                        + "\n\n(Open the TLS Analyzer panel to see results.)");
-            });
-            items.add(tlsItem);
-        }
-
-        // ============ "Scan This Parameter" — targeted parameter scanning ============
-        // Build module lists: one set for parameter scanning (excludes right-click-only modules),
-        // another set for the per-module submenu (includes all except ws-scanner).
-        List<ScanModule> activeModules = new ArrayList<>();
-        List<ScanModule> passiveModules = new ArrayList<>();
-        List<ScanModule> activeModulesAll = new ArrayList<>();  // includes right-click-only modules
+        // ============ Module lists for the "Send to OmniStrike >" per-module submenu ============
+        // (Per-parameter scanning now lives in the ParameterScanDialog opened from
+        //  "Send to OmniStrike (All Modules)".)
+        List<ScanModule> activeModulesAll = new ArrayList<>();
         List<ScanModule> passiveModulesAll = new ArrayList<>();
-        for (ScanModule m : registry.getEnabledNonAiModules()) {
-            if ("ws-scanner".equals(m.getId())) continue; // WS scanner has its own panel
-            if ("dynamics365-scanner".equals(m.getId())) continue; // D365 is auto-triggered only
-            if ("sap-odata-scanner".equals(m.getId())) continue; // SAP OData is auto-triggered only
-            if ("salesforce-soql-scanner".equals(m.getId())) continue; // Salesforce SOQL is auto-triggered only
-            if ("firebase-misconfig-scanner".equals(m.getId())) continue; // Firebase is auto-triggered only
-            if ("sharepoint-caml-scanner".equals(m.getId())) continue; // SharePoint CAML is auto-triggered only
-            if ("servicenow-glide-scanner".equals(m.getId())) continue; // ServiceNow is auto-triggered only
-            if ("solr-query-scanner".equals(m.getId())) continue; // Solr is auto-triggered only
-            if ("odoo-domain-scanner".equals(m.getId())) continue; // Odoo is auto-triggered only
-            if ("elasticsearch-query-scanner".equals(m.getId())) continue; // ES is auto-triggered only
-            if ("spring-actuator-scanner".equals(m.getId())) continue; // Spring Actuator is auto-triggered only
-            if ("wordlist-generator".equals(m.getId())) continue; // Passive harvester — not scannable
-            if (m.isPassive()) {
-                passiveModulesAll.add(m);
-                passiveModules.add(m);
-            } else {
-                activeModulesAll.add(m);
-                activeModules.add(m);
-            }
-        }
-
-        String selectedParam = detectSelectedParameter(event);
-        if (selectedParam != null && !staticResource) {
-            // "Scan This Parameter (ip) >" — user picks exactly one module
-            JMenu paramSubMenu = new JMenu("Scan This Parameter (" + selectedParam + ")");
-            for (ScanModule module : activeModules) {
-                JMenu moduleParamMenu = new JMenu(module.getName());
-                moduleParamMenu.setToolTipText(module.getDescription());
-
-                // Normal Scan (parameter-targeted)
-                JMenuItem normalItem = new JMenuItem("Normal Scan");
-                normalItem.addActionListener(e -> {
-                    interceptor.scanRequest(reqResp, List.of(module.getId()), selectedParam);
-                    showToast(module.getName(),
-                            "Scanning parameter '" + selectedParam + "'\n" + url);
-                });
-                moduleParamMenu.add(normalItem);
-
-                // AI Scan options (parameter-targeted)
-                if (aiAvailable) {
-                    JMenu aiMenu = new JMenu("AI Scan");
-
-                    JMenuItem fuzzItem = new JMenuItem("Smart Fuzzing");
-                    fuzzItem.addActionListener(e -> {
-                        aiAnalyzer.manualScan(reqResp, true, true, false, false, module.getId(), selectedParam);
-                        showToast(module.getName() + " + AI",
-                                "AI smart fuzzing parameter '" + selectedParam + "'\n" + url);
-                    });
-                    aiMenu.add(fuzzItem);
-
-                    JMenuItem wafItem = new JMenuItem("Smart Fuzzing + WAF Bypass");
-                    wafItem.addActionListener(e -> {
-                        aiAnalyzer.manualScan(reqResp, true, true, true, false, module.getId(), selectedParam);
-                        showToast(module.getName() + " + AI + WAF Bypass",
-                                "AI fuzzing parameter '" + selectedParam + "' with WAF bypass\n" + url);
-                    });
-                    aiMenu.add(wafItem);
-
-                    JMenuItem adaptiveItem = new JMenuItem("Smart Fuzzing + Adaptive");
-                    adaptiveItem.addActionListener(e -> {
-                        aiAnalyzer.manualScan(reqResp, true, true, false, true, module.getId(), selectedParam);
-                        showToast(module.getName() + " + AI + Adaptive",
-                                "AI adaptive fuzzing parameter '" + selectedParam + "'\n" + url);
-                    });
-                    aiMenu.add(adaptiveItem);
-
-                    aiMenu.addSeparator();
-
-                    JMenuItem fullItem = new JMenuItem("Full AI Scan");
-                    fullItem.addActionListener(e -> {
-                        aiAnalyzer.manualScan(reqResp, true, true, true, true, module.getId(), selectedParam);
-                        showToast(module.getName() + " + Full AI",
-                                "Full AI scan on parameter '" + selectedParam + "'\n" + url);
-                    });
-                    aiMenu.add(fullItem);
-
-                    moduleParamMenu.add(aiMenu);
-                }
-
-                paramSubMenu.add(moduleParamMenu);
-            }
-            items.add(paramSubMenu);
-        }
-
-        // ============ "Scan Parameter >" — always-visible parameter picker (no selection needed) ============
-        if (!staticResource) {
-            // Collect all scannable parameter names (preserving order, no dupes)
-            LinkedHashSet<String> allParams = new LinkedHashSet<>();
-            for (ParsedHttpParameter param : reqResp.request().parameters()) {
-                allParams.add(param.name());
-            }
-
-            // Extract params embedded in header values (e.g., Referer URL: ?id=q22&Submit=Submit)
-            for (var header : reqResp.request().headers()) {
-                String hName = header.name().toLowerCase();
-                if (hName.equals("referer") || hName.equals("origin")) {
-                    String hVal = header.value();
-                    int qMark = hVal.indexOf('?');
-                    if (qMark >= 0) {
-                        String query = hVal.substring(qMark + 1);
-                        int hashIdx = query.indexOf('#');
-                        if (hashIdx >= 0) query = query.substring(0, hashIdx);
-                        for (String pair : query.split("&")) {
-                            int eq = pair.indexOf('=');
-                            String key = eq > 0 ? pair.substring(0, eq) : pair;
-                            key = key.trim();
-                            if (!key.isEmpty()) allParams.add(key);
-                        }
-                    }
-                }
-            }
-
-            // Collect injectable header names (for header injection testing)
-            Set<String> injectableHeaderNames = Set.of("referer", "user-agent", "x-forwarded-for",
-                    "x-forwarded-host", "origin", "host", "x-real-ip", "x-custom-ip-authorization");
-            LinkedHashSet<String> headerTargets = new LinkedHashSet<>();
-            for (var header : reqResp.request().headers()) {
-                if (injectableHeaderNames.contains(header.name().toLowerCase())) {
-                    headerTargets.add(header.name());
-                }
-            }
-
-            // Extract testable URL path segments (e.g., /api/users/12 → "path:3:12")
-            LinkedHashSet<String> pathSegmentTargets = new LinkedHashSet<>();
-            extractPathSegmentNames(reqResp.request(), pathSegmentTargets);
-
-            if (!allParams.isEmpty() || !headerTargets.isEmpty() || !pathSegmentTargets.isEmpty()) {
-                JMenu scanParamMenu = new JMenu("Scan Parameter");
-
-                // Regular parameters (URL, body, cookie, + those from Referer/Origin)
-                for (String paramName : allParams) {
-                    scanParamMenu.add(buildParameterTargetMenu(
-                            paramName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
-                }
-
-                // Injectable header names as separate section
-                if (!headerTargets.isEmpty()) {
-                    scanParamMenu.addSeparator();
-                    scanParamMenu.add(createSectionLabel("Headers"));
-                    for (String headerName : headerTargets) {
-                        scanParamMenu.add(buildParameterTargetMenu(
-                                headerName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
-                    }
-                }
-
-                // URL path segments as separate section
-                if (!pathSegmentTargets.isEmpty()) {
-                    scanParamMenu.addSeparator();
-                    scanParamMenu.add(createSectionLabel("Path Segments"));
-                    for (String pathTarget : pathSegmentTargets) {
-                        // Display as the segment value, but pass the full "path:N:value" as the parameter name
-                        String displayName = pathTarget.contains(":") ?
-                                pathTarget.substring(pathTarget.lastIndexOf(':') + 1) : pathTarget;
-                        scanParamMenu.add(buildParameterTargetMenu(
-                                pathTarget, displayName, reqResp, url, activeModules, aiAnalyzer, aiAvailable));
-                    }
-                }
-
-                items.add(scanParamMenu);
-            }
-        }
+        collectScannableModules(activeModulesAll, passiveModulesAll);
 
         // ============ "Send to OmniStrike >" submenu — per-module with Normal/AI options ============
         JMenu subMenu = new JMenu("Send to OmniStrike");
@@ -592,169 +357,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         }
 
         return items;
-    }
-
-    // ==================== Selected Parameter Detection ====================
-
-    /**
-     * Detects which HTTP parameter the user has selected in the message editor.
-     * <p>
-     * Strategy 1: Match selection byte offsets against parsed parameter offsets.
-     * This works when the user selects a parameter in the URL query string or body.
-     * <p>
-     * Strategy 2 (fallback): Extract the selected text and match it against known
-     * parameter names/values. This handles selections inside headers (e.g., Referer,
-     * Origin) where the same parameters appear at different byte positions.
-     */
-    private String detectSelectedParameter(ContextMenuEvent event) {
-        var editorOpt = event.messageEditorRequestResponse();
-        if (editorOpt.isEmpty()) return null;
-
-        var editor = editorOpt.get();
-        var rangeOpt = editor.selectionOffsets();
-        if (rangeOpt.isEmpty()) return null;
-
-        Range selection = rangeOpt.get();
-        HttpRequest request = editor.requestResponse().request();
-        List<ParsedHttpParameter> params = request.parameters();
-
-        // Strategy 1: Byte-offset overlap against parsed parameter ranges
-        for (ParsedHttpParameter param : params) {
-            Range nameRange = param.nameOffsets();
-            Range valueRange = param.valueOffsets();
-
-            boolean overlapsName = selection.startIndexInclusive() < nameRange.endIndexExclusive()
-                    && selection.endIndexExclusive() > nameRange.startIndexInclusive();
-            boolean overlapsValue = selection.startIndexInclusive() < valueRange.endIndexExclusive()
-                    && selection.endIndexExclusive() > valueRange.startIndexInclusive();
-
-            if (overlapsName || overlapsValue) {
-                return param.name();
-            }
-        }
-
-        // Strategy 2: Text-based fallback — handles selections inside headers
-        // (e.g., Referer: https://...?id=test&Submit=Submit)
-        String selectedText = extractSelectedText(request, selection);
-        if (selectedText == null || selectedText.isEmpty()) return null;
-
-        // 2a: Selected text exactly matches a parameter name (e.g., user selected "id")
-        for (ParsedHttpParameter param : params) {
-            if (param.name().equalsIgnoreCase(selectedText)) {
-                return param.name();
-            }
-        }
-
-        // 2b: Selected text exactly matches a parameter value → return that param's name
-        for (ParsedHttpParameter param : params) {
-            if (param.value() != null && param.value().equals(selectedText)) {
-                return param.name();
-            }
-        }
-
-        // 2c: Selected text contains key=value pairs (e.g., "id=q22" or "id=q22&Submit=Submit")
-        //     Parse and return the first key that matches a known parameter
-        String[] pairs = selectedText.split("[&?]");
-        for (String pair : pairs) {
-            int eq = pair.indexOf('=');
-            String key = eq > 0 ? pair.substring(0, eq).trim() : pair.trim();
-            if (key.isEmpty()) continue;
-            for (ParsedHttpParameter param : params) {
-                if (param.name().equalsIgnoreCase(key)) {
-                    return param.name();
-                }
-            }
-        }
-
-        // 2d: Expand selection to surrounding key=value context within the line.
-        //     If user selected just a value like "q22", find it within the raw request
-        //     line and walk backwards to find the "key=" prefix.
-        String contextParam = findParamFromContext(request, selection, params);
-        if (contextParam != null) return contextParam;
-
-        // 2e: Selected text matches a request header name (e.g., "Referer", "User-Agent").
-        //     Scanners extract these as header injection targets with the header name.
-        for (var header : request.headers()) {
-            if (header.name().equalsIgnoreCase(selectedText)) {
-                return header.name();
-            }
-        }
-
-        // 2f: Selected text matches a URL path segment value (e.g., selecting "12" in /api/users/12).
-        //     Returns the "path:INDEX:VALUE" format used by scanners.
-        {
-            LinkedHashSet<String> pathTargets = new LinkedHashSet<>();
-            extractPathSegmentNames(request, pathTargets);
-            for (String pathTarget : pathTargets) {
-                // pathTarget is "path:N:VALUE" — check if VALUE matches selected text
-                String value = pathTarget.substring(pathTarget.lastIndexOf(':') + 1);
-                if (value.equals(selectedText)) {
-                    return pathTarget;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Extracts the selected text from the raw request bytes.
-     */
-    private String extractSelectedText(HttpRequest request, Range selection) {
-        try {
-            byte[] raw = request.toByteArray().getBytes();
-            int start = selection.startIndexInclusive();
-            int end = selection.endIndexExclusive();
-            if (start < 0 || end > raw.length || start >= end) return null;
-            return new String(raw, start, end - start, java.nio.charset.StandardCharsets.UTF_8).trim();
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /**
-     * When the user selects a value (e.g., "q22") inside a header like Referer,
-     * expand to the surrounding context to find the "key=" prefix.
-     * Walks backwards from the selection start to find "key=" and checks if that
-     * key matches a known request parameter.
-     */
-    private String findParamFromContext(HttpRequest request, Range selection,
-                                        List<ParsedHttpParameter> params) {
-        try {
-            byte[] raw = request.toByteArray().getBytes();
-            int start = selection.startIndexInclusive();
-
-            // Walk backwards from selection start, looking for '=' preceded by a param name
-            // Stop at line boundary, '&', '?', or beginning of raw bytes
-            int eqPos = -1;
-            for (int i = start - 1; i >= 0 && i >= start - 200; i--) {
-                char c = (char) (raw[i] & 0xFF);
-                if (c == '=') { eqPos = i; break; }
-                if (c == '&' || c == '?' || c == '\n' || c == '\r' || c == ' ') break;
-            }
-            if (eqPos < 1) return null;
-
-            // Extract the key before '='
-            int keyStart = eqPos - 1;
-            for (; keyStart >= 0; keyStart--) {
-                char c = (char) (raw[keyStart] & 0xFF);
-                if (c == '&' || c == '?' || c == '\n' || c == '\r' || c == ' ' || c == ';') {
-                    keyStart++;
-                    break;
-                }
-            }
-            if (keyStart < 0) keyStart = 0;
-
-            String key = new String(raw, keyStart, eqPos - keyStart, java.nio.charset.StandardCharsets.UTF_8).trim();
-            if (key.isEmpty()) return null;
-
-            for (ParsedHttpParameter param : params) {
-                if (param.name().equalsIgnoreCase(key)) {
-                    return param.name();
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
     }
 
     // ==================== Per-Module Submenu Builder ====================
@@ -863,110 +465,6 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         return moduleMenu;
     }
 
-    // ==================== Parameter Target Submenu ====================
-
-    /**
-     * Builds a submenu for scanning a specific parameter:
-     *
-     *   paramName >
-     *     All Modules
-     *     ─────
-     *     SQLi Detector >
-     *       Normal Scan
-     *       AI Scan > ...
-     *     XSS Scanner >
-     *       Normal Scan
-     *       AI Scan > ...
-     */
-    private JMenu buildParameterTargetMenu(String paramName, HttpRequestResponse reqResp,
-                                            String url, List<ScanModule> activeModules,
-                                            AiVulnAnalyzer aiAnalyzer, boolean aiAvailable) {
-        JMenu paramMenu = new JMenu(paramName);
-
-        // "All Modules" — runs all active scanners on this parameter
-        JMenuItem allItem = new JMenuItem("All Modules");
-        allItem.addActionListener(e -> {
-            List<String> moduleIds = new ArrayList<>();
-            for (ScanModule m : activeModules) moduleIds.add(m.getId());
-            interceptor.scanRequest(reqResp, moduleIds, paramName);
-            showToast("Parameter Scan",
-                    "Scanning '" + paramName + "' with " + moduleIds.size() + " active module(s)\n" + url);
-        });
-        paramMenu.add(allItem);
-        paramMenu.addSeparator();
-
-        // Per-module submenus with Normal + AI scan options
-        for (ScanModule module : activeModules) {
-            JMenu moduleMenu = new JMenu(module.getName());
-            moduleMenu.setToolTipText(module.getDescription());
-
-            JMenuItem normalItem = new JMenuItem("Normal Scan");
-            normalItem.addActionListener(e -> {
-                interceptor.scanRequest(reqResp, List.of(module.getId()), paramName);
-                showToast(module.getName(),
-                        "Scanning parameter '" + paramName + "'\n" + url);
-            });
-            moduleMenu.add(normalItem);
-
-            if (aiAvailable) {
-                JMenu aiMenu = new JMenu("AI Scan");
-
-                JMenuItem fuzzItem = new JMenuItem("Smart Fuzzing");
-                fuzzItem.addActionListener(e -> {
-                    aiAnalyzer.manualScan(reqResp, true, true, false, false, module.getId(), paramName);
-                    showToast(module.getName() + " + AI",
-                            "AI fuzzing parameter '" + paramName + "'\n" + url);
-                });
-                aiMenu.add(fuzzItem);
-
-                JMenuItem wafItem = new JMenuItem("Smart Fuzzing + WAF Bypass");
-                wafItem.addActionListener(e -> {
-                    aiAnalyzer.manualScan(reqResp, true, true, true, false, module.getId(), paramName);
-                    showToast(module.getName() + " + AI + WAF Bypass",
-                            "AI fuzzing parameter '" + paramName + "' with WAF bypass\n" + url);
-                });
-                aiMenu.add(wafItem);
-
-                JMenuItem adaptiveItem = new JMenuItem("Smart Fuzzing + Adaptive");
-                adaptiveItem.addActionListener(e -> {
-                    aiAnalyzer.manualScan(reqResp, true, true, false, true, module.getId(), paramName);
-                    showToast(module.getName() + " + AI + Adaptive",
-                            "AI adaptive fuzzing parameter '" + paramName + "'\n" + url);
-                });
-                aiMenu.add(adaptiveItem);
-
-                aiMenu.addSeparator();
-
-                JMenuItem fullItem = new JMenuItem("Full AI Scan");
-                fullItem.addActionListener(e -> {
-                    aiAnalyzer.manualScan(reqResp, true, true, true, true, module.getId(), paramName);
-                    showToast(module.getName() + " + Full AI",
-                            "Full AI scan on parameter '" + paramName + "'\n" + url);
-                });
-                aiMenu.add(fullItem);
-
-                moduleMenu.add(aiMenu);
-            }
-
-            paramMenu.add(moduleMenu);
-        }
-
-        return paramMenu;
-    }
-
-    /**
-     * Overload that accepts a display name different from the internal parameter name.
-     * Used for path segments where paramName is "path:3:12" but displayName is "12".
-     */
-    private JMenu buildParameterTargetMenu(String paramName, String displayName,
-                                            HttpRequestResponse reqResp, String url,
-                                            List<ScanModule> activeModules,
-                                            AiVulnAnalyzer aiAnalyzer, boolean aiAvailable) {
-        JMenu menu = buildParameterTargetMenu(paramName, reqResp, url, activeModules, aiAnalyzer, aiAvailable);
-        menu.setText(displayName);
-        return menu;
-    }
-
     // Common route words to skip when extracting path segment targets for the context menu
     private static final Set<String> COMMON_ROUTE_WORDS = Set.of(
             "api", "v1", "v2", "v3", "v4", "search", "users", "admin", "static", "assets",
@@ -1019,6 +517,91 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 }
             }
         } catch (Exception ignored) {}
+    }
+
+    // ==================== Manual-scan collection ====================
+
+    /**
+     * Fills the given lists with the non-AI modules eligible for manual scanning,
+     * split into active and passive. Skips {@link #MANUAL_SCAN_EXCLUDED} modules
+     * (WS scanner, auto-triggered tech scanners, passive wordlist harvester).
+     */
+    private void collectScannableModules(List<ScanModule> activeOut, List<ScanModule> passiveOut) {
+        for (ScanModule m : registry.getEnabledNonAiModules()) {
+            if (MANUAL_SCAN_EXCLUDED.contains(m.getId())) continue;
+            if (m.isPassive()) passiveOut.add(m);
+            else activeOut.add(m);
+        }
+    }
+
+    /**
+     * Collects every scannable parameter target for the request: query/body/cookie
+     * parameters, parameters embedded in Referer/Origin URLs, injectable header
+     * names, and testable URL path segments. Each item carries the internal name
+     * passed to scanners plus a friendly display name and a category for grouping.
+     */
+    private List<ParameterScanDialog.ParamItem> collectParamItems(HttpRequestResponse reqResp) {
+        List<ParameterScanDialog.ParamItem> out = new ArrayList<>();
+        LinkedHashSet<String> paramNames = new LinkedHashSet<>();
+
+        // Query / body / cookie / JSON params parsed by Burp
+        for (ParsedHttpParameter param : reqResp.request().parameters()) {
+            paramNames.add(param.name());
+        }
+
+        // Params embedded in Referer/Origin URLs (e.g. Referer: https://x/?id=q22&Submit=Submit)
+        for (var header : reqResp.request().headers()) {
+            String hName = header.name().toLowerCase();
+            if (hName.equals("referer") || hName.equals("origin")) {
+                String hVal = header.value();
+                int qMark = hVal.indexOf('?');
+                if (qMark >= 0) {
+                    String query = hVal.substring(qMark + 1);
+                    int hashIdx = query.indexOf('#');
+                    if (hashIdx >= 0) query = query.substring(0, hashIdx);
+                    for (String pair : query.split("&")) {
+                        int eq = pair.indexOf('=');
+                        String key = (eq > 0 ? pair.substring(0, eq) : pair).trim();
+                        if (!key.isEmpty()) paramNames.add(key);
+                    }
+                }
+            }
+        }
+        for (String name : paramNames) {
+            out.add(new ParameterScanDialog.ParamItem(name, name, "Parameters"));
+        }
+
+        // Injectable header names (header injection testing)
+        Set<String> injectableHeaderNames = Set.of("referer", "user-agent", "x-forwarded-for",
+                "x-forwarded-host", "origin", "host", "x-real-ip", "x-custom-ip-authorization");
+        LinkedHashSet<String> headerTargets = new LinkedHashSet<>();
+        for (var header : reqResp.request().headers()) {
+            if (injectableHeaderNames.contains(header.name().toLowerCase())) {
+                headerTargets.add(header.name());
+            }
+        }
+        for (String h : headerTargets) {
+            out.add(new ParameterScanDialog.ParamItem(h, h, "Headers"));
+        }
+
+        // Testable URL path segments (internal name "path:N:value", display = value)
+        LinkedHashSet<String> pathSegmentTargets = new LinkedHashSet<>();
+        extractPathSegmentNames(reqResp.request(), pathSegmentTargets);
+        for (String pathTarget : pathSegmentTargets) {
+            String displayName = pathTarget.contains(":")
+                    ? pathTarget.substring(pathTarget.lastIndexOf(':') + 1) : pathTarget;
+            out.add(new ParameterScanDialog.ParamItem(pathTarget, displayName, "Path Segments"));
+        }
+
+        return out;
+    }
+
+    /** Returns the first visible AWT frame to parent dialogs to, or null. */
+    private Frame findVisibleFrame() {
+        for (Frame f : Frame.getFrames()) {
+            if (f.isVisible()) return f;
+        }
+        return null;
     }
 
     // ==================== Helpers ====================

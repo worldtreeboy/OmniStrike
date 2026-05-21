@@ -221,6 +221,9 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // ==================== TRAFFIC INTERCEPTOR ====================
         interceptor = new TrafficInterceptor(api, registry, findingsStore, executor, scopeManager);
+        // Lets manual right-click scans bypass dedup so they re-test targets already
+        // covered by automatic scanning.
+        interceptor.setDeduplicationStore(dedup);
 
         // Register with Burp's HTTP and proxy pipelines
         api.http().registerHttpHandler(interceptor);
@@ -230,7 +233,6 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== STEPPER ENGINE ====================
         stepperEngine = new StepperEngine(api, scopeManager);
         interceptor.setStepperEngine(stepperEngine);
-        interceptor.setSessionKeepAlive(sessionKeepAlive);
         // Wire the StepperHttp wrapper so scan modules' sendRequest calls also
         // route through Stepper (Montoya's api.http().sendRequest bypasses HttpHandler).
         com.omnistrike.framework.stepper.StepperHttp.init(api, stepperEngine);
@@ -245,6 +247,11 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== SESSION KEEP-ALIVE ====================
         sessionKeepAlive = new SessionKeepAlive(api);
         // uiLogger is wired below after MainPanel is created (it needs logPanel)
+        // Wire AFTER construction (the field is null until now): the interceptor's
+        // HttpHandler injects fresh cookies into Burp's built-in tools, and
+        // StepperHttp injects them into OmniStrike's own module sends.
+        interceptor.setSessionKeepAlive(sessionKeepAlive);
+        com.omnistrike.framework.stepper.StepperHttp.setSessionKeepAlive(sessionKeepAlive);
         api.logging().logToOutput("Session Keep-Alive initialized (disabled by default).");
 
         // ==================== SCANNER INTEGRATION ====================
@@ -273,7 +280,7 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // ==================== CONTEXT MENU ====================
         OmniStrikeContextMenu contextMenu = new OmniStrikeContextMenu(
-                api, registry, interceptor, scanCheck, sessionKeepAlive, stepperEngine, tlsAnalyzer);
+                api, registry, interceptor, sessionKeepAlive, stepperEngine);
         contextMenu.setMainPanelSupplier(() -> mainPanel);
         api.userInterface().registerContextMenuItemsProvider(contextMenu);
         api.logging().logToOutput("Context menu registered (right-click > Send to OmniStrike).");

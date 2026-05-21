@@ -50,11 +50,8 @@ public class MainPanel extends JPanel {
     private final CardLayout cardLayout;
     private final Map<String, JPanel> modulePanels = new HashMap<>();
     private final ModuleListPanel moduleListPanel;
-    private final JTextField scopeField;
     private final JTextField threadField;
     private final JTextField rateLimitField;
-    private final JToggleButton startStopBtn;
-    private final JLabel statusLabel;
     private final JLabel threadStatusLabel;
 
     // Store timer as a field so it can be stopped on extension unload
@@ -87,9 +84,6 @@ public class MainPanel extends JPanel {
     private final JLabel lowLabel;
     private final JLabel infoLabel;
     private final JLabel totalLabel;
-
-    // Scan progress bar
-    private final JProgressBar progressBar;
 
     // Session keep-alive status label
     private final JLabel sessionStatusLabel;
@@ -125,36 +119,9 @@ public class MainPanel extends JPanel {
         topContainer.setBackground(BG_DARK);
         topContainer.setBorder(new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER));
 
-        // --- Row 1: Scope, Threads, Rate Limit ---
+        // --- Row 1: Threads, Throttle, Theme ---
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
         row1.setBackground(BG_DARK);
-
-        JLabel scopeLabel = new JLabel("Target Scope:");
-        scopeLabel.setForeground(NEON_CYAN);
-        scopeLabel.setFont(MONO_LABEL);
-        row1.add(scopeLabel);
-        scopeField = new JTextField(30);
-        styleTextField(scopeField);
-        scopeField.setToolTipText("Comma-separated target domains (e.g., example.com, api.example.com). Used for automated scanning and site map scraping.");
-        scopeField.putClientProperty("JTextField.placeholderText",
-                "e.g. example.com, api.example.com");
-        row1.add(scopeField);
-
-        // Live-sync scope field to ScopeManager so features like Scrape Site Map work without pressing Start
-        scopeField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
-            @Override
-            public void insertUpdate(javax.swing.event.DocumentEvent e) { syncScope(); }
-            @Override
-            public void removeUpdate(javax.swing.event.DocumentEvent e) { syncScope(); }
-            @Override
-            public void changedUpdate(javax.swing.event.DocumentEvent e) { syncScope(); }
-            private void syncScope() {
-                String text = scopeField.getText().trim();
-                if (!text.isEmpty()) {
-                    scopeManager.setTargetDomains(text);
-                }
-            }
-        });
 
         JLabel threadsLabel = new JLabel("Threads:");
         threadsLabel.setForeground(NEON_CYAN);
@@ -327,240 +294,11 @@ public class MainPanel extends JPanel {
 
         topContainer.add(row1);
 
-        // --- Row 1b: Scope Filtering (Include / Exclude lists) ---
-        // Mutual exclusion: only ONE list can be populated at a time.
-        // When one has entries, the other is locked (greyed out) until cleared.
-        JPanel filterPanel = new JPanel(new GridLayout(1, 2, 10, 0));
-        filterPanel.setBackground(BG_DARK);
-
-        // ── Include list (left side) ──────────────────────────────────────
-        DefaultListModel<String> includeListModel = new DefaultListModel<>();
-        JList<String> includeList = new JList<>(includeListModel);
-        includeList.setBackground(BG_PANEL);
-        includeList.setForeground(FG_PRIMARY);
-        includeList.setFont(MONO_FONT);
-        includeList.setSelectionBackground(NEON_CYAN.darker().darker());
-        includeList.setSelectionForeground(Color.WHITE);
-        includeList.setVisibleRowCount(4);
-
-        JTextField includeInput = new JTextField(25);
-        styleTextField(includeInput);
-        includeInput.putClientProperty("JTextField.placeholderText",
-                "/api/v1/users or https://target.com/admin");
-
-        JButton includeAddBtn = new JButton("+");
-        JButton includeRemoveBtn = new JButton("-");
-        JButton includeClearBtn = new JButton("Clear");
-        for (JButton btn : new JButton[]{includeAddBtn, includeRemoveBtn, includeClearBtn}) {
-            btn.setBackground(BG_PANEL);
-            btn.setForeground(NEON_CYAN);
-            btn.setFocusPainted(false);
-            btn.setFont(MONO_BOLD);
-            btn.setBorder(BorderFactory.createCompoundBorder(
-                    new CyberTheme.GlowLineBorder(NEON_CYAN, 1),
-                    BorderFactory.createEmptyBorder(2, 8, 2, 8)));
-        }
-
-        // ── Exclude list (right side) ─────────────────────────────────────
-        DefaultListModel<String> excludeListModel = new DefaultListModel<>();
-        JList<String> excludeList = new JList<>(excludeListModel);
-        excludeList.setBackground(BG_PANEL);
-        excludeList.setForeground(FG_PRIMARY);
-        excludeList.setFont(MONO_FONT);
-        excludeList.setSelectionBackground(NEON_RED.darker().darker());
-        excludeList.setSelectionForeground(Color.WHITE);
-        excludeList.setVisibleRowCount(4);
-
-        JTextField excludeInput = new JTextField(25);
-        styleTextField(excludeInput);
-        excludeInput.putClientProperty("JTextField.placeholderText",
-                "/logout or /admin/delete");
-
-        JButton excludeAddBtn = new JButton("+");
-        JButton excludeRemoveBtn = new JButton("-");
-        JButton excludeClearBtn = new JButton("Clear");
-        for (JButton btn : new JButton[]{excludeAddBtn, excludeRemoveBtn, excludeClearBtn}) {
-            btn.setBackground(BG_PANEL);
-            btn.setForeground(NEON_RED);
-            btn.setFocusPainted(false);
-            btn.setFont(MONO_BOLD);
-            btn.setBorder(BorderFactory.createCompoundBorder(
-                    new CyberTheme.GlowLineBorder(NEON_RED, 1),
-                    BorderFactory.createEmptyBorder(2, 8, 2, 8)));
-        }
-
-        // ── Mutual exclusion lock logic ───────────────────────────────────
-        // Collect all include/exclude interactive components for enable/disable toggling
-        JComponent[] includeControls = {includeInput, includeAddBtn, includeRemoveBtn, includeList};
-        JComponent[] excludeControls = {excludeInput, excludeAddBtn, excludeRemoveBtn, excludeList};
-        JLabel includeLockLabel = new JLabel("");
-        JLabel excludeLockLabel = new JLabel("");
-        includeLockLabel.setForeground(FG_DIM);
-        includeLockLabel.setFont(MONO_SMALL);
-        excludeLockLabel.setForeground(FG_DIM);
-        excludeLockLabel.setFont(MONO_SMALL);
-
-        // This runnable checks both models and locks/unlocks the opposite side.
-        // Called after every add/remove/clear action on either list.
-        Runnable updateLockState = () -> {
-            boolean includeHasEntries = !includeListModel.isEmpty();
-            boolean excludeHasEntries = !excludeListModel.isEmpty();
-
-            // Lock exclude side if include has entries
-            for (JComponent c : excludeControls) c.setEnabled(!includeHasEntries);
-            excludeClearBtn.setEnabled(!includeHasEntries || excludeHasEntries);
-            excludeLockLabel.setText(includeHasEntries ? "(locked — clear Include first)" : "");
-
-            // Lock include side if exclude has entries
-            for (JComponent c : includeControls) c.setEnabled(!excludeHasEntries);
-            includeClearBtn.setEnabled(!excludeHasEntries || includeHasEntries);
-            includeLockLabel.setText(excludeHasEntries ? "(locked — clear Exclude first)" : "");
-        };
-
-        // ── Include actions ───────────────────────────────────────────────
-        Runnable includeAddAction = () -> {
-            String text = includeInput.getText().trim();
-            if (!text.isEmpty() && !includeListModel.contains(text)) {
-                includeListModel.addElement(text);
-                includeInput.setText("");
-                syncListToScope(includeListModel, true);
-                updateLockState.run();
-            }
-        };
-        includeAddBtn.addActionListener(e -> includeAddAction.run());
-        includeInput.addActionListener(e -> includeAddAction.run());
-
-        includeRemoveBtn.addActionListener(e -> {
-            int idx = includeList.getSelectedIndex();
-            if (idx >= 0) {
-                includeListModel.remove(idx);
-                syncListToScope(includeListModel, true);
-                updateLockState.run();
-            }
-        });
-
-        includeClearBtn.addActionListener(e -> {
-            includeListModel.clear();
-            syncListToScope(includeListModel, true);
-            updateLockState.run();
-        });
-
-        // ── Exclude actions ───────────────────────────────────────────────
-        Runnable excludeAddAction = () -> {
-            String text = excludeInput.getText().trim();
-            if (!text.isEmpty() && !excludeListModel.contains(text)) {
-                excludeListModel.addElement(text);
-                excludeInput.setText("");
-                syncListToScope(excludeListModel, false);
-                updateLockState.run();
-            }
-        };
-        excludeAddBtn.addActionListener(e -> excludeAddAction.run());
-        excludeInput.addActionListener(e -> excludeAddAction.run());
-
-        excludeRemoveBtn.addActionListener(e -> {
-            int idx = excludeList.getSelectedIndex();
-            if (idx >= 0) {
-                excludeListModel.remove(idx);
-                syncListToScope(excludeListModel, false);
-                updateLockState.run();
-            }
-        });
-
-        excludeClearBtn.addActionListener(e -> {
-            excludeListModel.clear();
-            syncListToScope(excludeListModel, false);
-            updateLockState.run();
-        });
-
-        // ── Build Include panel ───────────────────────────────────────────
-        JPanel includePanel = new JPanel(new BorderLayout(4, 4));
-        includePanel.setBackground(BG_DARK);
-        includePanel.setBorder(BorderFactory.createTitledBorder(
-                new CyberTheme.GlowLineBorder(NEON_CYAN, 1),
-                "Include Only (empty = scan all)",
-                javax.swing.border.TitledBorder.LEFT,
-                javax.swing.border.TitledBorder.TOP,
-                MONO_LABEL, NEON_CYAN));
-
-        JPanel includeInputRow = new JPanel(new BorderLayout(4, 0));
-        includeInputRow.setBackground(BG_DARK);
-        includeInputRow.add(includeInput, BorderLayout.CENTER);
-        JPanel includeButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        includeButtons.setBackground(BG_DARK);
-        includeButtons.add(includeAddBtn);
-        includeButtons.add(includeRemoveBtn);
-        includeButtons.add(includeClearBtn);
-        includeButtons.add(includeLockLabel);
-        includeInputRow.add(includeButtons, BorderLayout.EAST);
-
-        includePanel.add(includeInputRow, BorderLayout.NORTH);
-        JScrollPane includeScroll = new JScrollPane(includeList);
-        includeScroll.setPreferredSize(new Dimension(0, 80));
-        includeScroll.setBorder(BorderFactory.createEmptyBorder());
-        includePanel.add(includeScroll, BorderLayout.CENTER);
-
-        includePanel.setToolTipText(
-                "<html>When non-empty, ONLY matching URLs/endpoints are scanned.<br>"
-                        + "<b>Endpoints:</b> /api/v1/users (matched against URL path)<br>"
-                        + "<b>Full URLs:</b> https://target.com/admin (matched against full URL)<br>"
-                        + "Query parameters are ignored.<br>"
-                        + "Cannot be used at the same time as Exclude — clear one to use the other.</html>");
-
-        filterPanel.add(includePanel);
-
-        // ── Build Exclude panel ───────────────────────────────────────────
-        JPanel excludePanel = new JPanel(new BorderLayout(4, 4));
-        excludePanel.setBackground(BG_DARK);
-        excludePanel.setBorder(BorderFactory.createTitledBorder(
-                new CyberTheme.GlowLineBorder(NEON_RED, 1),
-                "Exclude (always skipped)",
-                javax.swing.border.TitledBorder.LEFT,
-                javax.swing.border.TitledBorder.TOP,
-                MONO_LABEL, NEON_RED));
-
-        JPanel excludeInputRow = new JPanel(new BorderLayout(4, 0));
-        excludeInputRow.setBackground(BG_DARK);
-        excludeInputRow.add(excludeInput, BorderLayout.CENTER);
-        JPanel excludeButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        excludeButtons.setBackground(BG_DARK);
-        excludeButtons.add(excludeAddBtn);
-        excludeButtons.add(excludeRemoveBtn);
-        excludeButtons.add(excludeClearBtn);
-        excludeButtons.add(excludeLockLabel);
-        excludeInputRow.add(excludeButtons, BorderLayout.EAST);
-
-        excludePanel.add(excludeInputRow, BorderLayout.NORTH);
-        JScrollPane excludeScroll = new JScrollPane(excludeList);
-        excludeScroll.setPreferredSize(new Dimension(0, 80));
-        excludeScroll.setBorder(BorderFactory.createEmptyBorder());
-        excludePanel.add(excludeScroll, BorderLayout.CENTER);
-
-        excludePanel.setToolTipText(
-                "<html>URLs/endpoints matching any entry are completely skipped.<br>"
-                        + "Query parameters are ignored.<br>"
-                        + "Cannot be used at the same time as Include — clear one to use the other.</html>");
-
-        filterPanel.add(excludePanel);
-        topContainer.add(filterPanel);
-
-        // --- Row 2: Buttons, Status, Thread Status, Collaborator, Progress Bar ---
+        // --- Row 2: Stop Scans, Time-Based Testing, Thread Status, OOB Status ---
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
         row2.setBackground(BG_DARK);
 
-        startStopBtn = new JToggleButton("Start Auto-Scan");
-        startStopBtn.setBackground(BG_PANEL);
-        startStopBtn.setForeground(NEON_GREEN);
-        startStopBtn.setFocusPainted(false);
-        startStopBtn.setFont(MONO_BOLD);
-        startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
-                BorderFactory.createEmptyBorder(4, 12, 4, 12)));
-        startStopBtn.setToolTipText("Start or stop automated scanning of all in-scope proxied traffic");
-        startStopBtn.addActionListener(e -> toggleScanning());
-        row2.add(startStopBtn);
-
-        JButton stopScansBtn = new JButton("Stop Manual Scans");
+        JButton stopScansBtn = new JButton("Stop Scans");
         stopScansBtn.setBackground(BG_PANEL);
         stopScansBtn.setForeground(NEON_RED);
         stopScansBtn.setFocusPainted(false);
@@ -576,8 +314,6 @@ public class MainPanel extends JPanel {
             } else {
                 logPanel.log("INFO", "Framework", "No scans running.");
             }
-            MainPanel.this.progressBar.setIndeterminate(false);
-            MainPanel.this.progressBar.setVisible(false);
         });
         row2.add(stopScansBtn);
 
@@ -598,11 +334,6 @@ public class MainPanel extends JPanel {
         });
         row2.add(timeBasedCheckbox);
 
-        statusLabel = new JLabel("Stopped");
-        statusLabel.setForeground(NEON_RED);
-        statusLabel.setFont(MONO_BOLD);
-        row2.add(statusLabel);
-
         threadStatusLabel = new JLabel("Threads: 0 active | Queue: 0");
         threadStatusLabel.setForeground(FG_SECONDARY);
         threadStatusLabel.setFont(MONO_SMALL);
@@ -613,14 +344,6 @@ public class MainPanel extends JPanel {
         oobStatusLabel.setForeground(FG_DIM);
         oobStatusLabel.setFont(MONO_SMALL);
         row2.add(oobStatusLabel);
-
-        // Progress bar (visible only while scanning)
-        progressBar = new JProgressBar();
-        styleProgressBar(progressBar);
-        progressBar.setPreferredSize(new Dimension(150, 16));
-        progressBar.setStringPainted(false);
-        progressBar.setVisible(false);
-        row2.add(progressBar);
 
         topContainer.add(row2);
 
@@ -827,7 +550,10 @@ public class MainPanel extends JPanel {
         cardLayout = new CardLayout();
         moduleDetailContainer = new JPanel(cardLayout);
 
-        // Create a panel for each module
+        // Create a detail panel only for modules reachable from the sidebar:
+        // AI, passive analyzers, and the framework-backed modules below. Pure active
+        // scanners are right-click only and have no sidebar entry, so they need no panel.
+        java.util.Set<String> activeFrameworkBacked = java.util.Set.of("deser-scanner", "graphql-tool");
         for (ScanModule module : registry.getAllModules()) {
             JPanel panel;
             if ("ai-vuln-analyzer".equals(module.getId()) && module instanceof AiVulnAnalyzer aiModule) {
@@ -838,6 +564,8 @@ public class MainPanel extends JPanel {
             } else if ("wordlist-generator".equals(module.getId()) && module instanceof WordlistGenerator wlModule) {
                 wordlistPanel = new WordlistGeneratorPanel(wlModule);
                 panel = wordlistPanel;
+            } else if (!module.isPassive() && !activeFrameworkBacked.contains(module.getId())) {
+                continue; // active scanner — right-click only, not shown in sidebar
             } else {
                 panel = new GenericModulePanel(module.getId(), module.getName(), findingsStore, api);
             }
@@ -853,6 +581,11 @@ public class MainPanel extends JPanel {
             moduleListPanel.addFrameworkEntry("stepper", "Stepper",
                     "Prerequisite Request Chain");
         }
+
+        // Register Deserialization as a framework tool — it generates deserialization
+        // payloads (active scanning of requests is still available via right-click).
+        moduleListPanel.addFrameworkEntry("deser-scanner", "Deserialization Generator",
+                "Generate Deserialization Payloads");
 
         // Register GraphQL Tool as a framework tool
         moduleListPanel.addFrameworkEntry("graphql-tool", "GraphQL Tool",
@@ -1335,6 +1068,8 @@ public class MainPanel extends JPanel {
             if (value >= 1 && value <= 100) {
                 threadField.setBorder(defaultThreadFieldBorder);
                 threadField.setToolTipText("Number of concurrent scan threads (1-100). Higher values increase speed but also load.");
+                // Apply immediately — right-click scans use this pool (no Start button anymore).
+                executor.resize(value);
             } else {
                 threadField.setBorder(new CyberTheme.GlowLineBorder(NEON_RED, 2));
                 threadField.setToolTipText("Invalid: thread count must be between 1 and 100");
@@ -1353,95 +1088,7 @@ public class MainPanel extends JPanel {
             int active = executor.getActiveCount();
             int queue = executor.getQueueSize();
             threadStatusLabel.setText("Threads: " + active + " active | Queue: " + queue);
-
-            // Show progress bar when there are active threads, hide when idle
-            if (active > 0) {
-                if (!progressBar.isVisible()) {
-                    progressBar.setIndeterminate(true);
-                    progressBar.setVisible(true);
-                }
-            } else if (!startStopBtn.isSelected()) {
-                progressBar.setIndeterminate(false);
-                progressBar.setVisible(false);
-            }
         });
-    }
-
-    /**
-     * Sync a JList model (include or exclude) to ScopeManager.
-     * Joins all entries with commas and calls the appropriate setter.
-     */
-    private void syncListToScope(DefaultListModel<String> model, boolean isInclude) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < model.size(); i++) {
-            if (i > 0) sb.append(',');
-            sb.append(model.get(i));
-        }
-        if (isInclude) {
-            scopeManager.setIncludedPaths(sb.toString());
-        } else {
-            scopeManager.setExcludedPaths(sb.toString());
-        }
-    }
-
-    private void toggleScanning() {
-        if (startStopBtn.isSelected()) {
-            // Start scanning
-            String scope = scopeField.getText().trim();
-            if (scope.isEmpty()) {
-                JOptionPane.showMessageDialog(this, "Please configure target scope first.");
-                startStopBtn.setSelected(false);
-                return;
-            }
-
-            scopeManager.setTargetDomains(scope);
-
-            try {
-                int threads = Integer.parseInt(threadField.getText().trim());
-                if (threads < 1 || threads > 100) {
-                    JOptionPane.showMessageDialog(this, "Thread count must be between 1 and 100.");
-                    startStopBtn.setSelected(false);
-                    return;
-                }
-                executor.resize(threads);
-            } catch (NumberFormatException ex) {
-                JOptionPane.showMessageDialog(this, "Invalid thread count. Please enter a number between 1 and 100.");
-                startStopBtn.setSelected(false);
-                return;
-            }
-
-            interceptor.setRunning(true);
-            startStopBtn.setText("Stop Auto-Scan");
-            startStopBtn.setBackground(BG_PANEL);
-            startStopBtn.setForeground(NEON_RED);
-            startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                    new CyberTheme.GlowLineBorder(NEON_RED, 1),
-                    BorderFactory.createEmptyBorder(4, 12, 4, 12)));
-            statusLabel.setText("Running");
-            statusLabel.setForeground(NEON_GREEN);
-            progressBar.setIndeterminate(true);
-            progressBar.setVisible(true);
-
-            logPanel.log("INFO", "Framework", "Scanner started. Scope: " + scope
-                    + " | Threads: " + executor.getThreadPoolSize());
-
-        } else {
-            // Stop scanning
-            interceptor.setRunning(false);
-            executor.cancelAll();
-            startStopBtn.setText("Start Auto-Scan");
-            startStopBtn.setBackground(BG_PANEL);
-            startStopBtn.setForeground(NEON_GREEN);
-            startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                    new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
-                    BorderFactory.createEmptyBorder(4, 12, 4, 12)));
-            statusLabel.setText("Stopped");
-            statusLabel.setForeground(NEON_RED);
-            progressBar.setIndeterminate(false);
-            progressBar.setVisible(false);
-
-            logPanel.log("INFO", "Framework", "Scanner stopped.");
-        }
     }
 
     private void showModulePanel(String moduleId) {
@@ -1527,29 +1174,6 @@ public class MainPanel extends JPanel {
 
             // Re-style entire OmniStrike component tree with new CyberTheme colors
             CyberTheme.applyRecursive(this);
-
-            // Fix start/stop button colors based on current state
-            if (startStopBtn.isSelected()) {
-                startStopBtn.setBackground(BG_PANEL);
-                startStopBtn.setForeground(NEON_RED);
-                startStopBtn.setFont(MONO_BOLD);
-                startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                        new CyberTheme.GlowLineBorder(NEON_RED, 1),
-                        BorderFactory.createEmptyBorder(4, 12, 4, 12)));
-                statusLabel.setText("Running");
-                statusLabel.setForeground(NEON_GREEN);
-                statusLabel.setFont(MONO_BOLD);
-            } else {
-                startStopBtn.setBackground(BG_PANEL);
-                startStopBtn.setForeground(NEON_GREEN);
-                startStopBtn.setFont(MONO_BOLD);
-                startStopBtn.setBorder(BorderFactory.createCompoundBorder(
-                        new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
-                        BorderFactory.createEmptyBorder(4, 12, 4, 12)));
-                statusLabel.setText("Stopped");
-                statusLabel.setForeground(NEON_RED);
-                statusLabel.setFont(MONO_BOLD);
-            }
 
             // Re-style severity badges with new palette colors
             restyleSeverityBadge(critLabel, SEV_CRITICAL);

@@ -1,13 +1,13 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.69-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.74-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
 **The last Burp extension you'll ever install.**
 
-17 active scanners. 7 passive analyzers. 11 auto-triggered technology scanners. SQL exploitation engine. AI-powered fuzzing.<br/>
-Technology profiling. Session automation. Custom OOB server. File payload generator. Zero false positives.<br/>
+12 active injection scanners. 7 passive analyzers. 11 auto-triggered technology scanners. AI-powered fuzzing.<br/>
+Technology profiling. Session automation. Custom OOB server. File & deserialization payload generators. Zero false positives.<br/>
 **One JAR. One click. Everything.**
 
 <br/>
@@ -21,7 +21,7 @@ Technology profiling. Session automation. Custom OOB server. File payload genera
 
 <br/>
 
-[**Download JAR**](https://github.com/worldtreeboy/OmniStrike/releases/latest)&ensp;&ensp;|&ensp;&ensp;[Quick Start](#-quick-start)&ensp;&ensp;|&ensp;&ensp;[Modules](#-what-it-scans)&ensp;&ensp;|&ensp;&ensp;[OmniMap](#-omnimap--sql-exploitation-engine)&ensp;&ensp;|&ensp;&ensp;[Build](#-build-from-source)
+[**Download JAR**](https://github.com/worldtreeboy/OmniStrike/releases/latest)&ensp;&ensp;|&ensp;&ensp;[Quick Start](#-quick-start)&ensp;&ensp;|&ensp;&ensp;[Modules](#-what-it-scans)&ensp;&ensp;|&ensp;&ensp;[Build](#-build-from-source)
 
 </div>
 
@@ -43,7 +43,9 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 
 ## What It Scans
 
-### 14 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
+### 12 Active Injection Scanners + 11 Auto-Triggered Technology Scanners
+
+> **Active scanners run on demand only.** As of v1.74 there is no auto-scan / target-scope mode — right-click any request → **Send to OmniStrike** and pick exactly which parameters and modules to test. See [Scanning Workflow](#-scanning-workflow).
 
 | Scanner | What It Does |
 |:--------|:-------------|
@@ -51,9 +53,7 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 | **Command Injection** | 3-step time verification, structural regex output matching, 140 payloads/param (Unix + Windows), `$IFS`/backtick/encoding bypasses. **Node.js SSJI** (JSON params): arithmetic math probe (`(A*B).toString()` with word-boundary FP guard), `execSync` OOB/output-based/time-based across 5 context-breaker prefixes, `global.process.mainModule.require` WAF bypass, IIFE obfuscation variant — 29 payloads total. |
 | **SSRF** | Collaborator OOB, DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads (file/gopher/dict/ftp/ldap/tftp). |
 | **SSTI** | 20 template engines, large-number canaries, template syntax consumption verification, 32 OOB payloads. |
-| **XSS** | *(Removed in v1.63 — use Burp's built-in scanner for XSS)* |
 | **XXE** | 4-phase: XML body + XInclude + JSON-to-XML + Content-Type forcing. UTF-16 bypass, SAML detection, 14 OOB payloads. |
-| **Deserialization** | 6 languages, 137+ gadget chains (Java/PHP/.NET/Python/Ruby/Node.js). Jackson Tier 2 gadgets with PTV bypass probes. Passive fingerprinting + OOB-first detection. |
 | **Path Traversal** | 24 Unix + 9 Windows targets, 26 encoding bypasses, PHP wrappers, structural content validation with multi-marker confirmation. |
 | **GraphQL** | 7-phase: introspection (4 bypasses), schema analysis, injection testing, IDOR, DoS config, HTTP-level, error disclosure. |
 | **CORS** | Reflected origin, null trust, subdomain trust, scheme downgrade, wildcard+credentials, preflight bypass. |
@@ -61,11 +61,10 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 | **Host Header** | Password reset poisoning via Collaborator, routing SSRF, duplicate Host, override headers. |
 | **HTTP Param Pollution** | Duplicate param precedence, privilege escalation patterns, WAF bypass via splitting. |
 | **Prototype Pollution** | Server-side `__proto__`/`constructor.prototype` with canary persistence verification, behavioral gadgets. |
-| **LDAP Injection** | 4-phase: error-based (2+ signature requirement), boolean differential (2-round), auth bypass (multi-signal), wildcard amplification. Zero FP design. |
-| **WebSocket** | *(Removed in v1.63)* |
-| **Bypass URL Parser** | *(Removed in v1.70)* |
-| **CSRF Manipulator** | *(Removed in v1.70)* |
-| **OmniMap** | *(Removed in v1.70)* |
+
+> **Deserialization** is still a full active scanner (6 languages, 137+ gadget chains) but its UI now lives under **Framework Tools** as a payload generator — see below. Scan a request with it via right-click like any other module.
+>
+> Removed over time: XSS & WebSocket (v1.63), Bypass URL Parser / CSRF Manipulator / OmniMap (v1.70), LDAP Injection (v1.73). Use Burp's built-in scanner where noted.
 
 ### 11 Auto-Triggered Technology Scanners
 
@@ -97,14 +96,15 @@ These scanners **cannot be manually triggered**. They passively detect specific 
 | **Sensitive Data** | Credit cards (Luhn), SSNs (range-validated), emails, phones, internal IPs, JWTs, DB connection strings, AWS ARNs, crypto addresses, IBANs. All values redacted. |
 | **Error Disclosure** | Java stack traces + reflection errors (ClassNotFoundException, NoSuchMethodException, InvocationTargetException) + native serialization (InvalidClassException, StreamCorruptedException) + JAXB. Jackson deserialization errors: 12 exception types, 13 error messages, and polymorphic type-id errors (flags DefaultTyping/@JsonTypeInfo — Jackson gadget-chain attack surface, CVE-2017-7525 family). Spring Whitelabel, Python tracebacks, Django debug, Werkzeug debugger, PHP errors, Laravel Whoops, ASP.NET yellow pages, Node.js/Go/Ruby stack frames, database driver exceptions (ORA-, SQLSTATE, PSQLException, Hibernate, Sequelize, Sybase, Informix, Firebird, CockroachDB). One finding per host/path/category. Skips all 4xx. |
 
-### 4 Framework Tools
+### 5 Framework Tools
 
 | Tool | What It Does |
 |:-----|:-------------|
 | **AI Vulnerability Analyzer** | LLM-powered security analysis with smart fuzzing, WAF bypass generation, and adaptive multi-round scanning. Supports Claude Code, Gemini CLI, Codex CLI, OpenCode CLI. No API keys needed. Disabled by default. |
+| **Deserialization Generator** | Generates deserialization payloads (Java/PHP/.NET/Python/Ruby/Node.js, 137+ gadget chains) for copy-paste / upload testing. The same module also runs as an active scanner via right-click. |
 | **File Payload Generator** | 39 file payloads (PDF XSS, SVG XXE, DOCX/XLSX XXE, PHP/JSP/ASPX/Python/Ruby/Perl/Node.js/Bash/PowerShell POC, 11 template engine injections, .htaccess/.user.ini/web.config hijack, CSV injection, LaTeX RCE, polyglot GIF/JS, EICAR) + 31 inline copy-paste payloads (SSTI probes for 8 engines, XXE, Log4j, EL/SpEL, OGNL, LFI/RFI, CRLF, polyglot). Collaborator URL support. |
 | **Wordlist Generator** | Passive word harvester from proxied traffic. Builds domain-specific wordlists for fuzzing/brute-forcing. |
-| **TLS Analyzer** | Out-of-band TLS / SSL inspection. Probes each protocol version individually (TLSv1.3 → SSLv3) so you see the full support matrix instead of just whichever version Burp happened to negotiate. Optional cipher-suite enumeration, certificate-chain inspection (subject/issuer/SANs/expiry/signature/key size), self-signed/expired/weak-signature detection, hostname-mismatch detection. Findings publish into the Dashboard. Right-click any HTTPS request → **Analyze TLS** to auto-fill host:port and run. |
+| **TLS Analyzer** | Out-of-band TLS / SSL inspection. Probes each protocol version individually (TLSv1.3 → SSLv3) so you see the full support matrix instead of just whichever version Burp happened to negotiate. Optional cipher-suite enumeration, certificate-chain inspection (subject/issuer/SANs/expiry/signature/key size), self-signed/expired/weak-signature detection, hostname-mismatch detection. Findings publish into the Dashboard. Enter a host:port in the TLS Analyzer panel and run. |
 
 ---
 
@@ -113,12 +113,42 @@ These scanners **cannot be manually triggered**. They passively detect specific 
 ```
 1.  Download omnistrike.jar from Releases (or build from source)
 2.  Burp Suite  -->  Extensions  -->  Add  -->  Java  -->  select omnistrike.jar
-3.  Enter target domain in "Target Scope"
-4.  Click "Start Auto-Scan" and browse normally
-5.  Or right-click any request  -->  "Send to OmniStrike"
+3.  Browse the target so requests land in Proxy / HTTP history
+4.  Right-click any request  -->  "Send to OmniStrike (All Modules)"
+5.  Tick the parameters and modules to test  -->  Scan
 ```
 
 That's it. OmniStrike handles the rest.
+
+---
+
+## Scanning Workflow
+
+OmniStrike is **right-click driven**. There is no auto-scan loop and no target-scope field — you scan exactly what you choose, when you choose it. Nothing is sent to a target until you ask for it.
+
+### Send to OmniStrike (All Modules)
+
+Right-click any request → **Send to OmniStrike (All Modules)** opens a picker dialog with two tick-lists:
+
+- **Parameters** — every scannable target found in the request: query / body / cookie / JSON params, parameters embedded in `Referer`/`Origin`, injectable headers, and URL path segments.
+- **Modules** — the active scanners and passive analyzers to run.
+
+Everything is ticked by default. Untick what you don't want and hit **Scan**. Each selected active scanner runs once per ticked parameter (true per-parameter targeting for modules that support it); passive analyzers run once over the whole request. Static resources (`.js`, `.css`, images) skip active injection automatically.
+
+### Other right-click entry points
+
+| Menu item | Action |
+|:----------|:-------|
+| **Send to OmniStrike (All Modules)** | Opens the parameter + module picker dialog (above). |
+| **Send to OmniStrike ▸** | Per-module submenu — run a single scanner (Normal or AI) on the whole request. |
+| **Set as Session Login Request** | Saves this request for Session Keep-Alive replay (see below). |
+| **Send to Stepper** | Adds the request as a prerequisite step (when Stepper is enabled). |
+
+Manual scans **bypass the deduplication cache**, so re-scanning a request you've already tested actually re-runs — no more silent "nothing happened." Use **Stop Scans** in the OmniStrike tab to halt everything immediately.
+
+### Session Keep-Alive
+
+Long scans die when the session expires. Right-click your login/refresh request → **Set as Session Login Request**, then tick **Session Keep-Alive** in the OmniStrike tab. OmniStrike periodically replays that request, captures the fresh `Set-Cookie` values (following redirects), and injects them — domain-scoped — into **all** outbound traffic: Burp's own tools (Proxy/Repeater/Intruder/Scanner) *and* OmniStrike's own scan modules. Your session stays alive for the whole engagement.
 
 ---
 
@@ -298,14 +328,16 @@ All modules use it transparently through the same `CollaboratorManager` API -- s
 
 ---
 
-## Scope Control
+## Scan Tuning
 
-| Feature | Description |
+Scanning is right-click only (no target scope, no auto-scan loop), so the OmniStrike tab keeps just the controls that shape a manual scan:
+
+| Control | Description |
 |:--------|:------------|
-| **Target Scope** | Comma-separated domains. Only in-scope traffic is processed. |
-| **Include / Exclude Lists** | Add specific URLs or endpoints. Mutual exclusion -- only one list active at a time. Supports both `/api/v1/users` paths and full `https://target.com/admin` URLs. Query params ignored. |
-| **Static Resource Skip** | Active scanners skip `.js`, `.css`, `.png`, etc. Passive analyzers still run. |
-| **Throttle Modes** | None (fastest), Auto (backs off on WAF), Manual (fixed ms delay). |
+| **Threads** | Size of the shared scan thread pool (1-100). Applied immediately. |
+| **Throttle Modes** | None (fastest), Auto (backs off on WAF/rate-limit), Manual (fixed ms delay). |
+| **Time-Based Testing** | Off by default. Gates all slow time-blind tests (SQLi `SLEEP`, CmdI sleep/ping). |
+| **Static Resource Skip** | Active injection auto-skips `.js`, `.css`, `.png`, etc. Passive analyzers still run. |
 
 ---
 
@@ -340,6 +372,19 @@ Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chai
 ---
 
 ## Changelog
+
+### v1.74
+- **Right-click-only scanning** — removed the auto-scan workflow entirely: no more **Target Scope** field, **Include / Exclude** lists, or **Start Auto-Scan** button. Nothing is sent to a target until you right-click → **Send to OmniStrike**. The top bar is trimmed to the controls that actually matter for manual scans (Threads, Throttle, Time-Based Testing).
+- **Parameter + module picker dialog** — **Send to OmniStrike (All Modules)** now opens a dialog with tick-lists for every scannable parameter (query/body/cookie/JSON, `Referer`/`Origin`-embedded params, injectable headers, URL path segments) and every module. Each active scanner runs once per ticked parameter (reflection check skips redundant whole-request re-runs for modules without per-parameter targeting); passive analyzers run once. Replaces the old "Scan Parameter" / "Scan This Parameter" submenus.
+- **Manual scans bypass dedup** — a right-click scan now re-tests targets even if automatic scanning already covered them, via a thread-local bypass in `DeduplicationStore`. Fixes "Scan Parameter does nothing."
+- **Session Keep-Alive fixes** — fresh cookies are now injected into **all** outbound traffic, including OmniStrike's own scan modules (which bypass Burp's `HttpHandler` via `api.http().sendRequest()`); injection runs after Stepper so the two don't interfere, and a thread-local guard keeps the login replay itself untouched. Also fixed a wiring-order bug where the keep-alive object was handed to the interceptor as `null`, so cookie injection never ran at all.
+- **Sidebar cleanup** — active scanners are no longer listed in the sidebar (they're right-click only). The sidebar now shows AI Analysis, Passive Analyzers, and Framework Tools.
+- **Deserialization → Framework Tools** — its UI panel (payload generator) moved under Framework Tools. It still runs as an active scanner via right-click.
+- **Removed menu items** — **Send to OmniStrike (Custom)** and the **Analyze TLS** right-click item (TLS analysis lives in the TLS Analyzer panel). Deleted the now-dead `ScanConfigDialog` and the unreachable per-module detail panels for active scanners.
+
+### v1.73
+- **LDAP Injection scanner removed** — net false-positive risk outweighed its value; use Burp's built-in checks / manual testing.
+- **Anti-reflection guard** added to Command Injection and Path Traversal — payloads that are simply echoed back in the response no longer count as evidence, cutting reflected-input false positives.
 
 ### v1.72
 - **Stepper — Per-Request Mode** — new concurrency model for single-use tokens. Each matched outgoing request gets its own fresh `ChainContext` and runs the chain in parallel on its own thread (no global lock, no cache). Required when prereqs produce nonces the target burns per request.
