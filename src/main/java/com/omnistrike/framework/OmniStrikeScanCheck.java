@@ -179,23 +179,21 @@ public class OmniStrikeScanCheck implements ScanCheck {
 
     /**
      * Drains all deferred findings from the queue and converts them to AuditIssues.
-     * Each deferred finding uses its OWN request/response evidence — we never substitute
-     * an unrelated request/response, as that would attribute findings to the wrong URL.
-     * Findings without their own request/response are skipped (they'll be visible in
-     * the OmniStrike findings panel even if they can't appear in Burp's Dashboard).
+     * Each deferred finding uses its OWN request/response evidence; if it has none,
+     * {@link #toAuditIssue} synthesizes a minimal request from the finding's URL so
+     * the issue still reaches the Dashboard (we never substitute an unrelated real
+     * request/response, which would attribute the finding to the wrong URL).
      */
     private List<AuditIssue> drainDeferredFindings() {
         List<AuditIssue> issues = new ArrayList<>();
         Finding deferred;
         while ((deferred = deferredFindings.poll()) != null) {
-            if (deferred.getRequestResponse() == null) {
-                api.logging().logToOutput("[OmniStrikeScanCheck] Skipping deferred finding without "
-                        + "request/response evidence: " + deferred.getTitle());
-                continue;
-            }
             AuditIssue issue = toAuditIssue(deferred, deferred.getRequestResponse());
             if (issue != null) {
                 issues.add(issue);
+            } else {
+                api.logging().logToOutput("[OmniStrikeScanCheck] Could not render deferred finding "
+                        + "(no request and no URL): " + deferred.getTitle());
             }
         }
         return issues;
@@ -231,6 +229,11 @@ public class OmniStrikeScanCheck implements ScanCheck {
         try {
             HttpRequestResponse rr = f.getRequestResponse() != null
                     ? f.getRequestResponse() : fallbackReqResp;
+            // Last resort: synthesize a request from the finding's URL so even
+            // findings with no HTTP exchange (e.g. TLS checks) still render.
+            if (rr == null || rr.request() == null) {
+                rr = SyntheticRequest.fromUrl(f.getUrl());
+            }
             if (rr == null || rr.request() == null) return null;
 
             // Apply highlighting markers (payload in request, evidence in response)

@@ -42,10 +42,20 @@ public class DashboardReporter implements FindingsStore.FindingsListener {
         try {
             HttpRequestResponse reqResp = finding.getRequestResponse();
 
-            // Must have a request/response — Burp's Dashboard needs it to display the issue
+            // Burp's Dashboard needs a request to anchor the issue. Findings that
+            // carry no real HTTP exchange (out-of-band TLS checks, some async
+            // findings) get a minimal synthetic request built from their URL so
+            // they STILL appear in the Dashboard instead of being dropped.
             if (reqResp == null || reqResp.request() == null) {
-                api.logging().logToOutput("[DashboardReporter] Skipping (no request data): " + finding.getTitle());
-                return;
+                reqResp = SyntheticRequest.fromUrl(finding.getUrl());
+                if (reqResp == null) {
+                    api.logging().logToOutput("[DashboardReporter] Skipping (no request data and no URL): "
+                            + finding.getTitle());
+                    return;
+                }
+                // Attach the synthetic exchange so the deferred-queue bridge
+                // (OmniStrikeScanCheck) also has evidence to render.
+                finding = finding.withRequestResponse(reqResp);
             }
 
             // Extract base URL from the request's HTTP service
