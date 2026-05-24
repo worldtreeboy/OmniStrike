@@ -1,13 +1,13 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.74-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.75-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
 **The last Burp extension you'll ever install.**
 
 12 active injection scanners. 7 passive analyzers. 11 auto-triggered technology scanners. AI-powered fuzzing.<br/>
-Technology profiling. Session automation. Custom OOB server. File & deserialization payload generators. Zero false positives.<br/>
+Technology profiling. Session automation. Custom OOB server. File & deserialization payload generators.<br/>
 **One JAR. One click. Everything.**
 
 <br/>
@@ -68,7 +68,9 @@ Extensions tab  -->  Add  -->  Java  -->  omnistrike.jar  -->  Done.
 
 ### 11 Auto-Triggered Technology Scanners
 
-These scanners **cannot be manually triggered**. They passively detect specific technologies in responses and automatically launch targeted attacks when confirmed. Zero noise on non-target systems. Each scanner's detection gate uses only technology-exclusive patterns — no generic error strings.
+These scanners have **no individual right-click entry and no enable/disable switch** — they ride along with every right-click scan (**Send to OmniStrike ▸ All Modules**). When you scan a request, each one inspects the response for its target technology and **only fires if that technology is confirmed**; on every other system it silently no-ops. Zero noise on non-target systems. Each scanner's detection gate uses only technology-exclusive patterns — no generic error strings.
+
+> Like every active scanner, these run **only when you scan a request** — never automatically against background proxy traffic. Browsing a target triggers the passive analyzers below (which send nothing), not these.
 
 | Scanner | Trigger | Attack |
 |:--------|:--------|:-------|
@@ -85,6 +87,8 @@ These scanners **cannot be manually triggered**. They passively detect specific 
 | **WordPress REST API** | *(Coming soon)* | User enumeration, exposed drafts, plugin enumeration. |
 
 ### 6 Passive Analyzers
+
+> **Passive analyzers run automatically.** As you browse, every proxied response whose host is in **Burp's Target → Scope** is analyzed — no right-click needed. (Add your target to Burp's scope so they don't run on every third-party domain.) They only read responses and **never send a request of their own**, so they're safe to leave on. They also run on demand when included in a right-click scan.
 
 | Analyzer | What It Finds |
 |:---------|:--------------|
@@ -113,8 +117,8 @@ These scanners **cannot be manually triggered**. They passively detect specific 
 ```
 1.  Download omnistrike.jar from Releases (or build from source)
 2.  Burp Suite  -->  Extensions  -->  Add  -->  Java  -->  select omnistrike.jar
-3.  Browse the target so requests land in Proxy / HTTP history
-4.  Right-click any request  -->  "Send to OmniStrike (All Modules)"
+3.  Browse the target — passive analyzers run automatically on in-scope traffic
+4.  Right-click any request  -->  "Send to OmniStrike (All Modules)"  (active scanning)
 5.  Tick the parameters and modules to test  -->  Scan
 ```
 
@@ -124,7 +128,7 @@ That's it. OmniStrike handles the rest.
 
 ## Scanning Workflow
 
-OmniStrike is **right-click driven**. There is no auto-scan loop and no target-scope field — you scan exactly what you choose, when you choose it. Nothing is sent to a target until you ask for it.
+**Active scanning** is **right-click driven**. There is no active auto-scan loop and no target-scope field — you scan exactly what you choose, when you choose it. **No request is ever sent to a target until you ask for it.** (Passive analyzers run automatically on in-scope proxy traffic, but they only read responses Burp already received — they send nothing. See [Passive Analyzers](#6-passive-analyzers).)
 
 ### Send to OmniStrike (All Modules)
 
@@ -149,22 +153,6 @@ Manual scans **bypass the deduplication cache**, so re-scanning a request you've
 ### Session Keep-Alive
 
 Long scans die when the session expires. Right-click your login/refresh request → **Set as Session Login Request**, then tick **Session Keep-Alive** in the OmniStrike tab. OmniStrike periodically replays that request, captures the fresh `Set-Cookie` values (following redirects), and injects them — domain-scoped — into **all** outbound traffic: Burp's own tools (Proxy/Repeater/Intruder/Scanner) *and* OmniStrike's own scan modules. Your session stays alive for the whole engagement.
-
----
-
-## Zero False Positives
-
-This is the design principle behind every detection method in OmniStrike. We'd rather miss a real bug than report a fake one.
-
-**How it works:**
-
-| Layer | Method |
-|:------|:-------|
-| **OOB-First** | Collaborator/Custom OOB payloads fire before everything else. HTTP callback = CERTAIN. DNS callback = FIRM (continues scanning). |
-| **Multi-Step Verification** | Time-based: 3-step (baseline + true delay + false must NOT delay). Boolean-blind: 2-round with benign variation pre-check. Error-based: requires 2+ DBMS-specific patterns when baseline is empty. |
-| **Structural Evidence** | Path traversal requires multi-marker file signatures (`[fonts]` AND `[extensions]`, not just one). Passwd requires non-null baseline comparison. |
-| **WAF Filtering** | `ResponseGuard` rejects 429, 503, 406, 413, 502, 504, Cloudflare 520-530, and WAF block pages (Cloudflare, Imperva, Sucuri, AWS WAF, ModSecurity) before any module analyzes the response. |
-| **Auto-Throttle** | Detects rate limiting in real-time and backs off automatically (500ms to 15s exponential). Cools down when traffic flows normally. |
 
 ---
 
@@ -372,6 +360,13 @@ Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chai
 ---
 
 ## Changelog
+
+### v1.75
+- **Passive analyzers run automatically again** — every proxied response whose host is in **Burp's Target → Scope** is now analyzed as you browse (no right-click needed). Active scanning stays strictly right-click only — no requests are ever sent to a target on their own. Fixes a dead code path where the proxy pipeline never actually invoked the passive analyzers.
+- **Settings persistence** — thread count, throttle mode/delay, time-based toggle, theme (name/scope/glow), OOB mode + interface + ports, the **Stepper chain** (steps, extraction rules, pinned variables/cookies, flags), the saved **Session Keep-Alive login request** (interval), and the **AI CLI backend choice** (provider + binary) now survive a Burp restart. API keys are never persisted, and AI / keep-alive stay off until you re-enable them.
+- **Leaner JAR** — the Montoya API is no longer bundled (Burp provides it at runtime) and the embedded Gson is relocated, avoiding classpath conflicts with Burp or other extensions. Deserialization gadget libraries are intentionally left un-relocated so payloads keep their real class names.
+- **Performance & correctness** — removed a global lock in the deduplication store that serialized all scanner threads; gated noisy per-request proxy logging behind a debug flag.
+- **Maintainability** — added a unit-test suite for the core dedup / scope / Stepper logic, and extracted the large deserialization payload tables and AI prompt templates into dedicated classes.
 
 ### v1.74
 - **Right-click-only scanning** — removed the auto-scan workflow entirely: no more **Target Scope** field, **Include / Exclude** lists, or **Start Auto-Scan** button. Nothing is sent to a target until you right-click → **Send to OmniStrike**. The top bar is trimmed to the controls that actually matter for manual scans (Threads, Throttle, Time-Based Testing).

@@ -410,6 +410,22 @@ public class AiModulePanel extends JPanel {
             if (sel != null) cliBinaryField.setText(sel.getCliCommand());
         });
 
+        // Restore the saved CLI backend choice. Select the provider first (its
+        // listener resets the binary to the provider default), then override the
+        // binary with the saved value.
+        try {
+            String savedProv = analyzer.getPersistedCliProviderName();
+            if (savedProv != null) {
+                cliProviderCombo.setSelectedItem(LlmProvider.valueOf(savedProv));
+            }
+            String savedBin = analyzer.getPersistedCliBinary();
+            if (savedBin != null && !savedBin.isBlank()) {
+                cliBinaryField.setText(savedBin);
+            }
+        } catch (Exception ignored) {
+            // Unknown saved provider — leave defaults.
+        }
+
         return outer;
     }
 
@@ -1076,6 +1092,7 @@ public class AiModulePanel extends JPanel {
 
         analyzer.getLlmClient().configureCli(selected, binary);
         analyzer.setConnectionMode(AiConnectionMode.CLI);
+        analyzer.persistCliChoice(selected, binary);
         cliTestStatusLabel.setText("Settings applied");
         cliTestStatusLabel.setForeground(NEON_GREEN);
         return true;

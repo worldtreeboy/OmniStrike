@@ -279,6 +279,7 @@ public class StepperPanel extends JPanel {
                 if (sel < steps.size()) {
                     StepperStep step = steps.get(sel);
                     step.setEnabled(!step.isEnabled());
+                    engine.saveState();
                     refreshStepsTable();
                     stepsTable.setRowSelectionInterval(sel, sel);
                 }
@@ -375,6 +376,7 @@ public class StepperPanel extends JPanel {
                 List<StepperStep> steps = engine.getSteps();
                 if (stepIdx < steps.size()) {
                     steps.get(stepIdx).removeExtractionRule(ruleIdx);
+                    engine.saveState();
                     refreshRulesTable();
                 }
             }
@@ -698,6 +700,7 @@ public class StepperPanel extends JPanel {
                             current.httpService(), bytes);
             step.setOriginalRequest(parsed);
             engine.invalidateCache();
+            engine.saveState();
             refreshStepsTable();
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this,
@@ -863,6 +866,7 @@ public class StepperPanel extends JPanel {
             }
 
             steps.get(stepIdx).addExtractionRule(new ExtractionRule(varName, type, pattern));
+            engine.saveState();
             refreshRulesTable();
         }
     }

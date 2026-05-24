@@ -1,10 +1,15 @@
 package com.omnistrike.framework.stepper;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.PersistenceManager;
 import com.omnistrike.framework.ScopeManager;
+
+import java.util.Base64;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -91,29 +96,160 @@ public class StepperEngine {
 
     private volatile BiConsumer<String, String> uiLogger;
 
+    /** Persists the chain across Burp restarts. Null until wired; all ops then no-op. */
+    private volatile PersistenceManager persistence;
+    private static final String STATE_KEY = "stepper.state";
+    /** Suppresses persist() while we're loading state back in (avoids redundant writes). */
+    private volatile boolean loadingState = false;
+
     public StepperEngine(MontoyaApi api, ScopeManager scopeManager) {
         this.api = api;
         this.scopeManager = scopeManager;
     }
 
+    // ── Persistence ────────────────────────────────────────────────────────
+
+    public void setPersistence(PersistenceManager persistence) {
+        this.persistence = persistence;
+    }
+
+    /**
+     * Serializes the current chain (steps + rules + flags + pinned vars/cookies)
+     * to the preferences store. Called after every mutation; safe to call from
+     * any thread. Failure-isolated — a persistence error never breaks Stepper.
+     * Note: the {@code enabled} flag is intentionally persisted so a configured
+     * chain survives a restart, but it only ever fires in response to matching
+     * outgoing traffic the user generates — never spontaneously.
+     */
+    public void saveState() {
+        PersistenceManager pm = persistence;
+        if (pm == null || loadingState) return;
+        try {
+            StepperStepCodec.StepperState state = new StepperStepCodec.StepperState();
+            state.enabled = enabled;
+            state.cookieJarEnabled = cookieJarEnabled;
+            state.stopOnFailure = stopOnFailure;
+            state.perRequestMode = perRequestMode;
+            state.cacheTtlSeconds = cacheTtlSeconds;
+            for (StepperStep step : getSteps()) {
+                StepperStepCodec.StepData sd = new StepperStepCodec.StepData();
+                sd.name = step.getName();
+                sd.enabled = step.isEnabled();
+                HttpRequest req = step.getOriginalRequest();
+                HttpService svc = req.httpService();
+                sd.host = svc.host();
+                sd.port = svc.port();
+                sd.secure = svc.secure();
+                sd.requestB64 = Base64.getEncoder().encodeToString(req.toByteArray().getBytes());
+                for (ExtractionRule rule : step.getExtractionRules()) {
+                    StepperStepCodec.RuleData rd = new StepperStepCodec.RuleData();
+                    rd.name = rule.getVariableName();
+                    rd.type = rule.getType().name();
+                    rd.pattern = rule.getPattern();
+                    sd.rules.add(rd);
+                }
+                state.steps.add(sd);
+            }
+            state.pinnedVariables.putAll(getPinnedVariables());
+            state.pinnedCookies.putAll(pinnedCookies);
+            pm.setString(STATE_KEY, StepperStepCodec.toJson(state));
+        } catch (Exception e) {
+            uiLog("Stepper", "Could not persist state: " + e.getMessage());
+        }
+    }
+
+    /** Internal alias used by mutators. */
+    private void persist() { saveState(); }
+
+    /**
+     * Restores a previously-persisted chain. Call once at startup, before the UI
+     * is built (the Stepper panel reads engine state at construction). Each step
+     * is restored independently so one corrupt entry can't lose the rest.
+     */
+    public void loadPersistedState() {
+        PersistenceManager pm = persistence;
+        if (pm == null) return;
+        String json = pm.getString(STATE_KEY, null);
+        if (json == null || json.isBlank()) return;
+        StepperStepCodec.StepperState state = StepperStepCodec.fromJson(json);
+        loadingState = true;
+        try {
+            this.cookieJarEnabled = state.cookieJarEnabled;
+            this.stopOnFailure = state.stopOnFailure;
+            this.perRequestMode = state.perRequestMode;
+            this.cacheTtlSeconds = Math.max(0, state.cacheTtlSeconds);
+
+            int restored = 0;
+            synchronized (this) {
+                steps.clear();
+                for (StepperStepCodec.StepData sd : state.steps) {
+                    try {
+                        if (sd == null || sd.requestB64 == null || sd.host == null) continue;
+                        byte[] raw = Base64.getDecoder().decode(sd.requestB64);
+                        HttpService svc = HttpService.httpService(sd.host, sd.port, sd.secure);
+                        HttpRequest req = HttpRequest.httpRequest(svc, ByteArray.byteArray(raw));
+                        StepperStep step = new StepperStep(
+                                sd.name != null ? sd.name : "Step", req);
+                        step.setEnabled(sd.enabled);
+                        if (sd.rules != null) {
+                            for (StepperStepCodec.RuleData rd : sd.rules) {
+                                if (rd == null || rd.name == null || rd.type == null) continue;
+                                try {
+                                    step.addExtractionRule(new ExtractionRule(
+                                            rd.name, ExtractionType.valueOf(rd.type), rd.pattern));
+                                } catch (IllegalArgumentException badType) {
+                                    // Unknown extraction type from a newer/older build — skip the rule.
+                                }
+                            }
+                        }
+                        steps.add(step);
+                        restored++;
+                    } catch (Exception perStep) {
+                        // Skip this step; keep going.
+                    }
+                }
+            }
+
+            pinnedVariables.clear();
+            if (state.pinnedVariables != null) {
+                pinnedVariables.putAll(state.pinnedVariables);
+                for (Map.Entry<String, String> e : state.pinnedVariables.entrySet()) {
+                    displayContext.variableStore.set(e.getKey(), e.getValue());
+                }
+            }
+            pinnedCookies.clear();
+            if (state.pinnedCookies != null) {
+                pinnedCookies.putAll(state.pinnedCookies);
+                displayContext.cookieJar.putAll(state.pinnedCookies);
+            }
+
+            // Restore enabled last, after steps exist, so isEnabled() is consistent.
+            this.enabled = state.enabled;
+            uiLog("Stepper", "Restored " + restored + " step(s) from saved configuration.");
+        } finally {
+            loadingState = false;
+        }
+    }
+
     // ── Configuration ────────────────────────────────────────────────────────
 
     public boolean isEnabled() { return enabled; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
+    public void setEnabled(boolean enabled) { this.enabled = enabled; persist(); }
 
     public int getCacheTtlSeconds() { return cacheTtlSeconds; }
-    public void setCacheTtlSeconds(int seconds) { this.cacheTtlSeconds = Math.max(0, seconds); }
+    public void setCacheTtlSeconds(int seconds) { this.cacheTtlSeconds = Math.max(0, seconds); persist(); }
 
     public long getLastChainRunTime() { return displayContext.lastChainRunTime; }
 
     public boolean isStopOnFailure() { return stopOnFailure; }
-    public void setStopOnFailure(boolean stop) { this.stopOnFailure = stop; }
+    public void setStopOnFailure(boolean stop) { this.stopOnFailure = stop; persist(); }
 
     public boolean isPerRequestMode() { return perRequestMode; }
     public void setPerRequestMode(boolean on) {
         this.perRequestMode = on;
         displayContext.lastChainRunTime = 0;
         displayContext.lastChainPrereqCount = -1;
+        persist();
     }
 
     public boolean isPaused() { return paused; }
@@ -131,7 +267,7 @@ public class StepperEngine {
     // ── Cookie Jar ───────────────────────────────────────────────────────────
 
     public boolean isCookieJarEnabled() { return cookieJarEnabled; }
-    public void setCookieJarEnabled(boolean enabled) { this.cookieJarEnabled = enabled; }
+    public void setCookieJarEnabled(boolean enabled) { this.cookieJarEnabled = enabled; persist(); }
 
     public Map<String, String> getCookieJar() {
         return Collections.unmodifiableMap(new LinkedHashMap<>(displayContext.cookieJar));
@@ -141,6 +277,7 @@ public class StepperEngine {
         if (name != null && value != null) {
             pinnedCookies.put(name, value);
             displayContext.cookieJar.put(name, value);
+            persist();
         }
     }
 
@@ -148,12 +285,14 @@ public class StepperEngine {
         if (name != null) {
             pinnedCookies.remove(name);
             displayContext.cookieJar.remove(name);
+            persist();
         }
     }
 
     public void clearCookieJar() {
         pinnedCookies.clear();
         displayContext.cookieJar.clear();
+        persist();
     }
 
     // ── Pinned Variables ─────────────────────────────────────────────────────
@@ -163,6 +302,7 @@ public class StepperEngine {
         if (name != null && value != null) {
             pinnedVariables.put(name, value);
             displayContext.variableStore.set(name, value);
+            persist();
         }
     }
 
@@ -176,12 +316,14 @@ public class StepperEngine {
             for (Map.Entry<String, String> e : pinnedVariables.entrySet()) {
                 displayContext.variableStore.set(e.getKey(), e.getValue());
             }
+            persist();
         }
     }
 
     /** Drop all pinned variables. */
     public void clearPinnedVariables() {
         pinnedVariables.clear();
+        persist();
     }
 
     public Map<String, String> getPinnedVariables() {
@@ -204,12 +346,14 @@ public class StepperEngine {
         steps.add(step);
         uiLog("Stepper", "Added step " + steps.size() + ": " + step.getName()
                 + " (" + step.getUrlSummary() + ")");
+        persist();
     }
 
     public synchronized void removeStep(int index) {
         if (index >= 0 && index < steps.size()) {
             StepperStep removed = steps.remove(index);
             uiLog("Stepper", "Removed step: " + removed.getName());
+            persist();
         }
     }
 
@@ -217,6 +361,7 @@ public class StepperEngine {
         if (index > 0 && index < steps.size()) {
             StepperStep step = steps.remove(index);
             steps.add(index - 1, step);
+            persist();
         }
     }
 
@@ -224,6 +369,7 @@ public class StepperEngine {
         if (index >= 0 && index < steps.size() - 1) {
             StepperStep step = steps.remove(index);
             steps.add(index + 1, step);
+            persist();
         }
     }
 
@@ -233,6 +379,7 @@ public class StepperEngine {
         displayContext.lastChainRunTime = 0;
         displayContext.lastChainPrereqCount = -1;
         uiLog("Stepper", "All steps cleared.");
+        persist();
     }
 
     public void invalidateCache() {

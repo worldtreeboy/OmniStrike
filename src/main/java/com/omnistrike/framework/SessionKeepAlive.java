@@ -2,6 +2,8 @@ package com.omnistrike.framework;
 import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.ByteArray;
+import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -68,8 +70,75 @@ public class SessionKeepAlive {
     private volatile BiConsumer<String, String> uiLogger;
     private volatile Consumer<String> statusCallback;
 
+    // Persists the saved login request + interval across restarts (never the
+    // enabled flag — keep-alive must be re-armed explicitly so it can't start
+    // replaying / sending requests on its own after a restart).
+    private volatile PersistenceManager persistence;
+    private static final String K_HOST = "session.loginHost";
+    private static final String K_PORT = "session.loginPort";
+    private static final String K_SECURE = "session.loginSecure";
+    private static final String K_REQ = "session.loginReqB64";
+    private static final String K_INTERVAL = "session.intervalMin";
+
     public SessionKeepAlive(MontoyaApi api) {
         this.api = api;
+    }
+
+    public void setPersistence(PersistenceManager persistence) {
+        this.persistence = persistence;
+    }
+
+    /**
+     * Restores a previously-saved login request and interval. Does NOT re-enable
+     * keep-alive — the user must tick the box again so nothing is replayed
+     * automatically on startup. Call once at extension init.
+     */
+    public void loadPersistedState() {
+        PersistenceManager pm = persistence;
+        if (pm == null) return;
+        try {
+            int interval = pm.getInt(K_INTERVAL, 0);
+            if (interval > 0) this.intervalMinutes = Math.max(1, interval);
+
+            String host = pm.getString(K_HOST, null);
+            String reqB64 = pm.getString(K_REQ, null);
+            if (host == null || reqB64 == null || reqB64.isBlank()) return;
+            int port = pm.getInt(K_PORT, 0);
+            boolean secure = pm.getBoolean(K_SECURE, true);
+            byte[] raw = Base64.getDecoder().decode(reqB64);
+            HttpService svc = HttpService.httpService(host, port, secure);
+            HttpRequest req = HttpRequest.httpRequest(svc, ByteArray.byteArray(raw));
+            // Wrap with an empty response — only the request is ever used for replay.
+            this.loginRequest = HttpRequestResponse.httpRequestResponse(req, HttpResponse.httpResponse());
+            this.loginDomain = host.toLowerCase();
+            updateStatus();
+            log("SessionKeepAlive", "Restored saved login request: " + req.url()
+                    + " (enable keep-alive to use it)");
+        } catch (Exception e) {
+            log("SessionKeepAlive", "Could not restore saved login request: " + e.getMessage());
+        }
+    }
+
+    /** Writes the current login request + interval to the preferences store. */
+    private void persist() {
+        PersistenceManager pm = persistence;
+        if (pm == null) return;
+        try {
+            pm.setInt(K_INTERVAL, intervalMinutes);
+            HttpRequestResponse rr = loginRequest;
+            if (rr == null) {
+                pm.setString(K_REQ, "");
+                return;
+            }
+            HttpRequest req = rr.request();
+            HttpService svc = req.httpService();
+            pm.setString(K_HOST, svc.host());
+            pm.setInt(K_PORT, svc.port());
+            pm.setBoolean(K_SECURE, svc.secure());
+            pm.setString(K_REQ, Base64.getEncoder().encodeToString(req.toByteArray().getBytes()));
+        } catch (Exception e) {
+            log("SessionKeepAlive", "Could not persist login request: " + e.getMessage());
+        }
     }
 
     /** Set a callback to log events to the UI Activity Log. Args: (module, message) */
@@ -162,6 +231,7 @@ public class SessionKeepAlive {
             this.loginDomain = "";
         }
         updateStatus();
+        persist();
         log("SessionKeepAlive", "Login request saved: " + reqResp.request().url()
                 + " (domain: " + loginDomain + ")");
 
@@ -182,6 +252,7 @@ public class SessionKeepAlive {
         freshCookies.clear();
         stopScheduler();
         updateStatus();
+        persist();
         log("SessionKeepAlive", "Login request cleared.");
     }
 
@@ -227,6 +298,7 @@ public class SessionKeepAlive {
 
     public void setIntervalMinutes(int minutes) {
         this.intervalMinutes = Math.max(1, minutes);
+        persist();
         // Restart scheduler if currently running to pick up new interval
         if (enabled && loginRequest != null && scheduler != null) {
             startScheduler();

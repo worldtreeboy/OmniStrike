@@ -39,9 +39,15 @@ public class DeduplicationStore {
     /**
      * Mark this combination as seen. Returns true if this is the FIRST time
      * (not yet tested), false if already seen.
-     * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
+     *
+     * Lock-free: the backing {@link ConcurrentHashMap} makes {@code putIfAbsent}
+     * atomic on its own, so no global lock is needed (a global {@code synchronized}
+     * here would serialize every scan thread and defeat the concurrent map). The
+     * size check is intentionally relaxed — under concurrency the map may exceed
+     * {@link #MAX_ENTRIES} by at most the number of in-flight threads, which is
+     * negligible against a 500k soft cap.
      */
-    public synchronized boolean markIfNew(String moduleId, String urlPath, String parameterName) {
+    public boolean markIfNew(String moduleId, String urlPath, String parameterName) {
         if (seen.size() >= MAX_ENTRIES) {
             logFullWarning();
             return false;
@@ -55,9 +61,9 @@ public class DeduplicationStore {
     /**
      * Mark this combination as seen, including HTTP method in the key.
      * Use this when GET and POST to the same path should be tested separately.
-     * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
+     * Lock-free — see {@link #markIfNew(String, String, String)}.
      */
-    public synchronized boolean markIfNew(String moduleId, String method, String urlPath, String parameterName) {
+    public boolean markIfNew(String moduleId, String method, String urlPath, String parameterName) {
         if (seen.size() >= MAX_ENTRIES) { logFullWarning(); return false; }
         String normalizedPath = normalizePath(urlPath);
         String m = method != null ? method.toUpperCase() : "GET";
@@ -74,9 +80,9 @@ public class DeduplicationStore {
 
     /**
      * Mark a raw key as seen. Returns true if first time.
-     * Synchronized to prevent TOCTOU race between size check and putIfAbsent.
+     * Lock-free — see {@link #markIfNew(String, String, String)}.
      */
-    public synchronized boolean markIfNewRaw(String rawKey) {
+    public boolean markIfNewRaw(String rawKey) {
         if (seen.size() >= MAX_ENTRIES) { logFullWarning(); return false; }
         if (bypass.get()) { seen.put(rawKey, Boolean.TRUE); return true; }
         return seen.putIfAbsent(rawKey, Boolean.TRUE) == null;

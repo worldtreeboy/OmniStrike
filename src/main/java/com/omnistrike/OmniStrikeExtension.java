@@ -21,7 +21,7 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.71 — Entry Point
+ * OmniStrike v1.75 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 23 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -50,11 +50,15 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.71 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.75 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
         findingsStore.setErrorLogger(msg -> api.logging().logToError(msg));
+        // User-level settings store (survives Burp restarts). Failure-isolated:
+        // if unavailable, every read falls back to defaults and writes no-op.
+        PersistenceManager persistence = new PersistenceManager(api);
+        persistence.setErrorLogger(msg -> api.logging().logToError(msg));
         DashboardReporter dashboardReporter = new DashboardReporter(api);
         // FindingsBundler wraps DashboardReporter — consolidates LOW/INFO findings per host
         FindingsBundler findingsBundler = new FindingsBundler(dashboardReporter, api);
@@ -110,6 +114,7 @@ public class OmniStrikeExtension implements BurpExtension {
         aiAnalyzer.setModuleRegistry(registry);
         aiAnalyzer.setCollaboratorManager(collaboratorManager);
         aiAnalyzer.setSharedDataBus(dataBus);
+        aiAnalyzer.setPersistence(persistence);
         registry.registerModuleDisabled(aiAnalyzer);
 
         // Injection modules (active) — wire dedup, findingsStore, collaborator to ALL
@@ -217,6 +222,10 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // Initialize all modules
         registry.initializeAll(api);
+        // Restore the AI backend choice (CLI provider + binary path) now that the
+        // module — and its LlmClient — has been initialized. API keys are never
+        // persisted; AI stays disabled until the user re-selects a connection mode.
+        aiAnalyzer.loadPersistedConfig();
         api.logging().logToOutput("Registered " + registry.getAllModules().size() + " modules.");
 
         // ==================== TRAFFIC INTERCEPTOR ====================
@@ -228,7 +237,11 @@ public class OmniStrikeExtension implements BurpExtension {
         // Register with Burp's HTTP and proxy pipelines
         api.http().registerHttpHandler(interceptor);
         api.proxy().registerResponseHandler(interceptor);
-        api.logging().logToOutput("Traffic interceptor registered.");
+        // Mark the extension live so passive analyzers run automatically on
+        // in-scope proxy traffic (active scanning stays right-click only) and so
+        // genuine NPEs in scan tasks are logged rather than mistaken for unload noise.
+        interceptor.setRunning(true);
+        api.logging().logToOutput("Traffic interceptor registered. Passive auto-analysis ON (active = right-click only).");
 
         // ==================== STEPPER ENGINE ====================
         stepperEngine = new StepperEngine(api, scopeManager);
@@ -236,6 +249,10 @@ public class OmniStrikeExtension implements BurpExtension {
         // Wire the StepperHttp wrapper so scan modules' sendRequest calls also
         // route through Stepper (Montoya's api.http().sendRequest bypasses HttpHandler).
         com.omnistrike.framework.stepper.StepperHttp.init(api, stepperEngine);
+        // Restore any saved chain BEFORE the UI is built — the Stepper panel reads
+        // engine state at construction (which happens later in invokeLater).
+        stepperEngine.setPersistence(persistence);
+        stepperEngine.loadPersistedState();
         api.logging().logToOutput("Stepper engine initialized (disabled by default).");
 
         // ==================== TLS ANALYZER ====================
@@ -246,6 +263,9 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // ==================== SESSION KEEP-ALIVE ====================
         sessionKeepAlive = new SessionKeepAlive(api);
+        // Restore a previously-saved login request (but never auto-enable it).
+        sessionKeepAlive.setPersistence(persistence);
+        sessionKeepAlive.loadPersistedState();
         // uiLogger is wired below after MainPanel is created (it needs logPanel)
         // Wire AFTER construction (the field is null until now): the interceptor's
         // HttpHandler injects fresh cookies into Burp's built-in tools, and
@@ -297,7 +317,7 @@ public class OmniStrikeExtension implements BurpExtension {
             mainPanel = new MainPanel(
                     registry, findingsStore, scopeManager,
                     executor, interceptor, collaboratorManager, sessionKeepAlive,
-                    stepperEngine, tlsAnalyzer, dataBus, api);
+                    stepperEngine, tlsAnalyzer, dataBus, persistence, api);
             api.userInterface().registerSuiteTab("OmniStrike", mainPanel);
             // Wire Stepper log messages to the Activity Log
             if (stepperEngine != null) {
@@ -359,7 +379,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.71 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.75 ready ===");
         String oobMode = collaboratorManager.getMode() == CollaboratorManager.OobMode.BURP_COLLABORATOR
                 ? "Burp Collaborator" : "Custom OOB (configure listener in UI)";
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()

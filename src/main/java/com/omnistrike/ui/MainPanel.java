@@ -43,6 +43,7 @@ public class MainPanel extends JPanel {
     private final StepperEngine stepperEngine;
     private final com.omnistrike.framework.tls.TlsAnalyzer tlsAnalyzer;
     private final SharedDataBus dataBus;
+    private final PersistenceManager persistence;
     private final MontoyaApi api;
     private final LogPanel logPanel;
 
@@ -96,7 +97,7 @@ public class MainPanel extends JPanel {
                      CollaboratorManager collaboratorManager, SessionKeepAlive sessionKeepAlive,
                      StepperEngine stepperEngine,
                      com.omnistrike.framework.tls.TlsAnalyzer tlsAnalyzer,
-                     SharedDataBus dataBus, MontoyaApi api) {
+                     SharedDataBus dataBus, PersistenceManager persistence, MontoyaApi api) {
         this.registry = registry;
         this.findingsStore = findingsStore;
         this.scopeManager = scopeManager;
@@ -107,6 +108,7 @@ public class MainPanel extends JPanel {
         this.stepperEngine = stepperEngine;
         this.tlsAnalyzer = tlsAnalyzer;
         this.dataBus = dataBus;
+        this.persistence = persistence;
         this.api = api;
         this.logPanel = new LogPanel();
 
@@ -127,7 +129,11 @@ public class MainPanel extends JPanel {
         threadsLabel.setForeground(NEON_CYAN);
         threadsLabel.setFont(MONO_LABEL);
         row1.add(threadsLabel);
-        threadField = new JTextField("5", 3);
+        int savedThreads = persistence.getInt("scan.threads", 5);
+        if (savedThreads < 1 || savedThreads > 100) savedThreads = 5;
+        // Apply the restored thread count to the shared scan pool immediately.
+        executor.resize(savedThreads);
+        threadField = new JTextField(String.valueOf(savedThreads), 3);
         styleTextField(threadField);
         threadField.setToolTipText("Number of concurrent scan threads (1-100). Higher values increase speed but also load.");
         defaultThreadFieldBorder = threadField.getBorder();
@@ -165,7 +171,9 @@ public class MainPanel extends JPanel {
         throttleGroup.add(autoThrottleRadio);
         throttleGroup.add(manualThrottleRadio);
 
-        rateLimitField = new JTextField("500", 4);
+        int savedDelay = persistence.getInt("throttle.manualMs", 500);
+        if (savedDelay < 0) savedDelay = 500;
+        rateLimitField = new JTextField(String.valueOf(savedDelay), 4);
         styleTextField(rateLimitField);
         rateLimitField.setToolTipText("Delay in milliseconds between each scan request (Manual mode only)");
         rateLimitField.setEnabled(false); // Disabled until Manual is selected
@@ -177,18 +185,45 @@ public class MainPanel extends JPanel {
             if (noThrottleRadio.isSelected()) {
                 tc.setMode(com.omnistrike.framework.ThrottleController.ThrottleMode.NONE);
                 rateLimitField.setEnabled(false);
+                persistence.setString("throttle.mode", "NONE");
             } else if (autoThrottleRadio.isSelected()) {
                 tc.setMode(com.omnistrike.framework.ThrottleController.ThrottleMode.AUTO);
                 rateLimitField.setEnabled(false);
+                persistence.setString("throttle.mode", "AUTO");
             } else if (manualThrottleRadio.isSelected()) {
                 tc.setMode(com.omnistrike.framework.ThrottleController.ThrottleMode.MANUAL);
                 rateLimitField.setEnabled(true);
                 applyManualThrottle();
+                persistence.setString("throttle.mode", "MANUAL");
             }
         };
         noThrottleRadio.addActionListener(throttleModeListener);
         autoThrottleRadio.addActionListener(throttleModeListener);
         manualThrottleRadio.addActionListener(throttleModeListener);
+
+        // Restore the saved throttle mode + delay (setSelected doesn't fire the
+        // listener, so apply to the controller directly).
+        com.omnistrike.framework.ThrottleController savedTc = executor.getThrottleController();
+        String savedThrottleMode = persistence.getString("throttle.mode", "NONE");
+        if (savedTc != null) savedTc.setManualDelay(savedDelay);
+        switch (savedThrottleMode) {
+            case "AUTO" -> {
+                autoThrottleRadio.setSelected(true);
+                if (savedTc != null) savedTc.setMode(
+                        com.omnistrike.framework.ThrottleController.ThrottleMode.AUTO);
+            }
+            case "MANUAL" -> {
+                manualThrottleRadio.setSelected(true);
+                rateLimitField.setEnabled(true);
+                if (savedTc != null) savedTc.setMode(
+                        com.omnistrike.framework.ThrottleController.ThrottleMode.MANUAL);
+            }
+            default -> {
+                noThrottleRadio.setSelected(true);
+                if (savedTc != null) savedTc.setMode(
+                        com.omnistrike.framework.ThrottleController.ThrottleMode.NONE);
+            }
+        }
 
         // Manual delay field — live-sync to ThrottleController
         rateLimitField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
@@ -238,10 +273,12 @@ public class MainPanel extends JPanel {
 
         scopeLocalRadio.addActionListener(e -> {
             GlobalThemeManager.changeScope(GlobalThemeManager.ThemeScope.OMNISTRIKE_ONLY);
+            persistence.setString("theme.scope", "OMNISTRIKE_ONLY");
             reapplyTheme();
         });
         scopeGlobalRadio.addActionListener(e -> {
             GlobalThemeManager.changeScope(GlobalThemeManager.ThemeScope.GLOBAL);
+            persistence.setString("theme.scope", "GLOBAL");
             reapplyTheme();
         });
         row1.add(scopeLocalRadio);
@@ -258,6 +295,7 @@ public class MainPanel extends JPanel {
             } else {
                 GlobalThemeManager.stopBreathing();
             }
+            persistence.setBoolean("theme.glow", glowCheckbox.isSelected());
         });
         row1.add(glowCheckbox);
 
@@ -288,9 +326,32 @@ public class MainPanel extends JPanel {
                 glowCheckbox.setEnabled(true);
 
                 GlobalThemeManager.applyTheme(palette);
+                if (paletteIdx >= 0 && paletteIdx < GlobalThemeManager.THEME_NAMES.length) {
+                    persistence.setString("theme.name", GlobalThemeManager.THEME_NAMES[paletteIdx]);
+                }
                 reapplyTheme();
             }
         });
+
+        // Restore a previously-selected theme. setSelectedItem fires the combo
+        // listener above, which applies the palette and removes "Default".
+        try {
+            String savedTheme = persistence.getString("theme.name", "Default");
+            if (savedTheme != null && !"Default".equals(savedTheme)) {
+                themeCombo.setSelectedItem(savedTheme);
+                if ("GLOBAL".equals(persistence.getString("theme.scope", "OMNISTRIKE_ONLY"))) {
+                    scopeGlobalRadio.setSelected(true);
+                    GlobalThemeManager.changeScope(GlobalThemeManager.ThemeScope.GLOBAL);
+                    reapplyTheme();
+                }
+                if (persistence.getBoolean("theme.glow", false)) {
+                    glowCheckbox.setSelected(true);
+                    GlobalThemeManager.startBreathing();
+                }
+            }
+        } catch (Exception ignored) {
+            // Theme restore is best-effort — never block the UI from loading.
+        }
 
         topContainer.add(row1);
 
@@ -321,7 +382,9 @@ public class MainPanel extends JPanel {
         // Controls ALL time-based blind injection tests (SQLi sleep, CmdI sleep/ping).
         JCheckBox timeBasedCheckbox = new JCheckBox("Time-Based Testing");
         styleCheckBox(timeBasedCheckbox);
-        timeBasedCheckbox.setSelected(false); // OFF by default
+        boolean savedTimeBased = persistence.getBoolean("scan.timeBased", false);
+        timeBasedCheckbox.setSelected(savedTimeBased);
+        TimingLock.setEnabled(savedTimeBased); // apply restored value
         timeBasedCheckbox.setToolTipText(
                 "Enable time-based blind injection tests (SQLi SLEEP, CmdI sleep/ping). "
                 + "These tests are slow and can cause delays on the target server. "
@@ -329,6 +392,7 @@ public class MainPanel extends JPanel {
         timeBasedCheckbox.addActionListener(e -> {
             boolean selected = timeBasedCheckbox.isSelected();
             TimingLock.setEnabled(selected);
+            persistence.setBoolean("scan.timeBased", selected);
             logPanel.log("INFO", "Framework",
                     "Time-based blind testing " + (selected ? "ENABLED" : "DISABLED"));
         });
@@ -369,7 +433,9 @@ public class MainPanel extends JPanel {
         sessionRow.add(intervalLabel);
         JComboBox<String> intervalCombo = new JComboBox<>(new String[]{
                 "1 min", "2 min", "3 min", "5 min", "10 min", "15 min", "30 min"});
-        intervalCombo.setSelectedItem("5 min");
+        // Reflect the interval restored by SessionKeepAlive.loadPersistedState().
+        intervalCombo.setSelectedItem(sessionKeepAlive.getIntervalMinutes() + " min");
+        if (intervalCombo.getSelectedItem() == null) intervalCombo.setSelectedItem("5 min");
         intervalCombo.setToolTipText("How often to replay the login request");
         styleComboBox(intervalCombo);
         sessionRow.add(intervalCombo);
@@ -732,6 +798,15 @@ public class MainPanel extends JPanel {
         oobGroup.add(burpCollabRadio);
         oobGroup.add(customOobRadio);
 
+        // Restore the saved OOB mode (the listener is never fired by setSelected,
+        // so apply it to the manager directly via switchTo* below).
+        String savedOobMode = persistence.getString("oob.mode", null);
+        if ("CUSTOM".equals(savedOobMode)) {
+            collaboratorManager.switchToCustomOob();
+        } else if ("BURP".equals(savedOobMode)) {
+            collaboratorManager.switchToBurpCollaborator();
+        }
+
         // Default selection based on current mode
         if (collaboratorManager.getMode() == OobMode.CUSTOM_OOB) {
             customOobRadio.setSelected(true);
@@ -760,6 +835,11 @@ public class MainPanel extends JPanel {
         }
         styleComboBox(ifaceCombo);
         ifaceCombo.setToolTipText("IP address the target server will call back to. Must be reachable from the target.");
+        // Restore the saved interface selection (indices are stable per machine).
+        int savedIface = persistence.getInt("oob.ifaceIndex", -1);
+        if (savedIface >= 0 && savedIface < ifaceCombo.getItemCount()) {
+            ifaceCombo.setSelectedIndex(savedIface);
+        }
         customControls.add(ifaceCombo);
 
         // HTTP Port field
@@ -768,7 +848,7 @@ public class MainPanel extends JPanel {
         portLabel.setFont(MONO_LABEL);
         customControls.add(portLabel);
 
-        int initialPort = OobListener.randomAvailablePort();
+        int initialPort = persistence.getInt("oob.httpPort", OobListener.randomAvailablePort());
         JTextField portField = new JTextField(String.valueOf(initialPort), 6);
         styleTextField(portField);
         portField.setToolTipText("Port for the OOB HTTP listener (TCP)");
@@ -780,7 +860,7 @@ public class MainPanel extends JPanel {
         dnsPortLabel.setFont(MONO_LABEL);
         customControls.add(dnsPortLabel);
 
-        int initialDnsPort = OobListener.randomAvailableUdpPort();
+        int initialDnsPort = persistence.getInt("oob.dnsPort", OobListener.randomAvailableUdpPort());
         JTextField dnsPortField = new JTextField(String.valueOf(initialDnsPort), 6);
         styleTextField(dnsPortField);
         dnsPortField.setToolTipText("Port for the OOB DNS listener (UDP). Default 53 requires root/admin.");
@@ -792,7 +872,7 @@ public class MainPanel extends JPanel {
         ldapPortLabel.setFont(MONO_LABEL);
         customControls.add(ldapPortLabel);
 
-        int initialLdapPort = OobListener.randomAvailablePort();
+        int initialLdapPort = persistence.getInt("oob.ldapPort", OobListener.randomAvailablePort());
         JTextField ldapPortField = new JTextField(String.valueOf(initialLdapPort), 6);
         styleTextField(ldapPortField);
         ldapPortField.setToolTipText("Port for the OOB LDAP listener (TCP). 0 = disabled. Default 389 requires root/admin.");
@@ -857,11 +937,23 @@ public class MainPanel extends JPanel {
                 previewLabel.setText(sb.toString());
             }
         };
-        ifaceCombo.addActionListener(e -> updatePreview.run());
+        ifaceCombo.addActionListener(e -> {
+            updatePreview.run();
+            persistence.setInt("oob.ifaceIndex", ifaceCombo.getSelectedIndex());
+        });
+        // Persist each port field as it changes (best-effort: only when parseable).
+        Runnable persistOobPorts = () -> {
+            try { persistence.setInt("oob.httpPort", Integer.parseInt(portField.getText().trim())); }
+            catch (NumberFormatException ignored) {}
+            try { persistence.setInt("oob.dnsPort", Integer.parseInt(dnsPortField.getText().trim())); }
+            catch (NumberFormatException ignored) {}
+            try { persistence.setInt("oob.ldapPort", Integer.parseInt(ldapPortField.getText().trim())); }
+            catch (NumberFormatException ignored) {}
+        };
         javax.swing.event.DocumentListener previewDocListener = new javax.swing.event.DocumentListener() {
-            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); }
-            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); }
-            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); }
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); persistOobPorts.run(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); persistOobPorts.run(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { updatePreview.run(); persistOobPorts.run(); }
         };
         portField.getDocument().addDocumentListener(previewDocListener);
         dnsPortField.getDocument().addDocumentListener(previewDocListener);
@@ -883,6 +975,7 @@ public class MainPanel extends JPanel {
                 listenerToggle.doClick(); // triggers stop
             }
             collaboratorManager.switchToBurpCollaborator();
+            persistence.setString("oob.mode", "BURP");
             updateOobStatus(oobStatusLabel);
             logPanel.log("INFO", "OOB", "Switched to Burp Collaborator mode");
         });
@@ -892,6 +985,7 @@ public class MainPanel extends JPanel {
             statusRow.setVisible(true);
             previewRow.setVisible(true);
             collaboratorManager.switchToCustomOob();
+            persistence.setString("oob.mode", "CUSTOM");
             updateOobStatus(oobStatusLabel);
             logPanel.log("INFO", "OOB", "Switched to Custom OOB Listener mode");
         });
@@ -1047,6 +1141,7 @@ public class MainPanel extends JPanel {
         try {
             int value = Integer.parseInt(text);
             tc.setManualDelay(value);
+            persistence.setInt("throttle.manualMs", value);
         } catch (NumberFormatException ignored) {
             // Invalid input — keep current value
         }
@@ -1070,6 +1165,7 @@ public class MainPanel extends JPanel {
                 threadField.setToolTipText("Number of concurrent scan threads (1-100). Higher values increase speed but also load.");
                 // Apply immediately — right-click scans use this pool (no Start button anymore).
                 executor.resize(value);
+                persistence.setInt("scan.threads", value);
             } else {
                 threadField.setBorder(new CyberTheme.GlowLineBorder(NEON_RED, 2));
                 threadField.setToolTipText("Invalid: thread count must be between 1 and 100");

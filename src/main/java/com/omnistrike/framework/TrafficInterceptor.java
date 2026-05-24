@@ -13,7 +13,6 @@ import com.omnistrike.framework.stepper.StepperEngine;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
 
@@ -29,21 +28,22 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     private final ActiveScanExecutor executor;
     private final ScopeManager scopeManager;
     private volatile boolean running = false;
+    /**
+     * Gates automatic PASSIVE analysis of in-scope proxy traffic. Default on:
+     * as you browse, passive analyzers (Tech Fingerprinter, Sensitive Data,
+     * Security Headers, etc.) run automatically — they only read responses and
+     * never send requests. Active scanners are NEVER auto-triggered from proxy
+     * traffic; they remain strictly right-click only ("Send to OmniStrike").
+     */
+    private volatile boolean passiveAutoScanEnabled = true;
+    /** When true, log every in-scope passive routing decision (noisy under heavy browsing). */
+    private volatile boolean verboseLogging = false;
     private volatile BiConsumer<String, String> uiLogger;
     private volatile StepperEngine stepperEngine;
     private volatile SessionKeepAlive sessionKeepAlive;
     // Used to bypass dedup for explicit manual scans (right-click), so re-scanning
     // a target already covered by automatic scanning actually re-tests it.
     private volatile DeduplicationStore dedup;
-
-    // Static file extensions — active injection scanners are skipped for these.
-    // Passive analyzers still run (Client-Side Analyzer, Hidden Endpoint Finder, etc.)
-    private static final Set<String> STATIC_EXTENSIONS = Set.of(
-            ".css", ".js", ".mjs", ".jsx", ".ts", ".map",
-            ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
-            ".woff", ".woff2", ".ttf", ".eot", ".otf",
-            ".mp4", ".mp3", ".webm", ".pdf"
-    );
 
     // Executor for passive modules so they don't block the proxy thread.
     // Not final — recreated when stopManualScans() is called to kill queued passive tasks.
@@ -119,6 +119,24 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
     public boolean isRunning() {
         return running;
+    }
+
+    /** Enable/disable automatic passive analysis of in-scope proxy traffic. */
+    public void setPassiveAutoScanEnabled(boolean enabled) {
+        this.passiveAutoScanEnabled = enabled;
+    }
+
+    public boolean isPassiveAutoScanEnabled() {
+        return passiveAutoScanEnabled;
+    }
+
+    /** Enable/disable verbose per-request routing logs. */
+    public void setVerboseLogging(boolean verbose) {
+        this.verboseLogging = verbose;
+    }
+
+    public boolean isVerboseLogging() {
+        return verboseLogging;
     }
 
     @Override
@@ -203,19 +221,29 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     @Override
     public ProxyResponseReceivedAction handleResponseReceived(
             InterceptedResponse interceptedResponse) {
-        if (!running) {
+        // Automatic analysis of proxy traffic is PASSIVE ONLY — analyzers read
+        // responses but send nothing. Active scanners are never auto-triggered
+        // here; they run only on an explicit right-click "Send to OmniStrike".
+        if (!passiveAutoScanEnabled) {
             return ProxyResponseReceivedAction.continueWith(interceptedResponse);
         }
 
         try {
             String host = interceptedResponse.initiatingRequest().httpService().host();
-            if (!scopeManager.isInScope(host)) {
+            String url = interceptedResponse.initiatingRequest().url();
+
+            // Scope gate: prefer OmniStrike's own domain scope when configured;
+            // otherwise fall back to Burp's Target → Scope so passive analysis
+            // doesn't run on every third-party domain (analytics, CDNs, etc.).
+            // Passive analyzers send nothing, so this only controls noise.
+            boolean inScope = scopeManager.hasScope()
+                    ? scopeManager.isInScope(host)
+                    : burpInScope(url);
+            if (!inScope) {
                 return ProxyResponseReceivedAction.continueWith(interceptedResponse);
             }
 
-            String url = interceptedResponse.initiatingRequest().url();
-
-            // URL exclusion — completely skip excluded paths (active + passive)
+            // URL exclusion — completely skip excluded paths
             if (scopeManager.isExcludedPath(url)) {
                 return ProxyResponseReceivedAction.continueWith(interceptedResponse);
             }
@@ -225,21 +253,20 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 return ProxyResponseReceivedAction.continueWith(interceptedResponse);
             }
 
-            // Compute module lists once per request
+            // Only passive analyzers run automatically on proxy traffic.
             List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
-            boolean isStatic = isStaticResource(url);
-            // Skip active injection scanners for static files (.js, .css, .png, etc.)
-            // Passive analyzers still run — they find results in JS/HTML response bodies.
-            List<ScanModule> activeModules = isStatic
-                    ? List.of() : registry.getEnabledActiveModules();
-            uiLog("Interceptor", "In-scope traffic: " + url
-                    + " | Routing to " + passiveModules.size() + " passive + " + activeModules.size() + " active modules"
-                    + (isStatic ? " (static — active skipped)" : ""));
+            if (passiveModules.isEmpty()) {
+                return ProxyResponseReceivedAction.continueWith(interceptedResponse);
+            }
+            if (verboseLogging) {
+                uiLog("Interceptor", "In-scope traffic: " + url
+                        + " | Routing to " + passiveModules.size() + " passive analyzer(s)");
+            }
 
             HttpRequestResponse reqResp = HttpRequestResponse.httpRequestResponse(
                     interceptedResponse.initiatingRequest(), interceptedResponse);
 
-            processWithModules(reqResp, passiveModules, activeModules);
+            processPassive(reqResp, passiveModules);
         } catch (Exception e) {
             uiLog("Interceptor", "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
         }
@@ -494,49 +521,31 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         }
     }
 
-    private void processWithModules(HttpRequestResponse reqResp,
-                                    List<ScanModule> passiveModules,
-                                    List<ScanModule> activeModules) {
-        // Passive modules run on a background executor to avoid blocking the proxy thread.
-        // Each module gets its own task so a slow one doesn't delay others.
+    private void processPassive(HttpRequestResponse reqResp,
+                                List<ScanModule> passiveModules) {
+        // This is the automatic PASSIVE path for proxy traffic. It is gated only by
+        // passiveAutoScanEnabled — NOT by manualScansCancelled, so the "Stop Scans"
+        // button (which stops active/manual scans) doesn't also kill passive
+        // observation. Passive analyzers send nothing, so they're safe to keep on.
         for (ScanModule module : passiveModules) {
             passiveExecutor.submit(() -> {
-                if (manualScansCancelled || Thread.currentThread().isInterrupted()) return;
+                if (!passiveAutoScanEnabled || Thread.currentThread().isInterrupted()) return;
                 try {
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
-                    if (manualScansCancelled || Thread.currentThread().isInterrupted()) return;
+                    if (!passiveAutoScanEnabled || Thread.currentThread().isInterrupted()) return;
                     if (findings != null && !findings.isEmpty()) {
                         findingsStore.addFindings(autoFillReqResp(findings, reqResp));
                     }
                 } catch (NullPointerException e) {
                     // During extension unload Burp's API proxy becomes null — discard safely.
                     // But if we're still running, this is a real bug — log it.
-                    if (running && !manualScansCancelled) {
+                    if (running) {
                         uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
                     }
                 } catch (Exception e) {
-                    if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
+                    if (Thread.currentThread().isInterrupted()) return;
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
                             + ": " + e.getMessage());
-                }
-            });
-        }
-
-        // Active modules run on the active scan thread pool
-        for (ScanModule module : activeModules) {
-            executor.submit(() -> {
-                if (manualScansCancelled || Thread.currentThread().isInterrupted()) return;
-                try {
-                    uiLog(module.getId(), "Processing: " + reqResp.request().url());
-                    List<Finding> findings = module.processHttpFlow(reqResp, api);
-                    if (manualScansCancelled || Thread.currentThread().isInterrupted()) return;
-                    if (findings != null && !findings.isEmpty()) {
-                        findingsStore.addFindings(autoFillReqResp(findings, reqResp));
-                        uiLog(module.getId(), "Found " + findings.size() + " issue(s)");
-                    }
-                } catch (Exception e) {
-                    if (Thread.currentThread().isInterrupted() || manualScansCancelled) return;
-                    uiLog(module.getId(), "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
                 }
             });
         }
@@ -628,7 +637,10 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         // Set the global cancellation flags FIRST — running tasks check these
         manualScansCancelled = true;
         ScanState.cancel();
-        running = false;
+        // NOTE: do NOT clear `running` here. `running` means "extension is live"
+        // (used to tell real NPEs from unload noise); only unload clears it.
+        // Stopping manual scans must not disable automatic passive analysis,
+        // which is gated separately by passiveAutoScanEnabled.
         // Tell Stepper to pause so in-flight chains abort and new ones are blocked.
         StepperEngine s = stepperEngine;
         if (s != null) s.setPaused(true);
@@ -684,17 +696,16 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     }
 
     /**
-     * Checks if a URL points to a static resource where active injection testing is pointless.
+     * Returns true if the URL is in Burp's Target → Scope. Used as the fallback
+     * scope gate for automatic passive analysis when OmniStrike has no domain
+     * scope of its own configured. An empty Burp scope means nothing matches.
      */
-    private static boolean isStaticResource(String url) {
-        if (url == null) return false;
-        String lower = url.toLowerCase();
-        int qIdx = lower.indexOf('?');
-        String path = qIdx > 0 ? lower.substring(0, qIdx) : lower;
-        for (String ext : STATIC_EXTENSIONS) {
-            if (path.endsWith(ext)) return true;
+    private boolean burpInScope(String url) {
+        try {
+            return api.scope().isInScope(url);
+        } catch (Exception e) {
+            return false;
         }
-        return false;
     }
 
     /**
