@@ -237,11 +237,11 @@ public class OmniStrikeExtension implements BurpExtension {
         // Register with Burp's HTTP and proxy pipelines
         api.http().registerHttpHandler(interceptor);
         api.proxy().registerResponseHandler(interceptor);
-        // Mark the extension live so passive analyzers run automatically on
-        // in-scope proxy traffic (active scanning stays right-click only) and so
-        // genuine NPEs in scan tasks are logged rather than mistaken for unload noise.
+        // Mark the extension live so genuine NPEs in scan tasks are logged
+        // rather than mistaken for unload noise. Nothing runs automatically on
+        // proxy traffic — every scan (passive + active) is right-click driven.
         interceptor.setRunning(true);
-        api.logging().logToOutput("Traffic interceptor registered. Passive auto-analysis ON (active = right-click only).");
+        api.logging().logToOutput("Traffic interceptor registered. Scans are right-click only.");
 
         // ==================== STEPPER ENGINE ====================
         stepperEngine = new StepperEngine(api, scopeManager);

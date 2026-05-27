@@ -221,56 +221,11 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     @Override
     public ProxyResponseReceivedAction handleResponseReceived(
             InterceptedResponse interceptedResponse) {
-        // Automatic analysis of proxy traffic is PASSIVE ONLY — analyzers read
-        // responses but send nothing. Active scanners are never auto-triggered
-        // here; they run only on an explicit right-click "Send to OmniStrike".
-        if (!passiveAutoScanEnabled) {
-            return ProxyResponseReceivedAction.continueWith(interceptedResponse);
-        }
-
-        try {
-            String host = interceptedResponse.initiatingRequest().httpService().host();
-            String url = interceptedResponse.initiatingRequest().url();
-
-            // Scope gate: prefer OmniStrike's own domain scope when configured;
-            // otherwise fall back to Burp's Target → Scope so passive analysis
-            // doesn't run on every third-party domain (analytics, CDNs, etc.).
-            // Passive analyzers send nothing, so this only controls noise.
-            boolean inScope = scopeManager.hasScope()
-                    ? scopeManager.isInScope(host)
-                    : burpInScope(url);
-            if (!inScope) {
-                return ProxyResponseReceivedAction.continueWith(interceptedResponse);
-            }
-
-            // URL exclusion — completely skip excluded paths
-            if (scopeManager.isExcludedPath(url)) {
-                return ProxyResponseReceivedAction.continueWith(interceptedResponse);
-            }
-
-            // URL inclusion — if inclusion list is active, only scan matching URLs
-            if (!scopeManager.isIncludedPath(url)) {
-                return ProxyResponseReceivedAction.continueWith(interceptedResponse);
-            }
-
-            // Only passive analyzers run automatically on proxy traffic.
-            List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
-            if (passiveModules.isEmpty()) {
-                return ProxyResponseReceivedAction.continueWith(interceptedResponse);
-            }
-            if (verboseLogging) {
-                uiLog("Interceptor", "In-scope traffic: " + url
-                        + " | Routing to " + passiveModules.size() + " passive analyzer(s)");
-            }
-
-            HttpRequestResponse reqResp = HttpRequestResponse.httpRequestResponse(
-                    interceptedResponse.initiatingRequest(), interceptedResponse);
-
-            processPassive(reqResp, passiveModules);
-        } catch (Exception e) {
-            uiLog("Interceptor", "ERROR: " + e.getClass().getName() + ": " + e.getMessage());
-        }
-
+        // Nothing runs automatically on proxy traffic — neither active nor passive.
+        // Every scan, including the passive analyzers, is right-click driven:
+        // user picks a request → Send to OmniStrike → all selected modules
+        // (passive + active) run on that specific request/response. This keeps
+        // the findings list to exactly what the user asked for.
         return ProxyResponseReceivedAction.continueWith(interceptedResponse);
     }
 
@@ -297,18 +252,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
      */
     public void scanRequest(HttpRequestResponse reqResp, List<String> moduleIds, String targetParameter) {
         if (reqResp == null) return;
-
-        // URL exclusion — skip excluded paths even on manual right-click
-        if (scopeManager.isExcludedPath(reqResp.request().url())) {
-            uiLog("ManualScan", "SKIPPED (excluded path): " + reqResp.request().url());
-            return;
-        }
-
-        // URL inclusion — if inclusion list is active, only scan matching URLs
-        if (!scopeManager.isIncludedPath(reqResp.request().url())) {
-            uiLog("ManualScan", "SKIPPED (not in include list): " + reqResp.request().url());
-            return;
-        }
 
         // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
@@ -347,18 +290,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     public void scanRequestAllModules(HttpRequestResponse reqResp) {
         if (reqResp == null) return;
 
-        // URL exclusion — skip excluded paths even on manual right-click
-        if (scopeManager.isExcludedPath(reqResp.request().url())) {
-            uiLog("ManualScan", "SKIPPED (excluded path): " + reqResp.request().url());
-            return;
-        }
-
-        // URL inclusion — if inclusion list is active, only scan matching URLs
-        if (!scopeManager.isIncludedPath(reqResp.request().url())) {
-            uiLog("ManualScan", "SKIPPED (not in include list): " + reqResp.request().url());
-            return;
-        }
-
         // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
         ScanState.reset();
@@ -392,15 +323,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         if (reqResp == null) return;
 
         String reqUrl = reqResp.request().url();
-        if (scopeManager.isExcludedPath(reqUrl)) {
-            uiLog("ManualScan", "SKIPPED (excluded path): " + reqUrl);
-            return;
-        }
-        if (!scopeManager.isIncludedPath(reqUrl)) {
-            uiLog("ManualScan", "SKIPPED (not in include list): " + reqUrl);
-            return;
-        }
-
         // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
         ScanState.reset();
@@ -693,19 +615,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     public int getManualScanCount() {
         manualScanFutures.removeIf(Future::isDone);
         return manualScanFutures.size();
-    }
-
-    /**
-     * Returns true if the URL is in Burp's Target → Scope. Used as the fallback
-     * scope gate for automatic passive analysis when OmniStrike has no domain
-     * scope of its own configured. An empty Burp scope means nothing matches.
-     */
-    private boolean burpInScope(String url) {
-        try {
-            return api.scope().isInScope(url);
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     /**

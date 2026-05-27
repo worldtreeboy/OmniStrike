@@ -22,12 +22,11 @@
 ```
 1.  Download omnistrike.jar from Releases (or build from source)
 2.  Burp Suite → Extensions → Add → Java → omnistrike.jar
-3.  Browse the target — passive analyzers run automatically on in-scope traffic
-4.  Right-click any request → "Send to OmniStrike (All Modules)" for active scanning
-5.  Tick parameters + modules → Scan
+3.  Right-click any request → "Send to OmniStrike (All Modules)"
+4.  Tick parameters + modules → Scan
 ```
 
-Active scanning is right-click only — no auto-scan loop, no target-scope field. Nothing is sent to a target until you ask for it. Passive analyzers only read responses Burp already received.
+**Every scan is right-click driven.** Nothing runs automatically on proxy traffic — neither active nor passive. Both passive analyzers and active scanners only run on requests you explicitly send via the right-click menu. No auto-scan loop, no target-scope field, no background analysis.
 
 ---
 
@@ -60,7 +59,7 @@ Dynamics 365 FetchXML · SAP OData · Salesforce SOQL · Firebase Misconfig · S
 
 ### 7 Passive Analyzers
 
-Run automatically on in-scope traffic — read-only, send nothing:
+Run on right-click → Send to OmniStrike alongside the active scanners — read-only, send nothing:
 
 Client-Side (DOM XSS, prototype pollution, secrets) · Endpoint Finder · Subdomain Collector · Security Headers · Tech Fingerprinter · Sensitive Data (Luhn-validated CCs, SSNs, JWTs, ARNs, IBANs) · Error Disclosure (Java/Jackson/Spring/.NET/Python/Node.js/Go/Ruby + DB driver exceptions)
 
@@ -258,6 +257,7 @@ Contributing: fork → branch → `./gradlew shadowJar` must compile clean → t
 ## Changelog
 
 ### v1.76
+- **Passive analyzers are now right-click only too.** Nothing runs automatically on proxy traffic. Both passive analyzers and active scanners only execute on requests you explicitly send via right-click → Send to OmniStrike. The previous auto-passive-on-in-scope behavior, the Burp Target → Scope fallback gate, and the dead OmniStrike include/exclude path checks are all gone. Findings list now contains exactly what you asked for, nothing else.
 - **SSTI engine identification — false-positive overhaul.** Rewrote the engine probe table to use unique fingerprints only an evaluated template can produce — Flask `<Config '`, Python class reprs (`<class 'subprocess.Popen'>`), Java `Process[pid=`, Twig `object(Twig\TwigFilter)`, unique math products (`131803`) — instead of common words (`function`, `Process`, `Runtime`, `20`, `[`, `test|list`, `3.|4.|5.`). Probes that couldn't be made unambiguous (`@DateTime.Now`, `{{#list}}test{{/list}}`, `{$smarty.version}`, ERB `Dir.entries`, the Mustache section probe) were dropped rather than tightened. Hardened the matching loop: empty baselines short-circuit; raw payload reflected in the body always rejects (the old keyword-based skip-list let RCE/version/config/class/globals probes through, the main FP source); the matched token must not be a substring of the payload itself.
 - **Path Traversal — baseline-marker fixes.** Marker-count detections (`UNIX_OSRELEASE`, `UNIX_ENVIRON`, `UNIX_APACHE`, `UNIX_SSHD`, `UNIX_REDIS`, `UNIX_OPENSSL`) now compare full marker counts between response and baseline; a baseline that happens to contain a different subset of markers no longer leaves the count check unguarded. `UNIX_OSRELEASE` uses line-anchored regex (was tripping on bare `ID=` in HTML/JSON). `UNIX_ENVIRON` adds a NUL-byte signal (the real `/proc/self/environ` format). Fixed an AND/OR logic bug in `WIN_BOOTINI` / `WIN_SYSTEMINI` / `WIN_PHPINI` / `WIN_WEBCONFIG` that passed whenever baseline lacked *either* marker.
 - **Dashboard findings: plain text.** Finding details no longer emit HTML (`<h3>`, `<p>`, `<b>`, `<pre>`, `<br>`). Plain-text labels with blank-line separators throughout `DashboardReporter` and `OmniStrikeScanCheck`.
