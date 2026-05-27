@@ -21,7 +21,7 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.75 — Entry Point
+ * OmniStrike v1.76 — Entry Point
  *
  * A unified vulnerability scanning framework for Burp Suite with 23 modules:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -50,7 +50,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.75 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.76 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -379,7 +379,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.75 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.76 ready ===");
         String oobMode = collaboratorManager.getMode() == CollaboratorManager.OobMode.BURP_COLLABORATOR
                 ? "Burp Collaborator" : "Custom OOB (configure listener in UI)";
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()

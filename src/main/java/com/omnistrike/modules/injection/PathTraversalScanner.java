@@ -858,14 +858,25 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "UNIX_ENVIRON": {
-                // Require at least 3 of 4 markers to confirm /proc/self/environ
-                int environMarkers = 0;
-                if (body.contains("PATH=")) environMarkers++;
-                if (body.contains("HOME=")) environMarkers++;
-                if (body.contains("USER=")) environMarkers++;
-                if (body.contains("SHELL=")) environMarkers++;
-                if (environMarkers >= 3 && (baselineBody == null || !UNIX_ENVIRON_PATTERN.matcher(baselineBody).find())) {
-                    return new ConfirmedRead("Environment variables (" + environMarkers + "/4 markers) found");
+                // /proc/self/environ is null-byte separated KEY=VALUE pairs. Require:
+                //   - 3+ of PATH=/HOME=/USER=/SHELL=
+                //   - at least one NUL byte (the actual environ format) OR the response
+                //     has strictly more environ markers than the baseline (defends against
+                //     pages that legitimately mention one env var).
+                int bodyMarkers = 0;
+                if (body.contains("PATH=")) bodyMarkers++;
+                if (body.contains("HOME=")) bodyMarkers++;
+                if (body.contains("USER=")) bodyMarkers++;
+                if (body.contains("SHELL=")) bodyMarkers++;
+                int baseMarkers = 0;
+                if (baselineBody.contains("PATH=")) baseMarkers++;
+                if (baselineBody.contains("HOME=")) baseMarkers++;
+                if (baselineBody.contains("USER=")) baseMarkers++;
+                if (baselineBody.contains("SHELL=")) baseMarkers++;
+                boolean hasNul = body.indexOf('\0') >= 0 && baselineBody.indexOf('\0') < 0;
+                if (bodyMarkers >= 3 && (hasNul || bodyMarkers >= baseMarkers + 2)) {
+                    return new ConfirmedRead("Environment variables (" + bodyMarkers + "/4 markers, baseline "
+                            + baseMarkers + (hasNul ? ", NUL-separated" : "") + ")");
                 }
                 break;
             }
@@ -952,14 +963,23 @@ public class PathTraversalScanner implements ScanModule {
             }
             case "UNIX_OSRELEASE": {
                 // Require at least 3 of: NAME=, VERSION=, ID=, VERSION_ID=, PRETTY_NAME=
-                int osReleaseMarkers = 0;
-                if (body.contains("NAME=")) osReleaseMarkers++;
-                if (body.contains("VERSION=")) osReleaseMarkers++;
-                if (body.contains("ID=")) osReleaseMarkers++;
-                if (body.contains("VERSION_ID=")) osReleaseMarkers++;
-                if (body.contains("PRETTY_NAME=")) osReleaseMarkers++;
-                if (osReleaseMarkers >= 3 && (baselineBody == null || !baselineBody.contains("PRETTY_NAME="))) {
-                    return new ConfirmedRead("/etc/os-release content found (" + osReleaseMarkers + "/5 markers)");
+                // anchored at line start (multiline) — bare "ID=" matches HTML/JSON content and FPs.
+                // Baseline must NOT match the same markers (compare counts, not just one key).
+                Pattern osRelease = Pattern.compile(
+                        "(?m)^(?:NAME|VERSION|ID|VERSION_ID|PRETTY_NAME|ID_LIKE|HOME_URL)=");
+                int bodyHits = 0;
+                Matcher mr = osRelease.matcher(body);
+                while (mr.find()) bodyHits++;
+                int baseHits = 0;
+                Matcher mb = osRelease.matcher(baselineBody);
+                while (mb.find()) baseHits++;
+                // Require PRETTY_NAME= specifically (not present in arbitrary key=value dumps)
+                // plus a meaningful count lead over baseline.
+                if (bodyHits >= 3 && bodyHits >= baseHits + 2
+                        && Pattern.compile("(?m)^PRETTY_NAME=").matcher(body).find()
+                        && !Pattern.compile("(?m)^PRETTY_NAME=").matcher(baselineBody).find()) {
+                    return new ConfirmedRead("/etc/os-release content found (" + bodyHits + " markers, baseline "
+                            + baseHits + ")");
                 }
                 break;
             }
@@ -1002,43 +1022,59 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "UNIX_APACHE": {
-                // Require at least 2 of: ServerRoot, DocumentRoot, ServerName, <VirtualHost, LoadModule
-                int apacheMarkers = 0;
-                if (body.contains("ServerRoot")) apacheMarkers++;
-                if (body.contains("DocumentRoot")) apacheMarkers++;
-                if (body.contains("ServerName")) apacheMarkers++;
-                if (body.contains("<VirtualHost")) apacheMarkers++;
-                if (body.contains("LoadModule")) apacheMarkers++;
-                if (apacheMarkers >= 2 && (baselineBody == null
-                        || (!baselineBody.contains("ServerRoot") && !baselineBody.contains("DocumentRoot")))) {
-                    return new ConfirmedRead("apache2.conf content: " + apacheMarkers + " Apache directives found");
+                // Require 2+ of: ServerRoot, DocumentRoot, ServerName, <VirtualHost, LoadModule
+                // AND the response must have strictly more matches than the baseline (a docs
+                // page mentioning ServerName + LoadModule should not trigger).
+                String[] apacheKeys = {"ServerRoot", "DocumentRoot", "ServerName", "<VirtualHost", "LoadModule"};
+                int bodyMarkers = 0, baseMarkers = 0;
+                for (String k : apacheKeys) {
+                    if (body.contains(k)) bodyMarkers++;
+                    if (baselineBody.contains(k)) baseMarkers++;
+                }
+                if (bodyMarkers >= 2 && bodyMarkers >= baseMarkers + 2) {
+                    return new ConfirmedRead("apache2.conf content: " + bodyMarkers + " directives ("
+                            + "baseline " + baseMarkers + ")");
                 }
                 break;
             }
             case "WIN_BOOTINI": {
-                if ((body.contains("[boot loader]") && (body.contains("multi(") || body.contains("[operating systems]")))
-                        && (!baselineBody.contains("[boot loader]") || !baselineBody.contains("multi("))) {
+                boolean bodyMatch = body.contains("[boot loader]")
+                        && (body.contains("multi(") || body.contains("[operating systems]"));
+                boolean baseMatch = baselineBody.contains("[boot loader]")
+                        && (baselineBody.contains("multi(") || baselineBody.contains("[operating systems]"));
+                if (bodyMatch && !baseMatch) {
                     return new ConfirmedRead("boot.ini content found ([boot loader] + multi/operating systems)");
                 }
                 break;
             }
             case "WIN_SYSTEMINI": {
-                if ((body.contains("[drivers]") && body.contains("[386Enh]"))
-                        && (!baselineBody.contains("[drivers]") || !baselineBody.contains("[386Enh]"))) {
+                boolean bodyMatch = body.contains("[drivers]") && body.contains("[386Enh]");
+                boolean baseMatch = baselineBody.contains("[drivers]") && baselineBody.contains("[386Enh]");
+                if (bodyMatch && !baseMatch) {
                     return new ConfirmedRead("system.ini content found ([drivers] + [386Enh])");
                 }
                 break;
             }
             case "WIN_PHPINI": {
-                if ((body.contains("[PHP]") && (body.contains("extension_dir") || body.contains("display_errors") || body.contains("error_reporting") || body.contains("max_execution_time")))
-                        && (!baselineBody.contains("[PHP]") || !(baselineBody.contains("extension_dir") || baselineBody.contains("display_errors") || baselineBody.contains("error_reporting") || baselineBody.contains("max_execution_time")))) {
+                boolean bodyHasDirective = body.contains("extension_dir") || body.contains("display_errors")
+                        || body.contains("error_reporting") || body.contains("max_execution_time");
+                boolean baseHasDirective = baselineBody.contains("extension_dir") || baselineBody.contains("display_errors")
+                        || baselineBody.contains("error_reporting") || baselineBody.contains("max_execution_time");
+                boolean bodyMatch = body.contains("[PHP]") && bodyHasDirective;
+                boolean baseMatch = baselineBody.contains("[PHP]") && baseHasDirective;
+                if (bodyMatch && !baseMatch) {
                     return new ConfirmedRead("php.ini content found ([PHP] + PHP directive)");
                 }
                 break;
             }
             case "WIN_WEBCONFIG": {
-                if ((body.contains("<configuration>") && (body.contains("connectionString") || body.contains("appSettings") || body.contains("<system.web>") || body.contains("<system.webServer>")))
-                        && (!baselineBody.contains("<configuration>") || !(baselineBody.contains("connectionString") || baselineBody.contains("appSettings") || baselineBody.contains("<system.web>") || baselineBody.contains("<system.webServer>")))) {
+                boolean bodyHasElement = body.contains("connectionString") || body.contains("appSettings")
+                        || body.contains("<system.web>") || body.contains("<system.webServer>");
+                boolean baseHasElement = baselineBody.contains("connectionString") || baselineBody.contains("appSettings")
+                        || baselineBody.contains("<system.web>") || baselineBody.contains("<system.webServer>");
+                boolean bodyMatch = body.contains("<configuration>") && bodyHasElement;
+                boolean baseMatch = baselineBody.contains("<configuration>") && baseHasElement;
+                if (bodyMatch && !baseMatch) {
                     return new ConfirmedRead("web.config content found (<configuration> + .NET element)");
                 }
                 break;
@@ -1057,16 +1093,21 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "UNIX_SSHD": {
-                // Require 2+ of: Port, PermitRootLogin, PasswordAuthentication, AuthorizedKeysFile
-                int sshdMarkers = 0;
-                if (body.contains("PermitRootLogin")) sshdMarkers++;
-                if (body.contains("PasswordAuthentication")) sshdMarkers++;
-                if (body.contains("AuthorizedKeysFile")) sshdMarkers++;
-                if (body.contains("ChallengeResponseAuthentication")) sshdMarkers++;
-                if (Pattern.compile("^\\s*Port\\s+\\d+", Pattern.MULTILINE).matcher(body).find()) sshdMarkers++;
-                if (sshdMarkers >= 2 && (baselineBody == null
-                        || !baselineBody.contains("PermitRootLogin"))) {
-                    return new ConfirmedRead("sshd_config content: " + sshdMarkers + " SSH directives found");
+                // Require 2+ of the distinctive sshd_config directives AND a real lead over baseline
+                // (a docs page mentioning PermitRootLogin once must not match).
+                String[] sshdKeys = {"PermitRootLogin", "PasswordAuthentication", "AuthorizedKeysFile",
+                        "ChallengeResponseAuthentication"};
+                int bodyMarkers = 0, baseMarkers = 0;
+                for (String k : sshdKeys) {
+                    if (body.contains(k)) bodyMarkers++;
+                    if (baselineBody.contains(k)) baseMarkers++;
+                }
+                Pattern portLine = Pattern.compile("^\\s*Port\\s+\\d+", Pattern.MULTILINE);
+                if (portLine.matcher(body).find()) bodyMarkers++;
+                if (portLine.matcher(baselineBody).find()) baseMarkers++;
+                if (bodyMarkers >= 2 && bodyMarkers >= baseMarkers + 2) {
+                    return new ConfirmedRead("sshd_config content: " + bodyMarkers + " SSH directives ("
+                            + "baseline " + baseMarkers + ")");
                 }
                 break;
             }
@@ -1107,28 +1148,38 @@ public class PathTraversalScanner implements ScanModule {
                 break;
             }
             case "UNIX_REDIS": {
-                // Require 2+ of: bind, port (with number), requirepass, dir (with path), dbfilename
-                int redisMarkers = 0;
-                if (Pattern.compile("^\\s*bind\\s+", Pattern.MULTILINE).matcher(body).find()) redisMarkers++;
-                if (Pattern.compile("^\\s*port\\s+\\d+", Pattern.MULTILINE).matcher(body).find()) redisMarkers++;
-                if (body.contains("requirepass")) redisMarkers++;
-                if (Pattern.compile("^\\s*dir\\s+/", Pattern.MULTILINE).matcher(body).find()) redisMarkers++;
-                if (body.contains("dbfilename")) redisMarkers++;
-                if (redisMarkers >= 2 && (baselineBody == null || !baselineBody.contains("dbfilename"))) {
-                    return new ConfirmedRead("redis.conf content: " + redisMarkers + " Redis directives found");
+                // Require 2+ directives AND a strict lead over baseline.
+                Pattern bindLine = Pattern.compile("^\\s*bind\\s+", Pattern.MULTILINE);
+                Pattern portLine = Pattern.compile("^\\s*port\\s+\\d+", Pattern.MULTILINE);
+                Pattern dirLine  = Pattern.compile("^\\s*dir\\s+/", Pattern.MULTILINE);
+                int bodyMarkers = 0, baseMarkers = 0;
+                if (bindLine.matcher(body).find()) bodyMarkers++;
+                if (portLine.matcher(body).find()) bodyMarkers++;
+                if (body.contains("requirepass")) bodyMarkers++;
+                if (dirLine.matcher(body).find()) bodyMarkers++;
+                if (body.contains("dbfilename")) bodyMarkers++;
+                if (bindLine.matcher(baselineBody).find()) baseMarkers++;
+                if (portLine.matcher(baselineBody).find()) baseMarkers++;
+                if (baselineBody.contains("requirepass")) baseMarkers++;
+                if (dirLine.matcher(baselineBody).find()) baseMarkers++;
+                if (baselineBody.contains("dbfilename")) baseMarkers++;
+                if (bodyMarkers >= 2 && bodyMarkers >= baseMarkers + 2) {
+                    return new ConfirmedRead("redis.conf content: " + bodyMarkers + " Redis directives ("
+                            + "baseline " + baseMarkers + ")");
                 }
                 break;
             }
             case "UNIX_OPENSSL": {
-                // Require 2+ of: [req], [v3_ca], default_bits, distinguished_name, [CA_default]
-                int opensslMarkers = 0;
-                if (body.contains("[req]")) opensslMarkers++;
-                if (body.contains("[v3_ca]")) opensslMarkers++;
-                if (body.contains("default_bits")) opensslMarkers++;
-                if (body.contains("distinguished_name")) opensslMarkers++;
-                if (body.contains("[CA_default]")) opensslMarkers++;
-                if (opensslMarkers >= 2 && (baselineBody == null || !baselineBody.contains("[req]"))) {
-                    return new ConfirmedRead("openssl.cnf content: " + opensslMarkers + " OpenSSL sections/directives");
+                // Require 2+ openssl.cnf sections/directives AND a real lead over baseline.
+                String[] opensslKeys = {"[req]", "[v3_ca]", "default_bits", "distinguished_name", "[CA_default]"};
+                int bodyMarkers = 0, baseMarkers = 0;
+                for (String k : opensslKeys) {
+                    if (body.contains(k)) bodyMarkers++;
+                    if (baselineBody.contains(k)) baseMarkers++;
+                }
+                if (bodyMarkers >= 2 && bodyMarkers >= baseMarkers + 2) {
+                    return new ConfirmedRead("openssl.cnf content: " + bodyMarkers + " sections/directives ("
+                            + "baseline " + baseMarkers + ")");
                 }
                 break;
             }
