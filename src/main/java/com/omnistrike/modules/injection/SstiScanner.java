@@ -216,6 +216,9 @@ public class SstiScanner implements ScanModule {
             Map.entry("Groovy", Pattern.compile("groovy\\.lang|GroovyRuntimeException|MissingMethodException", Pattern.CASE_INSENSITIVE))
     );
 
+    // Spring EL T(java.lang.Math).random() leaks a 0.<many digits> float.
+    private static final Pattern SPRING_RANDOM_PATTERN = Pattern.compile("0\\.\\d{10,}");
+
     // OOB SSTI payloads for Collaborator-based blind detection
     // Each template engine has DNS (nslookup) AND HTTP (curl/wget) variants.
     // DNS variants work with Burp Collaborator; HTTP variants work with Custom OOB listener.
@@ -452,8 +455,8 @@ public class SstiScanner implements ScanModule {
 
             // Special case: Spring EL returns random number
             if (payload.contains("T(java.lang.Math).random()")) {
-                if (Pattern.compile("0\\.\\d{10,}").matcher(responseBody).find()
-                        && !Pattern.compile("0\\.\\d{10,}").matcher(baselineBody).find()) {
+                if (SPRING_RANDOM_PATTERN.matcher(responseBody).find()
+                        && !SPRING_RANDOM_PATTERN.matcher(baselineBody).find()) {
                     templateConfirmed = true;
                     findingsStore.addFinding(Finding.builder("ssti-scanner",
                                     "SSTI Confirmed: Spring Expression Language",

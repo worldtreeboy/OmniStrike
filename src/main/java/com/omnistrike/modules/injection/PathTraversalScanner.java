@@ -51,6 +51,28 @@ public class PathTraversalScanner implements ScanModule {
     private static final Pattern UNIX_ISSUE_PATTERN = Pattern.compile("(Ubuntu|Debian|CentOS|Red Hat|Fedora|Alpine|Arch|SUSE|Gentoo|Linux)", Pattern.CASE_INSENSITIVE);
     private static final Pattern BASE64_PATTERN = Pattern.compile("^[A-Za-z0-9+/]{50,}={0,2}$", Pattern.MULTILINE);
 
+    // Confirmed-read fingerprint patterns, hoisted out of confirmRead()'s switch so
+    // they compile once at class load instead of once per probe response.
+    private static final Pattern ID_OUTPUT_PATTERN = Pattern.compile("uid=\\d+\\([^)]+\\)\\s+gid=\\d+\\([^)]+\\)");
+    private static final Pattern CMDLINE_PATH_PATTERN = Pattern.compile("/(?:usr|bin|sbin|opt|var|home)/");
+    private static final Pattern RESOLV_CONF_PATTERN = Pattern.compile("nameserver\\s+\\d+\\.\\d+\\.\\d+\\.\\d+");
+    private static final Pattern PROC_VERSION_PATTERN = Pattern.compile("Linux version \\d+\\.\\d+");
+    private static final Pattern OS_RELEASE_PATTERN = Pattern.compile(
+            "(?m)^(?:NAME|VERSION|ID|VERSION_ID|PRETTY_NAME|ID_LIKE|HOME_URL)=");
+    private static final Pattern PRETTY_NAME_PATTERN = Pattern.compile("(?m)^PRETTY_NAME=");
+    private static final Pattern CRON_SCHEDULE_PATTERN = Pattern.compile("\\d+\\s+\\d+\\s+\\*\\s+\\*\\s+\\*|\\*/\\d+\\s+\\*\\s+\\*\\s+\\*\\s+\\*");
+    private static final Pattern HOSTS_LINE_PATTERN = Pattern.compile("127\\.0\\.0\\.1\\s+localhost");
+    private static final Pattern PROC_TCP_PATTERN = Pattern.compile("\\d+:\\s+[0-9A-F]+:[0-9A-F]+");
+    private static final Pattern SSHD_PORT_PATTERN = Pattern.compile("^\\s*Port\\s+\\d+", Pattern.MULTILINE);
+    private static final Pattern MYSQL_PORT_PATTERN = Pattern.compile("^\\s*port\\s*=", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE);
+    private static final Pattern PGHBA_HEADER_PATTERN = Pattern.compile("# TYPE\\s+DATABASE\\s+USER", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PGHBA_AUTH_PATTERN = Pattern.compile("^\\s*(?:local|host|hostssl|hostnossl)\\s+\\S+\\s+\\S+", Pattern.MULTILINE);
+    private static final Pattern ACCESS_LOG_PATTERN = Pattern.compile(
+            "\\d+\\.\\d+\\.\\d+\\.\\d+\\s+\\S+\\s+\\S+\\s+\\[.+?\\]\\s+\"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\\s+");
+    private static final Pattern REDIS_BIND_PATTERN = Pattern.compile("^\\s*bind\\s+", Pattern.MULTILINE);
+    private static final Pattern REDIS_PORT_PATTERN = Pattern.compile("^\\s*port\\s+\\d+", Pattern.MULTILINE);
+    private static final Pattern REDIS_DIR_PATTERN = Pattern.compile("^\\s*dir\\s+/", Pattern.MULTILINE);
+
     @Override
     public String getId() { return "path-traversal"; }
 
@@ -549,10 +571,9 @@ public class PathTraversalScanner implements ScanModule {
         HttpRequestResponse expectResult = sendPayload(original, target, expectPayload);
         if (expectResult != null && expectResult.response() != null) {
             String body = expectResult.response().bodyToString();
-            Pattern idOutputPattern = Pattern.compile("uid=\\d+\\([^)]+\\)\\s+gid=\\d+\\([^)]+\\)");
-            Matcher idMatcher = body != null ? idOutputPattern.matcher(body) : null;
+            Matcher idMatcher = body != null ? ID_OUTPUT_PATTERN.matcher(body) : null;
             if (idMatcher != null && idMatcher.find()
-                    && (baselineBody == null || !idOutputPattern.matcher(baselineBody).find())) {
+                    && (baselineBody == null || !ID_OUTPUT_PATTERN.matcher(baselineBody).find())) {
                 findingsStore.addFinding(Finding.builder("path-traversal",
                                 "LFI to RCE via expect:// Wrapper",
                                 Severity.CRITICAL, Confidence.CERTAIN)
@@ -883,8 +904,7 @@ public class PathTraversalScanner implements ScanModule {
             case "UNIX_CMDLINE": {
                 // Require null-separated strings containing recognizable process paths
                 if (body.contains("\0")) {
-                    Pattern cmdlinePattern = Pattern.compile("/(?:usr|bin|sbin|opt|var|home)/");
-                    if (cmdlinePattern.matcher(body).find()
+                    if (CMDLINE_PATH_PATTERN.matcher(body).find()
                             && (baselineBody == null || !baselineBody.contains("\0"))) {
                         return new ConfirmedRead("/proc/self/cmdline: null-separated args with Unix paths");
                     }
@@ -939,17 +959,15 @@ public class PathTraversalScanner implements ScanModule {
             }
             case "UNIX_RESOLV": {
                 // Require 'nameserver' followed by an IP address pattern
-                Pattern resolvPattern = Pattern.compile("nameserver\\s+\\d+\\.\\d+\\.\\d+\\.\\d+");
-                if (resolvPattern.matcher(body).find()
-                        && (baselineBody == null || !resolvPattern.matcher(baselineBody).find())) {
+                if (RESOLV_CONF_PATTERN.matcher(body).find()
+                        && (baselineBody == null || !RESOLV_CONF_PATTERN.matcher(baselineBody).find())) {
                     return new ConfirmedRead("/etc/resolv.conf content: nameserver + IP found");
                 }
                 break;
             }
             case "UNIX_PROCVERSION": {
-                Pattern procVersionPattern = Pattern.compile("Linux version \\d+\\.\\d+");
-                if (procVersionPattern.matcher(body).find()
-                        && (baselineBody == null || !procVersionPattern.matcher(baselineBody).find())) {
+                if (PROC_VERSION_PATTERN.matcher(body).find()
+                        && (baselineBody == null || !PROC_VERSION_PATTERN.matcher(baselineBody).find())) {
                     return new ConfirmedRead("/proc/version content: Linux version found");
                 }
                 break;
@@ -965,19 +983,17 @@ public class PathTraversalScanner implements ScanModule {
                 // Require at least 3 of: NAME=, VERSION=, ID=, VERSION_ID=, PRETTY_NAME=
                 // anchored at line start (multiline) — bare "ID=" matches HTML/JSON content and FPs.
                 // Baseline must NOT match the same markers (compare counts, not just one key).
-                Pattern osRelease = Pattern.compile(
-                        "(?m)^(?:NAME|VERSION|ID|VERSION_ID|PRETTY_NAME|ID_LIKE|HOME_URL)=");
                 int bodyHits = 0;
-                Matcher mr = osRelease.matcher(body);
+                Matcher mr = OS_RELEASE_PATTERN.matcher(body);
                 while (mr.find()) bodyHits++;
                 int baseHits = 0;
-                Matcher mb = osRelease.matcher(baselineBody);
+                Matcher mb = OS_RELEASE_PATTERN.matcher(baselineBody);
                 while (mb.find()) baseHits++;
                 // Require PRETTY_NAME= specifically (not present in arbitrary key=value dumps)
                 // plus a meaningful count lead over baseline.
                 if (bodyHits >= 3 && bodyHits >= baseHits + 2
-                        && Pattern.compile("(?m)^PRETTY_NAME=").matcher(body).find()
-                        && !Pattern.compile("(?m)^PRETTY_NAME=").matcher(baselineBody).find()) {
+                        && PRETTY_NAME_PATTERN.matcher(body).find()
+                        && !PRETTY_NAME_PATTERN.matcher(baselineBody).find()) {
                     return new ConfirmedRead("/etc/os-release content found (" + bodyHits + " markers, baseline "
                             + baseHits + ")");
                 }
@@ -985,28 +1001,25 @@ public class PathTraversalScanner implements ScanModule {
             }
             case "UNIX_CRONTAB": {
                 // Require cron schedule pattern AND (SHELL= or a command path)
-                Pattern cronSchedule = Pattern.compile("\\d+\\s+\\d+\\s+\\*\\s+\\*\\s+\\*|\\*/\\d+\\s+\\*\\s+\\*\\s+\\*\\s+\\*");
-                boolean hasCronSchedule = cronSchedule.matcher(body).find();
+                boolean hasCronSchedule = CRON_SCHEDULE_PATTERN.matcher(body).find();
                 boolean hasShellOrPath = body.contains("SHELL=") || body.contains("/usr/") || body.contains("/bin/");
                 if (hasCronSchedule && hasShellOrPath
-                        && (baselineBody == null || !cronSchedule.matcher(baselineBody).find())) {
+                        && (baselineBody == null || !CRON_SCHEDULE_PATTERN.matcher(baselineBody).find())) {
                     return new ConfirmedRead("/etc/crontab content found (cron schedule + shell/path)");
                 }
                 break;
             }
             case "UNIX_HOSTS": {
                 // Require 127.0.0.1 followed by localhost on the same line
-                Pattern hostsLinePattern = Pattern.compile("127\\.0\\.0\\.1\\s+localhost");
-                if (hostsLinePattern.matcher(body).find()
-                        && (baselineBody == null || !hostsLinePattern.matcher(baselineBody).find())) {
+                if (HOSTS_LINE_PATTERN.matcher(body).find()
+                        && (baselineBody == null || !HOSTS_LINE_PATTERN.matcher(baselineBody).find())) {
                     return new ConfirmedRead("/etc/hosts content: 127.0.0.1\\tlocalhost found");
                 }
                 break;
             }
             case "UNIX_PROCTCP": {
-                Pattern tcpPattern = Pattern.compile("\\d+:\\s+[0-9A-F]+:[0-9A-F]+");
-                if (tcpPattern.matcher(body).find()
-                        && (baselineBody == null || !tcpPattern.matcher(baselineBody).find())) {
+                if (PROC_TCP_PATTERN.matcher(body).find()
+                        && (baselineBody == null || !PROC_TCP_PATTERN.matcher(baselineBody).find())) {
                     return new ConfirmedRead("/proc/net/tcp content: TCP connection entries found");
                 }
                 break;
@@ -1102,9 +1115,8 @@ public class PathTraversalScanner implements ScanModule {
                     if (body.contains(k)) bodyMarkers++;
                     if (baselineBody.contains(k)) baseMarkers++;
                 }
-                Pattern portLine = Pattern.compile("^\\s*Port\\s+\\d+", Pattern.MULTILINE);
-                if (portLine.matcher(body).find()) bodyMarkers++;
-                if (portLine.matcher(baselineBody).find()) baseMarkers++;
+                if (SSHD_PORT_PATTERN.matcher(body).find()) bodyMarkers++;
+                if (SSHD_PORT_PATTERN.matcher(baselineBody).find()) baseMarkers++;
                 if (bodyMarkers >= 2 && bodyMarkers >= baseMarkers + 2) {
                     return new ConfirmedRead("sshd_config content: " + bodyMarkers + " SSH directives ("
                             + "baseline " + baseMarkers + ")");
@@ -1117,7 +1129,7 @@ public class PathTraversalScanner implements ScanModule {
                     int mysqlMarkers = 0;
                     if (body.contains("datadir")) mysqlMarkers++;
                     if (body.contains("socket")) mysqlMarkers++;
-                    if (Pattern.compile("^\\s*port\\s*=", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE).matcher(body).find()) mysqlMarkers++;
+                    if (MYSQL_PORT_PATTERN.matcher(body).find()) mysqlMarkers++;
                     if (body.contains("bind-address")) mysqlMarkers++;
                     if (mysqlMarkers >= 1 && (baselineBody == null || !baselineBody.contains("[mysqld]"))) {
                         return new ConfirmedRead("my.cnf content: [mysqld] + " + mysqlMarkers + " MySQL directives");
@@ -1127,41 +1139,34 @@ public class PathTraversalScanner implements ScanModule {
             }
             case "UNIX_PGHBA": {
                 // pg_hba.conf has a distinctive header: # TYPE  DATABASE  USER  ADDRESS  METHOD
-                Pattern pgHbaHeader = Pattern.compile("# TYPE\\s+DATABASE\\s+USER", Pattern.CASE_INSENSITIVE);
-                boolean hasHeader = pgHbaHeader.matcher(body).find();
-                boolean hasAuthLine = Pattern.compile("^\\s*(?:local|host|hostssl|hostnossl)\\s+\\S+\\s+\\S+",
-                        Pattern.MULTILINE).matcher(body).find();
+                boolean hasHeader = PGHBA_HEADER_PATTERN.matcher(body).find();
+                boolean hasAuthLine = PGHBA_AUTH_PATTERN.matcher(body).find();
                 if (hasHeader && hasAuthLine
-                        && (baselineBody == null || !pgHbaHeader.matcher(baselineBody).find())) {
+                        && (baselineBody == null || !PGHBA_HEADER_PATTERN.matcher(baselineBody).find())) {
                     return new ConfirmedRead("pg_hba.conf content: TYPE/DATABASE/USER header + auth rules");
                 }
                 break;
             }
             case "UNIX_ACCESSLOG": {
                 // Apache/nginx combined log format: IP - - [date] "METHOD /path HTTP/x.x" status size
-                Pattern accessLogPattern = Pattern.compile(
-                        "\\d+\\.\\d+\\.\\d+\\.\\d+\\s+\\S+\\s+\\S+\\s+\\[.+?\\]\\s+\"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\\s+");
-                if (accessLogPattern.matcher(body).find()
-                        && (baselineBody == null || !accessLogPattern.matcher(baselineBody).find())) {
+                if (ACCESS_LOG_PATTERN.matcher(body).find()
+                        && (baselineBody == null || !ACCESS_LOG_PATTERN.matcher(baselineBody).find())) {
                     return new ConfirmedRead("Access log content: Apache/nginx combined log format entries");
                 }
                 break;
             }
             case "UNIX_REDIS": {
                 // Require 2+ directives AND a strict lead over baseline.
-                Pattern bindLine = Pattern.compile("^\\s*bind\\s+", Pattern.MULTILINE);
-                Pattern portLine = Pattern.compile("^\\s*port\\s+\\d+", Pattern.MULTILINE);
-                Pattern dirLine  = Pattern.compile("^\\s*dir\\s+/", Pattern.MULTILINE);
                 int bodyMarkers = 0, baseMarkers = 0;
-                if (bindLine.matcher(body).find()) bodyMarkers++;
-                if (portLine.matcher(body).find()) bodyMarkers++;
+                if (REDIS_BIND_PATTERN.matcher(body).find()) bodyMarkers++;
+                if (REDIS_PORT_PATTERN.matcher(body).find()) bodyMarkers++;
                 if (body.contains("requirepass")) bodyMarkers++;
-                if (dirLine.matcher(body).find()) bodyMarkers++;
+                if (REDIS_DIR_PATTERN.matcher(body).find()) bodyMarkers++;
                 if (body.contains("dbfilename")) bodyMarkers++;
-                if (bindLine.matcher(baselineBody).find()) baseMarkers++;
-                if (portLine.matcher(baselineBody).find()) baseMarkers++;
+                if (REDIS_BIND_PATTERN.matcher(baselineBody).find()) baseMarkers++;
+                if (REDIS_PORT_PATTERN.matcher(baselineBody).find()) baseMarkers++;
                 if (baselineBody.contains("requirepass")) baseMarkers++;
-                if (dirLine.matcher(baselineBody).find()) baseMarkers++;
+                if (REDIS_DIR_PATTERN.matcher(baselineBody).find()) baseMarkers++;
                 if (baselineBody.contains("dbfilename")) baseMarkers++;
                 if (bodyMarkers >= 2 && bodyMarkers >= baseMarkers + 2) {
                     return new ConfirmedRead("redis.conf content: " + bodyMarkers + " Redis directives ("
@@ -1196,7 +1201,7 @@ public class PathTraversalScanner implements ScanModule {
                 // Require [mysqld] AND 1+ of: datadir, port, socket
                 if (body.contains("[mysqld]")) {
                     boolean hasDirective = body.contains("datadir")
-                            || Pattern.compile("^\\s*port\\s*=", Pattern.MULTILINE | Pattern.CASE_INSENSITIVE).matcher(body).find()
+                            || MYSQL_PORT_PATTERN.matcher(body).find()
                             || body.contains("socket");
                     if (hasDirective && (baselineBody == null || !baselineBody.contains("[mysqld]"))) {
                         return new ConfirmedRead("my.ini content: [mysqld] + MySQL directive");

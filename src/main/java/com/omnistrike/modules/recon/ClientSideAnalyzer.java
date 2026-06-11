@@ -1130,10 +1130,14 @@ public class ClientSideAnalyzer implements ScanModule {
 
     // ==================== Helper Methods ====================
 
+    private static final Pattern SCRIPT_TAG_PATTERN =
+            Pattern.compile("<script[^>]*>(.*?)</script>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+    private static final Pattern EVENT_HANDLER_PATTERN =
+            Pattern.compile("\\bon\\w+\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
+
     private List<String> extractScriptBlocks(String html) {
         List<String> blocks = new ArrayList<>();
-        Pattern scriptTag = Pattern.compile("<script[^>]*>(.*?)</script>", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
-        Matcher m = scriptTag.matcher(html);
+        Matcher m = SCRIPT_TAG_PATTERN.matcher(html);
         while (m.find()) {
             String content = m.group(1).trim();
             if (!content.isEmpty() && content.length() > 10) {
@@ -1141,8 +1145,7 @@ public class ClientSideAnalyzer implements ScanModule {
             }
         }
         // Also extract inline event handlers (onclick, onerror, etc.)
-        Pattern eventHandler = Pattern.compile("\\bon\\w+\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE);
-        Matcher em = eventHandler.matcher(html);
+        Matcher em = EVENT_HANDLER_PATTERN.matcher(html);
         while (em.find()) {
             blocks.add(em.group(1));
         }

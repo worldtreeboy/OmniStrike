@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.76-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.77-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
@@ -255,6 +255,11 @@ Contributing: fork → branch → `./gradlew shadowJar` must compile clean → t
 ---
 
 ## Changelog
+
+### v1.77
+- **Stability fixes.** Guarded a latent subprocess deadlock in the AI CLI backend (stdout is now drained before the prompt is piped to stdin, so a large prompt can't fill the pipe buffer and hang); fixed two array-index edge cases that could throw mid-scan (the SQLi UNION builder's Oracle `FROM` guard now matches the delimiter it splits on, and the Dynamics 365 FetchXML alias parse tolerates a trailing `alias='`).
+- **Faster hot-path scanners.** Hoisted 27 regexes out of per-call method bodies into compile-once `static final` fields across Path Traversal, XXE, SSTI, Client-Side, Security Header, and Tech Fingerprinter — including five that were being recompiled twice per probe (response + baseline). No behavior change; less CPU/GC churn on large scans.
+- Removed a stale leftover source snapshot from the tree.
 
 ### v1.76
 - **Passive analyzers are now right-click only too.** Nothing runs automatically on proxy traffic. Both passive analyzers and active scanners only execute on requests you explicitly send via right-click → Send to OmniStrike. The previous auto-passive-on-in-scope behavior, the Burp Target → Scope fallback gate, and the dead OmniStrike include/exclude path checks are all gone. Findings list now contains exactly what you asked for, nothing else.

@@ -59,13 +59,11 @@ public class CliBackend {
 
             Process process = pb.start();
 
-            // Always pipe the prompt via stdin — never pass as a CLI argument.
-            try (OutputStream os = process.getOutputStream()) {
-                os.write(prompt.getBytes(StandardCharsets.UTF_8));
-                os.flush();
-            }
-
-            // Read stdout in a separate thread to avoid blocking
+            // Drain stdout on a background thread BEFORE writing stdin. With a
+            // large prompt, a CLI that emits any output while still consuming
+            // stdin would otherwise fill the ~64KB stdout pipe buffer, block on
+            // its own write, never drain our stdin, and deadlock against our
+            // blocking stdin write below.
             StringBuilder output = new StringBuilder();
             Thread reader = new Thread(() -> {
                 try (BufferedReader br = new BufferedReader(
@@ -78,6 +76,16 @@ public class CliBackend {
             }, "OmniStrike-CLI-Reader");
             reader.setDaemon(true);
             reader.start();
+
+            // Always pipe the prompt via stdin — never pass as a CLI argument.
+            try (OutputStream os = process.getOutputStream()) {
+                os.write(prompt.getBytes(StandardCharsets.UTF_8));
+                os.flush();
+            } catch (IOException pipeClosed) {
+                // Process exited or closed stdin before consuming the whole
+                // prompt. Don't mask the underlying failure — waitFor, the exit
+                // code, and the captured output below will report it accurately.
+            }
 
             boolean finished = process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!finished) {

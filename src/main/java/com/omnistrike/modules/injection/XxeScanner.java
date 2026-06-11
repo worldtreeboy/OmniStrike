@@ -289,6 +289,14 @@ public class XxeScanner implements ScanModule {
     private static final Pattern WINDOWS_WIN_INI_EVIDENCE = Pattern.compile("\\[fonts\\]", Pattern.CASE_INSENSITIVE);
     private static final Pattern WINDOWS_HOSTS_EVIDENCE = Pattern.compile("127\\.0\\.0\\.1\\s+localhost", Pattern.CASE_INSENSITIVE);
 
+    // Payload-construction patterns, hoisted so they compile once rather than per
+    // payload build.
+    private static final Pattern XML_DECL_PATTERN = Pattern.compile("<\\?xml[^?]*\\?>");
+    private static final Pattern FIRST_ELEMENT_PATTERN = Pattern.compile("(<[a-zA-Z][^>]*>)([^<]*)");
+    private static final Pattern SOAP_BODY_CONTENT_PATTERN = Pattern.compile(
+            "(<(?:soap|SOAP-ENV|soapenv):Body[^>]*>\\s*<[^>]+>)([^<]*)",
+            Pattern.CASE_INSENSITIVE);
+
     // ==================== OVERRIDES ====================
 
     @Override
@@ -2335,8 +2343,7 @@ public class XxeScanner implements ScanModule {
 
         // Remove the XML declaration if present; we will re-add it in the DTD
         String xmlDecl = "";
-        Pattern xmlDeclPattern = Pattern.compile("<\\?xml[^?]*\\?>");
-        Matcher m = xmlDeclPattern.matcher(result);
+        Matcher m = XML_DECL_PATTERN.matcher(result);
         if (m.find()) {
             xmlDecl = m.group();
             result = m.replaceFirst("");
@@ -2367,8 +2374,7 @@ public class XxeScanner implements ScanModule {
      */
     private String injectEntityReferenceIntoFirstElement(String xml, String entityRef) {
         // Try to find the first opening tag and inject the entity reference after it
-        Pattern firstElementPattern = Pattern.compile("(<[a-zA-Z][^>]*>)([^<]*)");
-        Matcher matcher = firstElementPattern.matcher(xml);
+        Matcher matcher = FIRST_ELEMENT_PATTERN.matcher(xml);
         if (matcher.find()) {
             int insertPos = matcher.start(2);
             return xml.substring(0, insertPos) + entityRef + xml.substring(insertPos);
@@ -2382,10 +2388,7 @@ public class XxeScanner implements ScanModule {
      */
     private String injectEntityReferenceIntoSoap(String soapXml, String entityRef) {
         // Try to find SOAP Body content and inject entity reference there
-        Pattern soapBodyContentPattern = Pattern.compile(
-                "(<(?:soap|SOAP-ENV|soapenv):Body[^>]*>\\s*<[^>]+>)([^<]*)",
-                Pattern.CASE_INSENSITIVE);
-        Matcher m = soapBodyContentPattern.matcher(soapXml);
+        Matcher m = SOAP_BODY_CONTENT_PATTERN.matcher(soapXml);
         if (m.find()) {
             int insertPos = m.start(2);
             return soapXml.substring(0, insertPos) + entityRef + soapXml.substring(insertPos);

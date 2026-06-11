@@ -275,8 +275,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         }
 
         // Check for wildcard sources
-        Pattern wildcardSrc = Pattern.compile("(\\w+-src\\s+[^;]*\\*)");
-        Matcher wm = wildcardSrc.matcher(csp);
+        Matcher wm = CSP_WILDCARD_SRC_PATTERN.matcher(csp);
         while (wm.find()) {
             String directive = wm.group(1);
             if (!directive.contains("*.") && directive.contains(" *")) {
@@ -340,9 +339,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
             String cookieName = extractCookieName(value);
             if (cookieName == null) continue;
 
-            boolean isSession = Pattern.compile(
-                    "\\b(session|sess|sid|token|auth|jwt|csrf|xsrf)\\b",
-                    Pattern.CASE_INSENSITIVE).matcher(cookieName).find();
+            boolean isSession = SESSION_COOKIE_NAME_PATTERN.matcher(cookieName).find();
             String flagLower = value.toLowerCase();
 
             if (isSession) {
@@ -429,6 +426,10 @@ public class SecurityHeaderAnalyzer implements ScanModule {
 
     private static final Pattern JWT_PATTERN = Pattern.compile(
             "eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+");
+    private static final Pattern CSP_WILDCARD_SRC_PATTERN = Pattern.compile("(\\w+-src\\s+[^;]*\\*)");
+    private static final Pattern SESSION_COOKIE_NAME_PATTERN =
+            Pattern.compile("\\b(session|sess|sid|token|auth|jwt|csrf|xsrf)\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern HSTS_MAX_AGE_PATTERN = Pattern.compile("max-age=(\\d+)");
 
     private void checkHsts(Map<String, String> headers, String url, String host,
                             List<Finding> findings, List<HeaderFinding> hostFindings) {
@@ -436,7 +437,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         if (hsts == null) return;
 
         // Check max-age
-        Matcher maxAgeMatcher = Pattern.compile("max-age=(\\d+)").matcher(hsts.toLowerCase());
+        Matcher maxAgeMatcher = HSTS_MAX_AGE_PATTERN.matcher(hsts.toLowerCase());
         if (maxAgeMatcher.find()) {
             long maxAge = Long.parseLong(maxAgeMatcher.group(1));
             if (maxAge < 15768000) { // Less than 6 months

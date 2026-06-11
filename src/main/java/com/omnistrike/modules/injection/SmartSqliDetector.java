@@ -718,8 +718,11 @@ public class SmartSqliDetector implements ScanModule {
 
                 String[] cols = new String[columnCount];
                 Arrays.fill(cols, "NULL");
-                // Oracle probes with FROM need special handling
-                boolean oracleFrom = probe[1].contains("FROM ");
+                // Oracle probes with FROM need special handling. Match the exact
+                // " FROM " delimiter used by the split below, otherwise a probe
+                // containing "FROM " without a leading space would set oracleFrom
+                // yet split into a single element, throwing on the [1] access.
+                boolean oracleFrom = probe[1].contains(" FROM ");
                 if (oracleFrom) {
                     cols[reflectedCol - 1] = probe[1].split(" FROM ")[0];
                 } else {

@@ -378,9 +378,14 @@ public class Dynamics365Scanner implements ScanModule {
             String resultBody = result.response().bodyToString();
             if (resultBody == null) resultBody = "";
 
-            // Check: cross-entity data appeared (owner.*, team.* aliases)
-            String alias = linkEntity.contains("alias='") ?
-                    linkEntity.split("alias='")[1].split("'")[0] : "linked";
+            // Check: cross-entity data appeared (owner.*, team.* aliases).
+            // split() drops trailing empties, so guard the [1] access in case
+            // "alias='" sits at the very end of the string.
+            String alias = "linked";
+            String[] aliasParts = linkEntity.split("alias='", 2);
+            if (aliasParts.length == 2) {
+                alias = aliasParts[1].split("'")[0];
+            }
 
             if (resultBody.contains("\"" + alias + ".")
                     && !baselineBody.contains("\"" + alias + ".")

@@ -352,6 +352,9 @@ public final class TechProfiler implements TechRegistry.TechUpdateListener {
     /** Weight for TTL-based OS inference. Low — TTL is modifiable and hop-dependent. */
     private static final int W_TTL = 15;
 
+    /** Matches the TTL value in ping output ("ttl=64" / "TTL=128"). */
+    private static final Pattern PING_TTL_PATTERN = Pattern.compile("(?i)ttl[=:]\\s*(\\d+)");
+
     /**
      * Ping the host and infer OS from the response TTL.
      *
@@ -401,7 +404,7 @@ public final class TechProfiler implements TechRegistry.TechUpdateListener {
             // Extract TTL from ping output
             // Linux format:  "64 bytes from x.x.x.x: icmp_seq=1 ttl=64 time=1.23 ms"
             // Windows format: "Reply from x.x.x.x: bytes=32 time=1ms TTL=128"
-            java.util.regex.Matcher m = Pattern.compile("(?i)ttl[=:]\\s*(\\d+)").matcher(output);
+            java.util.regex.Matcher m = PING_TTL_PATTERN.matcher(output);
             if (!m.find()) return;
 
             int ttl = Integer.parseInt(m.group(1));
