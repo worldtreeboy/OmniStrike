@@ -26,9 +26,11 @@ import java.util.regex.Pattern;
 
 /**
  * MODULE 5: Smart SQLi Detector
- * Comprehensive SQL injection detection covering error-based, union-based,
- * time-based blind, boolean-based blind, and OOB (Burp Collaborator) techniques.
- * 6 detection phases with configurable toggles for each.
+ * Comprehensive SQL injection detection covering error-based (via DBMS
+ * fingerprinting probes), union-based, time-based blind, and OOB
+ * (Burp Collaborator) techniques. Phases: baseline, DBMS fingerprint /
+ * error-based, OOB, union-based, time-based blind — each detection
+ * technique has a configurable toggle.
  */
 public class SmartSqliDetector implements ScanModule {
 
@@ -410,7 +412,7 @@ public class SmartSqliDetector implements ScanModule {
 
     @Override
     public String getDescription() {
-        return "SQL injection detection: error-based, union-based, time-blind, boolean-blind, and OOB (Collaborator).";
+        return "SQL injection detection: error-based, union-based, time-blind, and OOB (Collaborator).";
     }
 
     @Override
@@ -462,7 +464,10 @@ public class SmartSqliDetector implements ScanModule {
             // Atomic mark-before-test: putIfAbsent returns null only on first caller,
             // preventing both the TOCTOU race (containsKey/put) and the retry-on-exception
             // bug (parameter retested forever if testParameter throws).
-            if (tested.putIfAbsent(dedupKey, Boolean.TRUE) != null) continue;
+            // Manual (right-click) scans set the shared dedup bypass on this thread —
+            // honor it so an explicit re-scan actually re-tests the parameter.
+            boolean manualBypass = dedup != null && dedup.isBypass();
+            if (!manualBypass && tested.putIfAbsent(dedupKey, Boolean.TRUE) != null) continue;
 
             try {
                 testParameter(requestResponse, ip, urlPath);
@@ -1046,31 +1051,54 @@ public class SmartSqliDetector implements ScanModule {
 
         // We won the race — perform fingerprinting
         try {
-            String result = runFingerprintProbes(original, ip, baselineBody);
+            FingerprintResult result = runFingerprintProbes(original, ip, baselineBody);
 
             // Cache the result (empty string = inconclusive)
-            fingerprintCache.put(urlPath, result != null ? result : "");
+            fingerprintCache.put(urlPath, result != null ? result.dbms : "");
 
             if (result != null) {
-                api.logging().logToOutput("[SQLi] DBMS fingerprint: " + result
+                api.logging().logToOutput("[SQLi] DBMS fingerprint: " + result.dbms
                         + " (path=" + urlPath + ", param=" + ip.name + ")");
 
                 // Report as INFO finding
                 findingsStore.addFinding(Finding.builder("sqli-detector",
-                                "DBMS Fingerprint: " + result,
+                                "DBMS Fingerprint: " + result.dbms,
                                 Severity.INFO, Confidence.TENTATIVE)
                         .url(original.request().url())
                         .parameter(ip.name)
-                        .description("DBMS fingerprinted as " + result + " via error-based probes. "
-                                + "Subsequent payload phases will be filtered to " + result
+                        .description("DBMS fingerprinted as " + result.dbms + " via error-based probes. "
+                                + "Subsequent payload phases will be filtered to " + result.dbms
                                 + "-specific and generic payloads, reducing request count.")
                         .build());
+
+                // High confidence (2+ DBMS-specific error patterns absent from the
+                // baseline) means quote-breaking probes reached the SQL query
+                // unsanitized — that is error-based SQL injection, so file it as a
+                // vulnerability, not just a fingerprint note.
+                if (result.hits >= 2) {
+                    findingsStore.addFinding(Finding.builder("sqli-detector",
+                                    "Error-Based SQL Injection (" + result.dbms + ")",
+                                    Severity.HIGH, Confidence.FIRM)
+                            .url(original.request().url())
+                            .parameter(ip.name)
+                            .description("Error-based SQL injection detected: quote-breaking probes "
+                                    + "triggered " + result.hits + " " + result.dbms + "-specific database "
+                                    + "error pattern(s) that were absent from the baseline response, "
+                                    + "indicating unsanitized input reaches the SQL query.")
+                            .evidence(result.evidence)
+                            .payload(result.probe)
+                            .responseEvidence(result.evidence)
+                            .requestResponse(result.response)
+                            .remediation("Use parameterized queries / prepared statements. "
+                                    + "Do not concatenate user input into SQL strings.")
+                            .build());
+                }
             } else {
                 api.logging().logToOutput("[SQLi] DBMS fingerprint inconclusive"
                         + " (path=" + urlPath + ", param=" + ip.name + ") — all payloads will fire");
             }
 
-            return result;
+            return result != null ? result.dbms : null;
         } finally {
             newLatch.countDown();
             fingerprintLatches.remove(urlPath);
@@ -1079,11 +1107,12 @@ public class SmartSqliDetector implements ScanModule {
 
     /**
      * Send fingerprint probes and match responses against ERROR_PATTERNS.
-     * Returns the DBMS name with the most hits, or null if no matches.
+     * Returns the DBMS with the most hits (plus hit count and a sample matched
+     * error as evidence), or null if no matches.
      */
-    private String runFingerprintProbes(HttpRequestResponse original, InjectionPoint ip,
+    private FingerprintResult runFingerprintProbes(HttpRequestResponse original, InjectionPoint ip,
                                          String baselineBody) {
-        Map<String, Integer> hits = new LinkedHashMap<>();
+        Map<String, DbmsHit> hits = new LinkedHashMap<>();
 
         for (int i = 0; i < FINGERPRINT_PROBES.length; i++) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return null;
@@ -1105,9 +1134,17 @@ public class SmartSqliDetector implements ScanModule {
 
                     for (Pattern pattern : entry.getValue()) {
                         // Only count if pattern matches response but NOT baseline
-                        if (pattern.matcher(responseBody).find()
+                        Matcher matcher = pattern.matcher(responseBody);
+                        if (matcher.find()
                                 && (baselineBody == null || !pattern.matcher(baselineBody).find())) {
-                            hits.merge(dbms, 1, Integer::sum);
+                            DbmsHit hit = hits.computeIfAbsent(dbms, k -> new DbmsHit());
+                            hit.count++;
+                            if (hit.evidence == null) {
+                                String ev = matcher.group();
+                                hit.evidence = ev.length() > 200 ? ev.substring(0, 200) + "..." : ev;
+                                hit.probe = probe;
+                                hit.response = result;
+                            }
                         }
                     }
                 }
@@ -1115,9 +1152,9 @@ public class SmartSqliDetector implements ScanModule {
                 // Smart early exit: if the universal probe (') alone matched 2+ patterns
                 // for one DBMS, we have high confidence — return immediately (1 request)
                 if (i == 0) {
-                    for (Map.Entry<String, Integer> h : hits.entrySet()) {
-                        if (h.getValue() >= 2) {
-                            return h.getKey();
+                    for (Map.Entry<String, DbmsHit> h : hits.entrySet()) {
+                        if (h.getValue().count >= 2) {
+                            return new FingerprintResult(h.getKey(), h.getValue());
                         }
                     }
                     // If ' produced no patterns and status != 500, the app likely doesn't
@@ -1138,9 +1175,34 @@ public class SmartSqliDetector implements ScanModule {
         if (hits.isEmpty()) return null;
 
         return hits.entrySet().stream()
-                .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey)
+                .max((a, b) -> Integer.compare(a.getValue().count, b.getValue().count))
+                .map(e -> new FingerprintResult(e.getKey(), e.getValue()))
                 .orElse(null);
+    }
+
+    /** Accumulated error-pattern hits for one DBMS during fingerprinting. */
+    private static class DbmsHit {
+        int count;
+        String evidence;            // first matched error string (truncated to 200 chars)
+        String probe;               // probe payload that produced the first hit
+        HttpRequestResponse response; // probe response containing the first hit
+    }
+
+    /** Fingerprint outcome: the winning DBMS plus the hit data supporting it. */
+    private static class FingerprintResult {
+        final String dbms;
+        final int hits;
+        final String evidence;
+        final String probe;
+        final HttpRequestResponse response;
+
+        FingerprintResult(String dbms, DbmsHit hit) {
+            this.dbms = dbms;
+            this.hits = hit.count;
+            this.evidence = hit.evidence;
+            this.probe = hit.probe;
+            this.response = hit.response;
+        }
     }
 
     // ==================== HELPER METHODS ====================
