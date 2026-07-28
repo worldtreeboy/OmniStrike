@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.78-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.79-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
@@ -67,7 +67,7 @@ Client-Side (DOM XSS, prototype pollution, secrets) · Endpoint Finder · Subdom
 
 | Tool | What It Does |
 |:-----|:-------------|
-| **AI Vulnerability Analyzer** | LLM-powered fuzzing via Claude/Gemini/Codex/OpenCode CLI. No API keys. Off by default. |
+| **AI Vulnerability Analyzer** | LLM-powered fuzzing via Claude/Gemini/Codex/OpenCode/Kimi/Grok CLI. No API keys. Off by default. |
 | **Deserialization Generator** | 137+ gadget chains across 6 languages, copy-paste-ready. |
 | **File Payload Generator** | 39 file payloads (PDF/SVG/DOCX/XLSX XXE, web shells, polyglots, EICAR) + 31 inline payloads. |
 | **Wordlist Generator** | Passive word harvester for fuzzing/brute-forcing. |
@@ -255,6 +255,10 @@ Contributing: fork → branch → `./gradlew shadowJar` must compile clean → t
 ---
 
 ## Changelog
+
+### v1.79
+- **Two new AI CLI backends: Kimi CLI and Grok CLI.** The AI Vulnerability Analyzer now supports six local CLIs (Claude, Gemini, Codex, OpenCode, Kimi, Grok). Kimi takes its prompt via `-p` argument (stdin is not read), so on Windows OmniStrike parses the npm wrapper and invokes the CLI's JS entry via `node` directly — no shell, so prompt content stays injection-safe. Grok uses `--prompt-file` with a temp file, which is both shell-safe and free of the Windows 32K argv limit. Kimi transcript formatting (`• ` prefixes, wrap indents, session-resume notices) is stripped so findings parsing works. Prompts over 30K chars on the argv-based Kimi path are rejected with a clear error instead of being silently truncated.
+- **Headless auto-approve for all CLI backends.** Claude gets `--dangerously-skip-permissions`, Gemini `--yolo`, Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--yolo` — unattended tool use no longer stalls on permission prompts. Kimi rejects `--yolo` in `-p` mode (auto permission is already the default) and `opencode run` is inherently non-interactive, so those need no flag. Note: auto-approve means the CLI executes LLM-decided actions without confirmation, and prompts contain attacker-controlled HTTP data — run Burp somewhere you accept that prompt-injection exposure.
 
 ### v1.78
 - **SQLi: error-based detection now files a real finding.** The DBMS fingerprint phase already sent quote-breaking probes and matched responses against the DBMS error-pattern table — but only reported an INFO "DBMS Fingerprint" note. Now, when 2+ DBMS-specific error patterns absent from the baseline match, it also files **Error-Based SQL Injection — HIGH / FIRM**, with the matched error string as evidence and the probe's request/response attached. Zero extra requests; reuses the existing fingerprint probes. Single-hit detections stay INFO-only, so FP exposure is unchanged.

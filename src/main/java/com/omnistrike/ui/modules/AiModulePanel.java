@@ -364,7 +364,8 @@ public class AiModulePanel extends JPanel {
         form.add(createFieldLabel("CLI Tool:"), gbc);
 
         LlmProvider[] cliProviders = {LlmProvider.CLI_CLAUDE, LlmProvider.CLI_GEMINI,
-                LlmProvider.CLI_CODEX, LlmProvider.CLI_OPENCODE};
+                LlmProvider.CLI_CODEX, LlmProvider.CLI_OPENCODE, LlmProvider.CLI_KIMI,
+                LlmProvider.CLI_GROK};
         cliProviderCombo = new JComboBox<>(cliProviders);
         cliProviderCombo.setPreferredSize(new Dimension(200, 28));
         CyberTheme.styleComboBox(cliProviderCombo);

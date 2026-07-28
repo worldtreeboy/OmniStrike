@@ -11,7 +11,9 @@ public enum LlmProvider {
     CLI_CLAUDE("Claude CLI", "claude", "claude-cli"),
     CLI_GEMINI("Gemini CLI", "gemini", "gemini-cli"),
     CLI_CODEX("Codex CLI", "codex", "codex-cli"),
-    CLI_OPENCODE("OpenCode CLI", "opencode", "opencode-cli");
+    CLI_OPENCODE("OpenCode CLI", "opencode", "opencode-cli"),
+    CLI_KIMI("Kimi CLI", "kimi", "kimi-code"),
+    CLI_GROK("Grok CLI", "grok", "grok-code");
 
     private final String displayName;
     private final String defaultBinary; // CLI binary name
@@ -29,9 +31,13 @@ public enum LlmProvider {
     /** Returns the default CLI binary name. */
     public String getCliCommand() { return defaultBinary; }
 
-    /** All CLI providers now read the prompt from stdin to prevent command injection. */
+    /**
+     * True for providers that read the prompt from stdin. CLI_KIMI takes the prompt
+     * via its -p argument; CLI_GROK reads it from a --prompt-file temp file. Neither
+     * reads the prompt from stdin.
+     */
     public boolean usesStdinForPrompt() {
-        return true;
+        return this != CLI_KIMI && this != CLI_GROK;
     }
 
     @Override
