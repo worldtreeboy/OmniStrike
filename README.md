@@ -292,6 +292,14 @@ Contributing: fork → branch → `./gradlew shadowJar` must compile clean → t
 
 ---
 
+## Contributors
+
+- [worldtreeboy](https://github.com/worldtreeboy) — author & maintainer
+- **Claude** (Anthropic) — AI pair programmer
+- **Kimi** (Moonshot AI) — AI pair programmer
+
+---
+
 ## Legal
 
 OmniStrike is for **authorized penetration testing** and **security research** only. Use exclusively on systems you have written permission to test. The authors are not responsible for misuse.
