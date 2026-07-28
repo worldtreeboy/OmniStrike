@@ -9,6 +9,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 /**
  * Executes LLM prompts via local CLI tools (Claude, Gemini, Codex, OpenCode, Kimi, Grok).
  * Each call spawns a fresh process — no shared state, inherently thread-safe.
@@ -149,7 +153,9 @@ public class CliBackend {
             int exitCode = process.exitValue();
             String result = stripAnsi(output.toString().trim());
             if (provider == LlmProvider.CLI_KIMI) {
-                result = cleanKimiTranscript(result);
+                result = extractKimiText(result);
+            } else if (provider == LlmProvider.CLI_GROK) {
+                result = extractGrokText(result);
             }
 
             if (exitCode != 0) {
@@ -270,6 +276,10 @@ public class CliBackend {
             cmd.add(promptFile.getAbsolutePath());
             // Headless auto-approve (documented for -p/--prompt-file automation)
             cmd.add("--yolo");
+            // Structured output: a single JSON object on stdout; the response text is
+            // extracted from its "text" field (see extractGrokText).
+            cmd.add("--output-format");
+            cmd.add("json");
         } else {
             // CLI_KIMI — prompt as argv element
             if (prompt.length() > MAX_ARG_PROMPT_CHARS) {
@@ -280,6 +290,11 @@ public class CliBackend {
             }
             cmd.add("-p");
             cmd.add(prompt);
+            // Structured output: JSONL on stdout, one object per message; assistant
+            // text is extracted from {"role":"assistant","content":...} lines
+            // (see extractKimiText).
+            cmd.add("--output-format");
+            cmd.add("stream-json");
         }
         return cmd;
     }
@@ -363,10 +378,38 @@ public class CliBackend {
     }
 
     /**
+     * Extracts the assistant response from Kimi's `--output-format stream-json` JSONL:
+     * concatenates the "content" of all {"role":"assistant", ...} lines and skips meta
+     * lines (session-resume hints) and tool_call messages. Falls back to transcript
+     * cleanup if no JSONL assistant content is found, so a schema change never loses
+     * the response.
+     */
+    private String extractKimiText(String raw) {
+        if (raw == null || raw.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder(raw.length());
+        for (String line : raw.split("\n")) {
+            line = line.trim();
+            if (!line.startsWith("{")) continue;
+            try {
+                JsonObject obj = JsonParser.parseString(line).getAsJsonObject();
+                JsonElement role = obj.get("role");
+                JsonElement content = obj.get("content");
+                if (role != null && role.isJsonPrimitive()
+                        && "assistant".equals(role.getAsString())
+                        && content != null && content.isJsonPrimitive()) {
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append(content.getAsString());
+                }
+            } catch (Exception ignored) {}
+        }
+        return sb.length() > 0 ? sb.toString().trim() : cleanKimiTranscript(raw);
+    }
+
+    /**
      * Cleans Kimi CLI `-p` transcript output: strips the "• " bullet prefix from
      * message lines, the 2-space wrap indent from continuation lines, and drops
-     * the trailing session-resume notice. Without this, JSON code fences emitted
-     * by the model arrive prefixed/indented and break response parsing.
+     * the trailing session-resume notice. Fallback for when stream-json parsing
+     * finds no assistant content (e.g. an older CLI version without the flag).
      */
     private String cleanKimiTranscript(String text) {
         if (text == null || text.isEmpty()) return "";
@@ -378,6 +421,33 @@ public class CliBackend {
             sb.append(line).append("\n");
         }
         return sb.toString().trim();
+    }
+
+    /**
+     * Extracts the response text from Grok's `--output-format json` object ({"text": ...}).
+     * stderr is merged into stdout (redirectErrorStream), and Grok writes logs/update
+     * notices to stderr — so if whole-output parsing fails, retry from the first '{'.
+     * Falls back to the raw output so a schema change never loses the response.
+     */
+    private String extractGrokText(String raw) {
+        if (raw == null || raw.isEmpty()) return "";
+        String text = tryExtractGrokText(raw);
+        if (text == null) {
+            int brace = raw.indexOf('{');
+            if (brace > 0) text = tryExtractGrokText(raw.substring(brace));
+        }
+        return text != null ? text : raw;
+    }
+
+    private String tryExtractGrokText(String candidate) {
+        try {
+            JsonObject obj = JsonParser.parseString(candidate).getAsJsonObject();
+            JsonElement text = obj.get("text");
+            if (text != null && text.isJsonPrimitive()) {
+                return text.getAsString().trim();
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     private String stripAnsi(String text) {

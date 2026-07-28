@@ -8,8 +8,9 @@ import java.util.List;
 /**
  * Unified client for calling LLM providers.
  * Supports two mutually exclusive backends:
- *   - CLI providers (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI)
- *   - API Key providers (Anthropic, OpenAI, Google Gemini via HTTP)
+ *   - CLI providers (Claude CLI, Gemini CLI, Codex CLI, OpenCode CLI, Kimi CLI, Grok CLI)
+ *   - API Key providers (Anthropic, OpenAI, Google Gemini, xAI, Moonshot, DeepSeek,
+ *     Mistral, Groq, OpenRouter, Ollama — via HTTP)
  *
  * Only one mode can be active at a time. The active connection mode determines
  * which backend is used when call() is invoked.

@@ -111,14 +111,16 @@ public class FindingsBundler implements FindingsStore.FindingsListener {
     }
 
     private Finding createConsolidated(String host, List<Finding> findings) {
-        // Determine max severity (lowest ordinal = most severe)
+        // Determine max severity / min confidence across the bundle.
+        // Severity ordinals run INFO(0) .. CRITICAL(4) — HIGHER ordinal = more severe.
+        // Confidence ordinals run TENTATIVE(0) .. CERTAIN(2) — LOWER ordinal = less confident.
         Severity maxSev = Severity.INFO;
         Confidence minConf = Confidence.CERTAIN;
         for (Finding f : findings) {
-            if (f.getSeverity().ordinal() < maxSev.ordinal()) {
+            if (f.getSeverity().ordinal() > maxSev.ordinal()) {
                 maxSev = f.getSeverity();
             }
-            if (f.getConfidence().ordinal() > minConf.ordinal()) {
+            if (f.getConfidence().ordinal() < minConf.ordinal()) {
                 minConf = f.getConfidence();
             }
         }

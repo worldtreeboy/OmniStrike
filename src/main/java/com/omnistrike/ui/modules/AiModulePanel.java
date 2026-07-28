@@ -457,6 +457,7 @@ public class AiModulePanel extends JPanel {
         form.add(createFieldLabel("Model:"), gbc);
 
         apiModelCombo = new JComboBox<>();
+        apiModelCombo.setEditable(true); // model IDs change fast — allow typing any ID
         apiModelCombo.setPreferredSize(new Dimension(220, 28));
         CyberTheme.styleComboBox(apiModelCombo);
         gbc.gridx = 3; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 0.6;

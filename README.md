@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.79-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.80-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
@@ -255,6 +255,12 @@ Contributing: fork → branch → `./gradlew shadowJar` must compile clean → t
 ---
 
 ## Changelog
+
+### v1.80
+- **API Key mode: 10 providers.** The AI Vulnerability Analyzer's API-key backend now covers Anthropic, OpenAI, Google Gemini, xAI (Grok), Moonshot AI (Kimi), DeepSeek, Mistral, Groq, OpenRouter, and Ollama (local, keyless). Providers are grouped by wire style (Anthropic Messages / OpenAI-compatible chat completions / Gemini generateContent), so new OpenAI-compatible providers are a one-line addition. Model lists refreshed (claude-opus-4-7, gpt-5.4, grok-4.5, kimi-k2.6, ...) and the model dropdown is now editable — type any newer model ID directly.
+- **Structured LLM output for Grok and Kimi CLIs.** Grok now runs with `--output-format json` and Kimi with `--output-format stream-json`; responses are parsed as JSON (assistant content extracted per message) instead of scraping transcript formatting. The Kimi `• `-prefix cleanup remains as a fallback for older CLI versions.
+- **GraphQL scanner fixes.** Manual scans of requests without a captured response (e.g. unsent Repeater items) no longer silently skip — the response-shape gate only applies when a response exists. Fixed a null-body NPE in the deep-nesting check that could abort the injection/IDOR/HTTP-level phases for an endpoint.
+- **Bundled findings report real severity/confidence.** Fixed inverted comparisons in FindingsBundler that made every consolidated "Security Hygiene" issue report INFORMATION severity and CERTAIN confidence; bundles now take the highest severity and lowest confidence of their findings.
 
 ### v1.79
 - **Two new AI CLI backends: Kimi CLI and Grok CLI.** The AI Vulnerability Analyzer now supports six local CLIs (Claude, Gemini, Codex, OpenCode, Kimi, Grok). Kimi takes its prompt via `-p` argument (stdin is not read), so on Windows OmniStrike parses the npm wrapper and invokes the CLI's JS entry via `node` directly — no shell, so prompt content stays injection-safe. Grok uses `--prompt-file` with a temp file, which is both shell-safe and free of the Windows 32K argv limit. Kimi transcript formatting (`• ` prefixes, wrap indents, session-resume notices) is stripped so findings parsing works. Prompts over 30K chars on the argv-based Kimi path are rejected with a clear error instead of being silently truncated.

@@ -232,7 +232,7 @@ public class GraphqlTool implements ScanModule {
             } catch (Exception ignored) {}
         }
 
-        if ((pathMatch || bodyMatch) && responseMatch) {
+        if ((pathMatch || bodyMatch) && (responseMatch || requestResponse.response() == null)) {
             String endpointKey = host + path;
             if (!dedup.markIfNew(MODULE_ID, host, path)) return Collections.emptyList();
             if (detectedEndpoints.putIfAbsent(endpointKey, Boolean.TRUE) == null) {
@@ -1394,7 +1394,7 @@ public class GraphqlTool implements ScanModule {
         perHostDelay();
 
         if (result != null && result.response() != null && result.response().statusCode() == 200
-                && !result.response().bodyToString().contains("\"errors\"")) {
+                && !String.valueOf(result.response().bodyToString()).contains("\"errors\"")) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
                             "GraphQL No Query Depth Limiting",
                             Severity.INFO, Confidence.FIRM)

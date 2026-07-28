@@ -13,7 +13,9 @@ import java.time.Duration;
  * HTTP backend that calls LLM provider REST APIs directly using API keys.
  * Uses Java 17's built-in java.net.http.HttpClient — no external dependencies.
  *
- * Supports: Anthropic (Claude), OpenAI, Google Gemini.
+ * Supports three wire styles (see ApiKeyProvider.Style): Anthropic Messages,
+ * OpenAI-compatible chat completions (OpenAI, xAI, Moonshot, DeepSeek, Mistral,
+ * Groq, OpenRouter, Ollama), and Google Gemini generateContent.
  * Thread-safe — single shared HttpClient instance, no mutable state.
  */
 public class ApiKeyBackend {
@@ -39,7 +41,7 @@ public class ApiKeyBackend {
      * @return the model's text response
      */
     public String call(ApiKeyProvider provider, String apiKey, String model, String prompt) throws LlmException {
-        if (apiKey == null || apiKey.isBlank()) {
+        if (!provider.allowsEmptyApiKey() && (apiKey == null || apiKey.isBlank())) {
             throw new LlmException(LlmException.ErrorType.AUTH_FAILURE, "API key is empty");
         }
 
@@ -108,20 +110,24 @@ public class ApiKeyBackend {
     // ==================== Request building ====================
 
     private String buildUrl(ApiKeyProvider provider, String model) {
-        return switch (provider) {
-            case ANTHROPIC -> provider.getBaseUrl();
-            case OPENAI -> provider.getBaseUrl();
+        return switch (provider.getStyle()) {
+            case ANTHROPIC, OPENAI_COMPATIBLE -> provider.getBaseUrl();
             case GEMINI -> provider.getBaseUrl() + "/models/" + model + ":generateContent";
         };
     }
 
     private void addAuthHeaders(HttpRequest.Builder builder, ApiKeyProvider provider, String apiKey) {
-        switch (provider) {
+        switch (provider.getStyle()) {
             case ANTHROPIC -> {
                 builder.header("x-api-key", apiKey);
                 builder.header("anthropic-version", "2023-06-01");
             }
-            case OPENAI -> builder.header("Authorization", "Bearer " + apiKey);
+            case OPENAI_COMPATIBLE -> {
+                // Local providers (Ollama) may run keyless — skip the header then
+                if (apiKey != null && !apiKey.isBlank()) {
+                    builder.header("Authorization", "Bearer " + apiKey);
+                }
+            }
             case GEMINI -> builder.header("x-goog-api-key", apiKey);
         }
     }
@@ -129,7 +135,7 @@ public class ApiKeyBackend {
     private String buildRequestBody(ApiKeyProvider provider, String model, String prompt) {
         JsonObject body = new JsonObject();
 
-        switch (provider) {
+        switch (provider.getStyle()) {
             case ANTHROPIC -> {
                 body.addProperty("model", model);
                 body.addProperty("max_tokens", 8192);
@@ -140,7 +146,7 @@ public class ApiKeyBackend {
                 messages.add(msg);
                 body.add("messages", messages);
             }
-            case OPENAI -> {
+            case OPENAI_COMPATIBLE -> {
                 body.addProperty("model", model);
                 JsonArray messages = new JsonArray();
                 JsonObject msg = new JsonObject();
@@ -171,7 +177,7 @@ public class ApiKeyBackend {
         try {
             JsonObject root = JsonParser.parseString(responseBody).getAsJsonObject();
 
-            return switch (provider) {
+            return switch (provider.getStyle()) {
                 case ANTHROPIC -> {
                     // {"content": [{"type": "text", "text": "..."}]}
                     JsonArray content = root.getAsJsonArray("content");
@@ -188,17 +194,17 @@ public class ApiKeyBackend {
                     }
                     yield sb.toString();
                 }
-                case OPENAI -> {
+                case OPENAI_COMPATIBLE -> {
                     // {"choices": [{"message": {"content": "..."}}]}
                     JsonArray choices = root.getAsJsonArray("choices");
                     if (choices == null || choices.isEmpty()) {
                         throw new LlmException(LlmException.ErrorType.PARSE_ERROR,
-                                "OpenAI response has no choices array");
+                                provider.getDisplayName() + " response has no choices array");
                     }
                     JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
                     if (message == null) {
                         throw new LlmException(LlmException.ErrorType.PARSE_ERROR,
-                                "OpenAI response has no message object");
+                                provider.getDisplayName() + " response has no message object");
                     }
                     yield getStr(message, "content");
                 }
