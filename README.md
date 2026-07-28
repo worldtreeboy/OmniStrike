@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.77-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+<img src="https://img.shields.io/badge/OmniStrike-v1.78-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
 
 # OmniStrike
 
@@ -255,6 +255,11 @@ Contributing: fork → branch → `./gradlew shadowJar` must compile clean → t
 ---
 
 ## Changelog
+
+### v1.78
+- **SQLi: error-based detection now files a real finding.** The DBMS fingerprint phase already sent quote-breaking probes and matched responses against the DBMS error-pattern table — but only reported an INFO "DBMS Fingerprint" note. Now, when 2+ DBMS-specific error patterns absent from the baseline match, it also files **Error-Based SQL Injection — HIGH / FIRM**, with the matched error string as evidence and the probe's request/response attached. Zero extra requests; reuses the existing fingerprint probes. Single-hit detections stay INFO-only, so FP exposure is unchanged.
+- **SQLi: manual rescans actually re-run.** The module's private tested-param cache now honors the manual-scan dedup bypass every other module follows. Previously, right-click rescanning an already-scanned parameter silently fired zero SQLi probes until extension reload. Automatic flows still skip repeats as before.
+- Docs: dropped the unimplemented boolean-blind claim from the SQLi module's description.
 
 ### v1.77
 - **Stability fixes.** Guarded a latent subprocess deadlock in the AI CLI backend (stdout is now drained before the prompt is piped to stdin, so a large prompt can't fill the pipe buffer and hang); fixed two array-index edge cases that could throw mid-scan (the SQLi UNION builder's Oracle `FROM` guard now matches the delimiter it splits on, and the Dynamics 365 FetchXML alias parse tolerates a trailing `alias='`).
