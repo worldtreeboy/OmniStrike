@@ -7,7 +7,7 @@
 Turn any request into a deliberate security test with parameter-level targeting,<br/>
 session automation, technology-aware probes, OOB detection, and optional AI analysis.
 
-[![Release](https://img.shields.io/badge/release-v1.80-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.81-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
 [![Java](https://img.shields.io/badge/Java-17%2B-f59e0b?style=for-the-badge&logo=openjdk&logoColor=white&labelColor=111827)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Burp-Montoya_API-f97316?style=for-the-badge&labelColor=111827)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge&color=22c55e&labelColor=111827)](LICENSE)
@@ -330,6 +330,17 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 ## 🗒️ Release notes
 
 <details open>
+<summary><strong>v1.81 — Security hardening and scanner reliability</strong></summary>
+
+- Scoped Session Keep-Alive redirects and cookies to their intended origins, paths, and transport security requirements; login requests now remain memory-only.
+- Hardened the custom DNS OOB parser and Stepper's cross-origin cookie handling and successful-chain cache semantics.
+- Preserved distinct findings during deduplication and made Dashboard finding bundling race-safe.
+- Restored JSON payload injection across six scanners, including nested XXE targeting, and made rejected AI scan jobs visible and recoverable.
+- Added regression tests for findings deduplication, session origin/cookie rules, and Stepper cookie matching.
+
+</details>
+
+<details>
 <summary><strong>v1.80 — Provider expansion and scanner reliability</strong></summary>
 
 - Added API-key mode for ten providers: Anthropic, OpenAI, Google Gemini, xAI, Moonshot AI, DeepSeek, Mistral, Groq, OpenRouter, and Ollama.
