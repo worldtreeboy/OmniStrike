@@ -327,6 +327,17 @@ The shadow JAR:
 
 Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/worldtreeboy/OmniStrike/issues).
 
+## 🌟 Contributors
+
+<table>
+  <tr>
+    <td align="center"><strong><a href="https://github.com/worldtreeboy">worldtreeboy</a></strong><br/>Author &amp; maintainer</td>
+    <td align="center"><strong>Claude</strong><br/>AI pair programmer</td>
+    <td align="center"><strong>Codex</strong><br/>AI pair programmer</td>
+    <td align="center"><strong>Kimi</strong><br/>AI pair programmer</td>
+  </tr>
+</table>
+
 ## 🗒️ Release notes
 
 <details open>
