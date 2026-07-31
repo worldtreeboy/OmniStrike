@@ -990,4 +990,32 @@ public final class ThemePalette {
     public String toString() {
         return name;
     }
+    /**
+     * Omni Pro — the polished default: deep slate surfaces, cyan focus, and violet depth.
+     * Designed for long assessment sessions with restrained contrast and clear hierarchy.
+     */
+    public static ThemePalette omniPro() {
+        return new ThemePalette("Omni Pro",
+                new Color(0x08, 0x0B, 0x14),
+                new Color(0x0E, 0x14, 0x22),
+                new Color(0x11, 0x18, 0x27),
+                new Color(0x15, 0x1D, 0x2E),
+                new Color(0x1B, 0x2A, 0x45),
+                new Color(0x26, 0x35, 0x52),
+                new Color(0x38, 0xBD, 0xF8),
+                new Color(0xA7, 0x8B, 0xFA),
+                new Color(0x34, 0xD3, 0x99),
+                new Color(0xFB, 0xBF, 0x24),
+                new Color(0xFB, 0x71, 0x85),
+                new Color(0x60, 0xA5, 0xFA),
+                new Color(0xF1, 0xF5, 0xF9),
+                new Color(0x94, 0xA3, 0xB8),
+                new Color(0x64, 0x74, 0x8B),
+                new Color(0xFB, 0x71, 0x85),
+                new Color(0xFB, 0x92, 0x3C),
+                new Color(0xFB, 0xBF, 0x24),
+                new Color(0x38, 0xBD, 0xF8),
+                new Color(0x94, 0xA3, 0xB8),
+                false);
+    }
 }

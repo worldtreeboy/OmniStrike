@@ -2,6 +2,7 @@ package com.omnistrike.ui.modules;
 
 import com.omnistrike.framework.tls.TlsAnalyzer;
 import com.omnistrike.framework.tls.TlsResult;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.ui.CyberTheme;
 
 import static com.omnistrike.ui.CyberTheme.*;
@@ -274,7 +275,8 @@ public class TlsAnalyzerPanel extends JPanel {
         runBtn.setEnabled(false);
         stopBtn.setEnabled(true);
         statusLabel.setForeground(NEON_GREEN);
-        statusLabel.setText("Scanning " + host + ":" + port + " ...");
+        statusLabel.setText("Scanning "
+                + PrivacyManager.maskValueForDisplay("HOST", host) + ":" + port + " ...");
 
         analyzer.invalidate(host, port);
         analyzer.analyze(host, port,
@@ -345,8 +347,8 @@ public class TlsAnalyzerPanel extends JPanel {
                     + (ci.publicKeySize > 0 ? " " + ci.publicKeySize : "");
             certModel.addRow(new Object[]{
                     ci.index,
-                    truncate(ci.subject, 90),
-                    truncate(ci.issuer, 90),
+                    PrivacyManager.maskValueForDisplay("CERT_SUBJECT", truncate(ci.subject, 90)),
+                    PrivacyManager.maskValueForDisplay("CERT_ISSUER", truncate(ci.issuer, 90)),
                     ci.signatureAlgorithm,
                     key,
                     ci.notAfter,
@@ -356,7 +358,9 @@ public class TlsAnalyzerPanel extends JPanel {
 
         issueModel.setRowCount(0);
         for (TlsResult.Issue i : r.getIssues()) {
-            issueModel.addRow(new Object[]{i.severity.name(), i.title, i.detail});
+            issueModel.addRow(new Object[]{i.severity.name(),
+                    PrivacyManager.maskForDisplay(i.title),
+                    PrivacyManager.maskForDisplay(i.detail)});
         }
     }
 
@@ -388,7 +392,8 @@ public class TlsAnalyzerPanel extends JPanel {
             return;
         }
         JFileChooser fc = new JFileChooser();
-        fc.setSelectedFile(new java.io.File("tls-" + currentHost + "-" + currentPort + ".txt"));
+        String exportHost = PrivacyManager.isUiMaskingEnabled() ? "redacted-host" : currentHost;
+        fc.setSelectedFile(new java.io.File("tls-" + exportHost + "-" + currentPort + ".txt"));
         if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
         try (PrintWriter pw = new PrintWriter(new FileWriter(fc.getSelectedFile()))) {
             pw.println(buildSummary(r));
@@ -419,7 +424,8 @@ public class TlsAnalyzerPanel extends JPanel {
     private String buildSummary(TlsResult r) {
         StringBuilder sb = new StringBuilder();
         sb.append("=== OmniStrike TLS Analysis ===\n");
-        sb.append("Target: ").append(r.getHost()).append(":").append(r.getPort()).append("\n");
+        sb.append("Target: ").append(PrivacyManager.maskValueForDisplay("HOST", r.getHost()))
+                .append(":").append(r.getPort()).append("\n");
         sb.append("Timestamp: ").append(new java.util.Date(r.getTimestampMs())).append("\n\n");
 
         sb.append("Protocols:\n");
@@ -438,15 +444,18 @@ public class TlsAnalyzerPanel extends JPanel {
 
         sb.append("\nCertificate chain (").append(r.getCertChain().size()).append("):\n");
         for (TlsResult.CertInfo ci : r.getCertChain()) {
-            sb.append("  [").append(ci.index).append("] ").append(ci.subject).append("\n");
-            sb.append("       Issuer:    ").append(ci.issuer).append("\n");
+            sb.append("  [").append(ci.index).append("] ")
+                    .append(PrivacyManager.maskValueForDisplay("CERT_SUBJECT", ci.subject)).append("\n");
+            sb.append("       Issuer:    ")
+                    .append(PrivacyManager.maskValueForDisplay("CERT_ISSUER", ci.issuer)).append("\n");
             sb.append("       Sig Alg:   ").append(ci.signatureAlgorithm).append("\n");
             sb.append("       Key:       ").append(ci.publicKeyAlgorithm)
                     .append(" ").append(ci.publicKeySize).append("\n");
             sb.append("       Valid:     ").append(ci.notBefore).append("  →  ")
                     .append(ci.notAfter).append("  (").append(ci.daysUntilExpiry).append(" days left)\n");
             if (!ci.sanEntries.isEmpty()) {
-                sb.append("       SANs:      ").append(String.join(", ", ci.sanEntries)).append("\n");
+                sb.append("       SANs:      ").append(PrivacyManager.maskValueForDisplay(
+                        "CERT_SANS", String.join(", ", ci.sanEntries))).append("\n");
             }
             if (ci.selfSigned) sb.append("       (self-signed)\n");
         }
@@ -461,6 +470,13 @@ public class TlsAnalyzerPanel extends JPanel {
             }
         }
         return sb.toString();
+    }
+
+    /** Re-renders cached TLS metadata after UI privacy mode changes. */
+    public void refreshPrivacyDisplay() {
+        if (currentHost == null) return;
+        TlsResult result = analyzer.getCached(currentHost, currentPort);
+        if (result != null) renderResult(result);
     }
 
     private static String truncate(String s, int max) {

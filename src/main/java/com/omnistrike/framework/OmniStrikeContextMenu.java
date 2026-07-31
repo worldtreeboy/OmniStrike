@@ -105,7 +105,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             return items;
         }
 
-        String url = truncate(reqResp.request().url(), 60);
+        String url = PrivacyManager.maskForDisplay(truncate(reqResp.request().url(), 60));
 
         // Look up AI analyzer (may be null or unconfigured)
         AiVulnAnalyzer aiAnalyzer = findAiAnalyzer();
@@ -236,7 +236,8 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
 
                 JPanel panel = new JPanel(new BorderLayout(0, 8));
                 panel.add(new JLabel("<html>Enter your prompt for AI analysis of:<br><b>"
-                        + truncate(reqResp.request().url(), 80) + "</b></html>"), BorderLayout.NORTH);
+                        + PrivacyManager.maskForDisplay(truncate(reqResp.request().url(), 80))
+                        + "</b></html>"), BorderLayout.NORTH);
                 panel.add(scrollPane, BorderLayout.CENTER);
                 panel.add(new JLabel("<html><i>The HTTP request/response will be appended automatically. "
                         + "Findings appear in Dashboard & OmniStrike tab.</i></html>"), BorderLayout.SOUTH);
@@ -313,7 +314,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                     mp.selectModule("stepper");
                 }
                 showToast("Stepper", "Added step: " + name.trim()
-                        + "\n" + truncate(reqResp.request().url(), 60)
+                        + "\n" + PrivacyManager.maskForDisplay(truncate(reqResp.request().url(), 60))
                         + "\n\nConfigure extraction rules in the Stepper panel.");
             });
             items.add(stepperItem);

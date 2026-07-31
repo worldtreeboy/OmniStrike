@@ -1,6 +1,7 @@
 package com.omnistrike.modules.ai.llm;
 
 import com.google.gson.*;
+import com.omnistrike.framework.PrivacyManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -98,18 +99,22 @@ public class LlmClient {
      * Routes to CLI or API Key backend based on the current connection mode.
      */
     public String call(String prompt) throws LlmException {
+        // Last-mile privacy boundary: every provider receives the same redacted
+        // prompt. Real HttpRequest objects remain untouched and continue to carry
+        // their original authentication/session state when probes are sent.
+        String outboundPrompt = PrivacyManager.redactAiPrompt(prompt);
         if (connectionMode == AiConnectionMode.API_KEY) {
             if (!apiKeyConfigured) {
                 throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
                         "API key not configured — select a provider and enter your API key");
             }
-            return apiKeyBackend.call(apiKeyProvider, apiKey, apiKeyModel, prompt);
+            return apiKeyBackend.call(apiKeyProvider, apiKey, apiKeyModel, outboundPrompt);
         } else if (connectionMode == AiConnectionMode.CLI) {
             if (!configured) {
                 throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
                         "CLI tool not configured — select a provider and set the binary path");
             }
-            return cliBackend.call(provider, cliBinaryPath, prompt);
+            return cliBackend.call(provider, cliBinaryPath, outboundPrompt);
         }
         throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
                 "AI not configured — select CLI Tool or API Key mode");

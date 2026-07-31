@@ -1,6 +1,7 @@
 package com.omnistrike.ui.modules;
 
 import com.omnistrike.framework.wordlist.WordlistGenerator;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.framework.wordlist.WordlistGenerator.WordCategory;
 import com.omnistrike.framework.wordlist.WordlistGenerator.WordEntry;
 import com.omnistrike.ui.CyberTheme;
@@ -331,7 +332,7 @@ public class WordlistGeneratorPanel extends JPanel {
         if (fc.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
             try (PrintWriter pw = new PrintWriter(new FileWriter(fc.getSelectedFile()))) {
                 for (String word : words) {
-                    pw.println(word);
+                    pw.println(PrivacyManager.maskForDisplay(word));
                 }
                 JOptionPane.showMessageDialog(this,
                         "Exported " + words.size() + " words to " + fc.getSelectedFile().getName(),
@@ -355,7 +356,9 @@ public class WordlistGeneratorPanel extends JPanel {
             return;
         }
 
-        String text = String.join("\n", words);
+        String text = String.join("\n", words.stream()
+                .map(PrivacyManager::maskForDisplay)
+                .toList());
         Toolkit.getDefaultToolkit().getSystemClipboard()
                 .setContents(new StringSelection(text), null);
         JOptionPane.showMessageDialog(this,
@@ -440,10 +443,10 @@ public class WordlistGeneratorPanel extends JPanel {
             tableModel.setRowCount(0);
             for (WordEntry entry : entries) {
                 tableModel.addRow(new Object[]{
-                        entry.getWord(),
+                        PrivacyManager.maskForDisplay(entry.getWord()),
                         entry.getFrequency(),
                         entry.getCategory().getDisplayName(),
-                        truncateUrl(entry.getFirstSeenUrl())
+                        PrivacyManager.maskForDisplay(truncateUrl(entry.getFirstSeenUrl()))
                 });
             }
         }
@@ -452,5 +455,10 @@ public class WordlistGeneratorPanel extends JPanel {
             if (url == null) return "";
             return url.length() > 100 ? url.substring(0, 100) + "..." : url;
         }
+    }
+
+    /** Rebuilds every word table after UI Privacy Mode changes. */
+    public void refreshPrivacyDisplay() {
+        refreshAllTabs();
     }
 }

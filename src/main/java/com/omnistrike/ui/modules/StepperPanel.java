@@ -1,5 +1,6 @@
 package com.omnistrike.ui.modules;
 
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.framework.stepper.*;
 import com.omnistrike.ui.CyberTheme;
 import static com.omnistrike.ui.CyberTheme.*;
@@ -567,7 +568,7 @@ public class StepperPanel extends JPanel {
                 stepsModel.addRow(new Object[]{
                         i + 1,
                         step.getName(),
-                        step.getUrlSummary(),
+                        PrivacyManager.maskForDisplay(step.getUrlSummary()),
                         step.isEnabled() ? "\u2713" : "\u2717"
                 });
             }
@@ -593,7 +594,9 @@ public class StepperPanel extends JPanel {
                         "{{" + rule.getVariableName() + "}}",
                         rule.getType().name(),
                         rule.getPattern(),
-                        lastValue != null ? truncate(lastValue, 40) : "(none)"
+                        lastValue != null
+                                ? PrivacyManager.maskValueForDisplay("VARIABLE", truncate(lastValue, 40))
+                                : "(none)"
                 });
             }
         });
@@ -609,7 +612,7 @@ public class StepperPanel extends JPanel {
                 String source = pinned.containsKey(entry.getKey()) ? "pinned" : "extracted";
                 variablesModel.addRow(new Object[]{
                         "{{" + entry.getKey() + "}}",
-                        truncate(entry.getValue(), 120),
+                        PrivacyManager.maskValueForDisplay("VARIABLE", truncate(entry.getValue(), 120)),
                         source
                 });
             }
@@ -640,6 +643,13 @@ public class StepperPanel extends JPanel {
     }
 
     private void showEditRequestDialog(StepperStep step) {
+        if (PrivacyManager.isUiMaskingEnabled()) {
+            JOptionPane.showMessageDialog(this,
+                    "Request editing is hidden while UI Privacy Mode is enabled.\n"
+                            + "Disable UI Privacy Mode temporarily to edit the original request.",
+                    "Privacy Mode", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
         burp.api.montoya.http.message.requests.HttpRequest current = step.getOriginalRequest();
         if (current == null) {
             JOptionPane.showMessageDialog(this, "Step has no request.", "Edit Request",
@@ -727,8 +737,9 @@ public class StepperPanel extends JPanel {
         valLabel.setForeground(FG_PRIMARY);
         valLabel.setFont(MONO_FONT);
         dialogPanel.add(valLabel);
-        JTextField valField = new JTextField(20);
-        styleTextField(valField);
+        JPasswordField valField = new JPasswordField(20);
+        stylePasswordField(valField);
+        valField.setToolTipText("Hidden on screen; stored only in the Stepper configuration as entered.");
         dialogPanel.add(valField);
 
         int result = JOptionPane.showConfirmDialog(this, dialogPanel,
@@ -740,7 +751,7 @@ public class StepperPanel extends JPanel {
             if (name.startsWith("{{") && name.endsWith("}}")) {
                 name = name.substring(2, name.length() - 2).trim();
             }
-            String value = valField.getText();
+            String value = new String(valField.getPassword());
             if (!name.isEmpty()) {
                 engine.setVariable(name, value);
                 refreshVariablesDisplay();
@@ -754,7 +765,8 @@ public class StepperPanel extends JPanel {
             cookieModel.setRowCount(0);
             Map<String, String> cookies = engine.getCookieJar();
             for (Map.Entry<String, String> entry : cookies.entrySet()) {
-                cookieModel.addRow(new Object[]{entry.getKey(), entry.getValue()});
+                cookieModel.addRow(new Object[]{entry.getKey(),
+                        PrivacyManager.maskValueForDisplay("COOKIE", entry.getValue())});
             }
             if (sel >= 0 && sel < cookieModel.getRowCount()) {
                 cookieTable.setRowSelectionInterval(sel, sel);
@@ -778,8 +790,9 @@ public class StepperPanel extends JPanel {
         valLabel.setForeground(FG_PRIMARY);
         valLabel.setFont(MONO_FONT);
         dialogPanel.add(valLabel);
-        JTextField valField = new JTextField(20);
-        styleTextField(valField);
+        JPasswordField valField = new JPasswordField(20);
+        stylePasswordField(valField);
+        valField.setToolTipText("Cookie value is hidden while entering it.");
         dialogPanel.add(valField);
 
         int result = JOptionPane.showConfirmDialog(this, dialogPanel,
@@ -787,7 +800,7 @@ public class StepperPanel extends JPanel {
 
         if (result == JOptionPane.OK_OPTION) {
             String name = nameField.getText().trim();
-            String value = valField.getText().trim();
+            String value = new String(valField.getPassword()).trim();
             if (!name.isEmpty()) {
                 engine.setCookie(name, value);
                 refreshCookieTable();
@@ -806,6 +819,14 @@ public class StepperPanel extends JPanel {
         stepsTable.setEnabled(on);
         rulesTable.setEnabled(on);
         enabledCheckBox.setForeground(on ? NEON_GREEN : NEON_RED);
+    }
+
+    /** Refreshes all views that can contain captured session material. */
+    public void refreshPrivacyDisplay() {
+        refreshStepsTable();
+        refreshRulesTable();
+        refreshVariablesDisplay();
+        refreshCookieTable();
     }
 
     // ── Add Rule Dialog ──────────────────────────────────────────────────────

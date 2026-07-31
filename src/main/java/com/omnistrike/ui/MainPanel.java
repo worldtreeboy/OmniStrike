@@ -62,6 +62,7 @@ public class MainPanel extends JPanel {
     private final FindingsOverviewPanel activeFindingsPanel;
     private final FindingsOverviewPanel passiveFindingsPanel;
     private final RequestResponsePanel requestResponsePanel;
+    private final AttackSurfacePanel attackSurfacePanel;
 
     // Custom module panel for deserializer (exposed for context menu "Send to Deserializer")
     private DeserModulePanel deserModulePanel;
@@ -110,6 +111,10 @@ public class MainPanel extends JPanel {
         this.dataBus = dataBus;
         this.persistence = persistence;
         this.api = api;
+        PrivacyManager.setAiRedactionEnabled(
+                persistence.getBoolean("privacy.aiRedaction", true));
+        PrivacyManager.setUiMaskingEnabled(
+                persistence.getBoolean("privacy.uiMasking", false));
         this.logPanel = new LogPanel();
 
         setLayout(new BorderLayout());
@@ -119,11 +124,66 @@ public class MainPanel extends JPanel {
         JPanel topContainer = new JPanel();
         topContainer.setLayout(new BoxLayout(topContainer, BoxLayout.Y_AXIS));
         topContainer.setBackground(BG_DARK);
-        topContainer.setBorder(new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER));
+        topContainer.setBorder(BorderFactory.createEmptyBorder(10, 10, 8, 10));
+
+        JPanel settingsDrawer = new JPanel();
+        settingsDrawer.setLayout(new BoxLayout(settingsDrawer, BoxLayout.Y_AXIS));
+        settingsDrawer.setOpaque(false);
+        boolean controlsExpanded = persistence.getBoolean("ui.controlsExpanded", false);
+        settingsDrawer.setVisible(controlsExpanded);
+
+        // --- Product header: identity, operating model, and current privacy state ---
+        CyberTheme.HeroPanel hero = new CyberTheme.HeroPanel();
+        hero.setLayout(new BorderLayout(16, 0));
+        hero.setBorder(BorderFactory.createCompoundBorder(
+                new CyberTheme.RoundedLineBorder(BORDER, 1, 18),
+                BorderFactory.createEmptyBorder(12, 16, 12, 16)));
+        hero.setMaximumSize(new Dimension(Integer.MAX_VALUE, 76));
+
+        JPanel identity = new JPanel();
+        identity.setOpaque(false);
+        identity.setLayout(new BoxLayout(identity, BoxLayout.Y_AXIS));
+        JLabel productName = new JLabel("OMNISTRIKE");
+        productName.setFont(UI_TITLE);
+        productName.setForeground(FG_PRIMARY);
+        JLabel productTagline = new JLabel(
+                "Focused security scanning  /  state-aware workflows  /  explicit control");
+        productTagline.setFont(UI_SMALL);
+        productTagline.setForeground(FG_SECONDARY);
+        identity.add(productName);
+        identity.add(Box.createVerticalStrut(2));
+        identity.add(productTagline);
+        hero.add(identity, BorderLayout.CENTER);
+
+        JPanel heroStatus = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 6));
+        heroStatus.setOpaque(false);
+        JLabel workflowChip = CyberTheme.createSeverityBadge("RIGHT-CLICK DRIVEN", NEON_BLUE);
+        JLabel privacyStateLabel = CyberTheme.createSeverityBadge(
+                PrivacyManager.isAiRedactionEnabled() ? "AI PRIVACY ON" : "AI PRIVACY OFF",
+                PrivacyManager.isAiRedactionEnabled() ? NEON_GREEN : NEON_RED);
+        JLabel versionChip = CyberTheme.createSeverityBadge("v1.82", NEON_MAGENTA);
+        JButton controlsButton = new JButton(controlsExpanded ? "Hide controls" : "Controls");
+        CyberTheme.styleButton(controlsButton, NEON_CYAN);
+        controlsButton.setToolTipText("Show or hide scan profile, OOB, session, and theme controls");
+        controlsButton.addActionListener(e -> {
+            boolean expanded = !settingsDrawer.isVisible();
+            settingsDrawer.setVisible(expanded);
+            controlsButton.setText(expanded ? "Hide controls" : "Controls");
+            persistence.setBoolean("ui.controlsExpanded", expanded);
+            topContainer.revalidate();
+            topContainer.repaint();
+        });
+        heroStatus.add(workflowChip);
+        heroStatus.add(privacyStateLabel);
+        heroStatus.add(versionChip);
+        heroStatus.add(controlsButton);
+        hero.add(heroStatus, BorderLayout.EAST);
+        topContainer.add(hero);
+        topContainer.add(Box.createVerticalStrut(8));
 
         // --- Row 1: Threads, Throttle, Theme ---
         JPanel row1 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
-        row1.setBackground(BG_DARK);
+        CyberTheme.styleCard(row1);
 
         JLabel threadsLabel = new JLabel("Threads:");
         threadsLabel.setForeground(NEON_CYAN);
@@ -299,74 +359,60 @@ public class MainPanel extends JPanel {
         });
         row1.add(glowCheckbox);
 
-        // Theme combo listener — wired after scope radios and glow checkbox exist
-        // Once a theme is selected, "Default" is removed from the dropdown (reload extension to revert).
-        final boolean[] defaultRemoved = {false};
+        // Default stays available so users can freely switch between Burp-native
+        // styling and any OmniStrike palette.
         themeCombo.addActionListener(e -> {
             int idx = themeCombo.getSelectedIndex();
-            if (idx < 0) return;
-
-            // After "Default" is removed, all indices shift down by 1
-            int paletteIdx = defaultRemoved[0] ? idx + 1 : idx;
-            if (paletteIdx < 0 || paletteIdx >= GlobalThemeManager.ALL_THEMES.length) return;
-
-            ThemePalette palette = GlobalThemeManager.ALL_THEMES[paletteIdx];
-
-            // First time selecting a real theme — remove "Default" from dropdown
-            if (palette != null && !defaultRemoved[0]) {
-                defaultRemoved[0] = true;
-                themeCombo.removeItemAt(0); // remove "Default"
-                // removeItemAt fires another action event, but defaultRemoved is already true
-                // so it won't recurse. The selection auto-adjusts.
-            }
+            if (idx < 0 || idx >= GlobalThemeManager.ALL_THEMES.length) return;
+            ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
 
             if (palette != null) {
                 scopeLocalRadio.setVisible(true);
                 scopeGlobalRadio.setVisible(true);
                 glowCheckbox.setEnabled(true);
-
-                GlobalThemeManager.applyTheme(palette);
-                if (paletteIdx >= 0 && paletteIdx < GlobalThemeManager.THEME_NAMES.length) {
-                    persistence.setString("theme.name", GlobalThemeManager.THEME_NAMES[paletteIdx]);
-                }
-                reapplyTheme();
+            } else {
+                scopeLocalRadio.setVisible(false);
+                scopeGlobalRadio.setVisible(false);
+                glowCheckbox.setSelected(false);
+                glowCheckbox.setEnabled(false);
+                GlobalThemeManager.stopBreathing();
             }
+            GlobalThemeManager.applyTheme(palette);
+            persistence.setString("theme.name", GlobalThemeManager.THEME_NAMES[idx]);
+            reapplyTheme();
         });
 
-        // Restore a previously-selected theme. setSelectedItem fires the combo
-        // listener above, which applies the palette and removes "Default".
+        // Startup loaded the palette before component construction; synchronize
+        // the selector and scope controls with that persisted state.
         try {
-            String savedTheme = persistence.getString("theme.name", "Default");
-            if (savedTheme != null && !"Default".equals(savedTheme)) {
-                themeCombo.setSelectedItem(savedTheme);
-                if ("GLOBAL".equals(persistence.getString("theme.scope", "OMNISTRIKE_ONLY"))) {
-                    scopeGlobalRadio.setSelected(true);
-                    GlobalThemeManager.changeScope(GlobalThemeManager.ThemeScope.GLOBAL);
-                    reapplyTheme();
-                }
-                if (persistence.getBoolean("theme.glow", false)) {
-                    glowCheckbox.setSelected(true);
-                    GlobalThemeManager.startBreathing();
-                }
+            String savedTheme = persistence.getString("theme.name", "Omni Pro");
+            themeCombo.setSelectedItem(savedTheme != null ? savedTheme : "Omni Pro");
+            boolean themed = !"Default".equals(savedTheme);
+            scopeLocalRadio.setVisible(themed);
+            scopeGlobalRadio.setVisible(themed);
+            if ("GLOBAL".equals(persistence.getString("theme.scope", "OMNISTRIKE_ONLY"))) {
+                scopeGlobalRadio.setSelected(true);
+            } else {
+                scopeLocalRadio.setSelected(true);
+            }
+            if (themed && persistence.getBoolean("theme.glow", false)) {
+                glowCheckbox.setSelected(true);
+                GlobalThemeManager.startBreathing();
             }
         } catch (Exception ignored) {
             // Theme restore is best-effort — never block the UI from loading.
         }
 
-        topContainer.add(row1);
-
         // --- Row 2: Stop Scans, Time-Based Testing, Thread Status, OOB Status ---
         JPanel row2 = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
-        row2.setBackground(BG_DARK);
+        CyberTheme.styleCard(row2);
+        JLabel commandLabel = new JLabel("COMMAND CENTER");
+        commandLabel.setFont(UI_BOLD.deriveFont(10f));
+        commandLabel.setForeground(NEON_CYAN);
+        row2.add(commandLabel);
 
         JButton stopScansBtn = new JButton("Stop Scans");
-        stopScansBtn.setBackground(BG_PANEL);
-        stopScansBtn.setForeground(NEON_RED);
-        stopScansBtn.setFocusPainted(false);
-        stopScansBtn.setFont(MONO_BOLD);
-        stopScansBtn.setBorder(BorderFactory.createCompoundBorder(
-                new CyberTheme.GlowLineBorder(NEON_RED, 1),
-                BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+        CyberTheme.styleButton(stopScansBtn, NEON_RED);
         stopScansBtn.setToolTipText("Stop all scans launched via right-click context menu");
         stopScansBtn.addActionListener(e -> {
             int stopped = interceptor.stopManualScans();
@@ -398,6 +444,51 @@ public class MainPanel extends JPanel {
         });
         row2.add(timeBasedCheckbox);
 
+        JCheckBox aiRedactionCheckbox = new JCheckBox("Redact AI Data");
+        styleCheckBox(aiRedactionCheckbox);
+        aiRedactionCheckbox.setSelected(PrivacyManager.isAiRedactionEnabled());
+        aiRedactionCheckbox.setToolTipText(
+                "Redact cookies, credentials, tokens, PII, payment data, and known secrets "
+                        + "before any AI API or CLI receives a prompt. Enabled by default.");
+        aiRedactionCheckbox.addActionListener(e -> {
+            boolean selected = aiRedactionCheckbox.isSelected();
+            if (!selected) {
+                int confirm = JOptionPane.showConfirmDialog(this,
+                        "Disabling AI redaction may disclose client headers, cookies, bodies, "
+                                + "and response data to the selected AI provider.\n\n"
+                                + "Continue only when the engagement explicitly permits it.",
+                        "Disable AI Data Redaction?",
+                        JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+                if (confirm != JOptionPane.YES_OPTION) {
+                    aiRedactionCheckbox.setSelected(true);
+                    return;
+                }
+            }
+            PrivacyManager.setAiRedactionEnabled(selected);
+            persistence.setBoolean("privacy.aiRedaction", selected);
+            privacyStateLabel.setText(selected ? "AI PRIVACY ON" : "AI PRIVACY OFF");
+            restyleSeverityBadge(privacyStateLabel, selected ? NEON_GREEN : NEON_RED);
+            logPanel.log(selected ? "INFO" : "WARN", "Privacy",
+                    "AI prompt redaction " + (selected ? "ENABLED" : "DISABLED"));
+        });
+        row2.add(aiRedactionCheckbox);
+
+        JCheckBox uiPrivacyCheckbox = new JCheckBox("Mask UI Data");
+        styleCheckBox(uiPrivacyCheckbox);
+        uiPrivacyCheckbox.setSelected(PrivacyManager.isUiMaskingEnabled());
+        uiPrivacyCheckbox.setToolTipText(
+                "Mask sensitive values in OmniStrike tables, findings, HTTP viewers, "
+                        + "logs, Stepper variables, cookies, copies, and exports.");
+        uiPrivacyCheckbox.addActionListener(e -> {
+            boolean selected = uiPrivacyCheckbox.isSelected();
+            PrivacyManager.setUiMaskingEnabled(selected);
+            persistence.setBoolean("privacy.uiMasking", selected);
+            refreshPrivacyDisplays();
+            logPanel.log("INFO", "Privacy",
+                    "UI data masking " + (selected ? "ENABLED" : "DISABLED"));
+        });
+        row2.add(uiPrivacyCheckbox);
+
         threadStatusLabel = new JLabel("Threads: 0 active | Queue: 0");
         threadStatusLabel.setForeground(FG_SECONDARY);
         threadStatusLabel.setFont(MONO_SMALL);
@@ -410,14 +501,14 @@ public class MainPanel extends JPanel {
         row2.add(oobStatusLabel);
 
         topContainer.add(row2);
+        topContainer.add(Box.createVerticalStrut(7));
 
         // --- OOB Configuration Row ---
         JPanel oobRow = buildOobConfigRow(oobStatusLabel);
-        topContainer.add(oobRow);
 
         // --- Row 3: Session Keep-Alive controls ---
         JPanel sessionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 3));
-        sessionRow.setBackground(BG_DARK);
+        CyberTheme.styleCard(sessionRow);
 
         JCheckBox sessionCheckbox = new JCheckBox("Session Keep-Alive");
         styleCheckBox(sessionCheckbox);
@@ -491,15 +582,24 @@ public class MainPanel extends JPanel {
             });
         });
 
-        topContainer.add(sessionRow);
+        CyberTheme.styleTitledBorder(row1, "Scan profile & appearance", NEON_CYAN);
+        CyberTheme.styleTitledBorder(sessionRow, "Session continuity", NEON_GREEN);
+        JPanel continuityGrid = new JPanel(new GridLayout(1, 2, 8, 0));
+        continuityGrid.setOpaque(false);
+        continuityGrid.add(oobRow);
+        continuityGrid.add(sessionRow);
+        settingsDrawer.add(row1);
+        settingsDrawer.add(Box.createVerticalStrut(7));
+        settingsDrawer.add(continuityGrid);
+        settingsDrawer.add(Box.createVerticalStrut(7));
+        topContainer.add(settingsDrawer);
 
         // --- Stats Bar: severity count badges (left) + author credit (right) ---
         JPanel statsBarWrapper = new JPanel(new BorderLayout());
-        statsBarWrapper.setBackground(BG_DARK);
-        statsBarWrapper.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
+        CyberTheme.styleCard(statsBarWrapper);
 
         JPanel statsBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-        statsBar.setBackground(BG_DARK);
+        statsBar.setOpaque(false);
 
         critLabel = CyberTheme.createSeverityBadge("CRITICAL: 0", SEV_CRITICAL);
         highLabel = CyberTheme.createSeverityBadge("HIGH: 0", SEV_HIGH);
@@ -615,6 +715,8 @@ public class MainPanel extends JPanel {
         // ============ RIGHT DETAIL AREA ============
         cardLayout = new CardLayout();
         moduleDetailContainer = new JPanel(cardLayout);
+        moduleDetailContainer.setBackground(BG_DARK);
+        moduleDetailContainer.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
 
         // Create a detail panel only for modules reachable from the sidebar:
         // AI, passive analyzers, and the framework-backed modules below. Pure active
@@ -682,16 +784,43 @@ public class MainPanel extends JPanel {
         // Placeholder when no module selected
         JPanel placeholder = new JPanel(new GridBagLayout());
         placeholder.setBackground(BG_DARK);
-        JLabel placeholderLabel = new JLabel("Select a module from the left sidebar");
-        placeholderLabel.setForeground(FG_SECONDARY);
-        placeholderLabel.setFont(MONO_FONT);
-        placeholder.add(placeholderLabel);
+        JPanel welcomeCard = new CyberTheme.HeroPanel();
+        welcomeCard.setLayout(new BoxLayout(welcomeCard, BoxLayout.Y_AXIS));
+        welcomeCard.setBorder(BorderFactory.createCompoundBorder(
+                new CyberTheme.RoundedLineBorder(BORDER, 1, 22),
+                BorderFactory.createEmptyBorder(30, 38, 30, 38)));
+        JLabel welcomeMark = new JLabel("◇");
+        welcomeMark.setFont(UI_TITLE.deriveFont(34f));
+        welcomeMark.setForeground(NEON_CYAN);
+        welcomeMark.setAlignmentX(Component.CENTER_ALIGNMENT);
+        JLabel welcomeTitle = new JLabel("Choose your workspace");
+        welcomeTitle.setForeground(FG_PRIMARY);
+        welcomeTitle.setFont(UI_TITLE.deriveFont(24f));
+        welcomeTitle.setAlignmentX(Component.CENTER_ALIGNMENT);
+        JLabel welcomeText = new JLabel(
+                "<html><div style='text-align:center'>Select a module to inspect findings, configure workflows,<br>or prepare a focused right-click assessment.</div></html>");
+        welcomeText.setForeground(FG_SECONDARY);
+        welcomeText.setFont(UI_FONT);
+        welcomeText.setAlignmentX(Component.CENTER_ALIGNMENT);
+        JPanel welcomeChips = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 0));
+        welcomeChips.setOpaque(false);
+        welcomeChips.add(CyberTheme.createSeverityBadge("CONTROLLED", NEON_BLUE));
+        welcomeChips.add(CyberTheme.createSeverityBadge("PRIVATE", NEON_GREEN));
+        welcomeChips.add(CyberTheme.createSeverityBadge("EVIDENCE-DRIVEN", NEON_MAGENTA));
+        welcomeCard.add(welcomeMark);
+        welcomeCard.add(Box.createVerticalStrut(8));
+        welcomeCard.add(welcomeTitle);
+        welcomeCard.add(Box.createVerticalStrut(8));
+        welcomeCard.add(welcomeText);
+        welcomeCard.add(Box.createVerticalStrut(18));
+        welcomeCard.add(welcomeChips);
+        placeholder.add(welcomeCard);
         moduleDetailContainer.add(placeholder, "none");
         cardLayout.show(moduleDetailContainer, "none");
 
         JSplitPane centerSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 moduleListPanel, moduleDetailContainer);
-        centerSplit.setDividerLocation(250);
+        centerSplit.setDividerLocation(282);
         styleSplitPane(centerSplit);
 
         // ============ BOTTOM TABS ============
@@ -730,11 +859,12 @@ public class MainPanel extends JPanel {
         passiveFindingsPanel.setApi(api);
         requestResponsePanel = new RequestResponsePanel(findingsStore);
         requestResponsePanel.setApi(api);
-        bottomTabs.addTab("Active Findings", activeFindingsPanel);
-        bottomTabs.addTab("Passive Findings", passiveFindingsPanel);
-        bottomTabs.addTab("Request/Response", requestResponsePanel);
-        bottomTabs.addTab("Attack Surface", new AttackSurfacePanel(findingsStore, scopeManager, dataBus));
-        bottomTabs.addTab("Activity Log", logPanel);
+        attackSurfacePanel = new AttackSurfacePanel(findingsStore, scopeManager, dataBus);
+        bottomTabs.addTab("Findings · Active", activeFindingsPanel);
+        bottomTabs.addTab("Findings · Passive", passiveFindingsPanel);
+        bottomTabs.addTab("HTTP Evidence", requestResponsePanel);
+        bottomTabs.addTab("Attack Surface", attackSurfacePanel);
+        bottomTabs.addTab("Activity", logPanel);
 
         JSplitPane mainSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 centerSplit, bottomTabs);
@@ -1302,6 +1432,29 @@ public class MainPanel extends JPanel {
 
     public LogPanel getLogPanel() {
         return logPanel;
+    }
+
+    /** Re-renders every view that can expose captured target or client data. */
+    private void refreshPrivacyDisplays() {
+        activeFindingsPanel.refreshTable();
+        passiveFindingsPanel.refreshTable();
+        requestResponsePanel.refreshTable();
+        attackSurfacePanel.refreshPrivacyDisplay();
+        logPanel.refreshPrivacyDisplay();
+
+        for (JPanel panel : modulePanels.values()) {
+            if (panel instanceof GenericModulePanel genericPanel) {
+                genericPanel.refreshTable();
+            } else if (panel instanceof AiModulePanel aiPanel) {
+                aiPanel.refreshPrivacyDisplay();
+            } else if (panel instanceof StepperPanel privacyStepperPanel) {
+                privacyStepperPanel.refreshPrivacyDisplay();
+            } else if (panel instanceof DeserModulePanel privacyDeserPanel) {
+                privacyDeserPanel.refreshPrivacyDisplay();
+            }
+        }
+        if (wordlistPanel != null) wordlistPanel.refreshPrivacyDisplay();
+        if (tlsAnalyzerPanel != null) tlsAnalyzerPanel.refreshPrivacyDisplay();
     }
 
     /** Returns the custom DeserModulePanel, or null if not yet created. */

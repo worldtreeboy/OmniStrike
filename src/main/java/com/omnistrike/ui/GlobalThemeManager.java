@@ -49,8 +49,9 @@ public final class GlobalThemeManager {
     /** All available palettes. Index 0 is null (Default = Burp's native look). */
     public static final ThemePalette[] ALL_THEMES = {
             null,                              //  0 - Default (no theme, Burp native)
-            ThemePalette.cyberpunk(),          //  1 - Cyberpunk
-            ThemePalette.ghost(),              //  2 - Ghost
+            ThemePalette.omniPro(),             //  1 - Omni Pro
+            ThemePalette.cyberpunk(),          //  2 - Cyberpunk
+            ThemePalette.ghost(),              //  3 - Ghost
             ThemePalette.megacorp(),           //  3 - Megacorp
             ThemePalette.junkyard(),           //  4 - Junkyard
             ThemePalette.blackIce(),           //  5 - Black Ice
@@ -82,6 +83,7 @@ public final class GlobalThemeManager {
     /** Display names for the dropdown, matching ALL_THEMES order. */
     public static final String[] THEME_NAMES = {
             "Default",
+            "Omni Pro",
             "Cyberpunk",
             "Ghost",
             "Megacorp",
@@ -111,6 +113,15 @@ public final class GlobalThemeManager {
             "Monokai",
             "Cyberdeck",
     };
+
+    /** Resolves a persisted display name to a palette; Default intentionally returns null. */
+    public static ThemePalette findThemeByName(String name) {
+        if (name == null || "Default".equals(name)) return null;
+        for (int i = 1; i < THEME_NAMES.length && i < ALL_THEMES.length; i++) {
+            if (THEME_NAMES[i].equals(name)) return ALL_THEMES[i];
+        }
+        return null;
+    }
 
     // ── UIManager keys to override ──────────────────────────────────────
     private static final String[] UI_KEYS = {
@@ -289,10 +300,16 @@ public final class GlobalThemeManager {
      * during normal use, switching back to "Default" is blocked in the UI.
      */
     public static void revertToNative() {
+        boolean wasGlobal = currentScope == ThemeScope.GLOBAL && currentPalette != null;
         currentPalette = null;
         CyberTheme.setNativeMode(true);
         stopBreathing();
         restoreUIManagerDefaults();
+        if (wasGlobal) {
+            walkAllFrames(null);
+        } else if (omniStrikeRoot != null) {
+            CyberTheme.stripRecursive(omniStrikeRoot);
+        }
     }
 
     /**

@@ -308,9 +308,31 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== THEME SYSTEM ====================
         // Snapshot Burp's original UIManager defaults before applying any theme
         GlobalThemeManager.saveOriginalDefaults();
-        // Default: native mode (no custom styling until user selects a theme)
-        com.omnistrike.ui.CyberTheme.setNativeMode(true);
-        api.logging().logToOutput("Theme system initialized (29 themes available, native mode default).");
+        // v1.82 visual migration: select the new product theme before constructing
+        // Swing components. Previously MainPanel was built in native mode, so all
+        // style helpers became no-ops and a persisted "Default" preference could
+        // make the redesign look identical to the old UI.
+        String startupTheme = persistence.getString("theme.name", "Omni Pro");
+        if (!persistence.getBoolean("ui.omniProMigrated", false)) {
+            if (startupTheme == null || "Default".equals(startupTheme)) {
+                startupTheme = "Omni Pro";
+                persistence.setString("theme.name", startupTheme);
+            }
+            persistence.setBoolean("ui.omniProMigrated", true);
+        }
+        GlobalThemeManager.setCurrentScope(
+                "GLOBAL".equals(persistence.getString("theme.scope", "OMNISTRIKE_ONLY"))
+                        ? GlobalThemeManager.ThemeScope.GLOBAL
+                        : GlobalThemeManager.ThemeScope.OMNISTRIKE_ONLY);
+        com.omnistrike.ui.ThemePalette startupPalette =
+                GlobalThemeManager.findThemeByName(startupTheme);
+        if (startupPalette == null && !"Default".equals(startupTheme)) {
+            startupPalette = com.omnistrike.ui.ThemePalette.omniPro();
+        }
+        GlobalThemeManager.applyTheme(startupPalette);
+        final String startupThemeName = startupTheme;
+        api.logging().logToOutput("Theme system initialized (startup theme: "
+                + startupThemeName + ").");
 
         // ==================== UI ====================
         SwingUtilities.invokeLater(() -> {
@@ -339,7 +361,7 @@ public class OmniStrikeExtension implements BurpExtension {
                         javax.swing.SwingUtilities.invokeLater(() ->
                                 mainPanel.getLogPanel().log("INFO", module, message)));
             }
-            api.logging().logToOutput("UI tab registered. Theme: Default (Burp native).");
+            api.logging().logToOutput("UI tab registered. Theme: " + startupThemeName + ".");
         });
 
         // ==================== CLEANUP ON UNLOAD ====================

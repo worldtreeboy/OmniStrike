@@ -1,5 +1,7 @@
 package com.omnistrike.ui;
 
+import com.omnistrike.framework.PrivacyManager;
+
 import static com.omnistrike.ui.CyberTheme.*;
 
 import javax.swing.*;
@@ -14,6 +16,7 @@ public class LogPanel extends JPanel {
 
     private final JTextArea logArea;
     private static final int MAX_LINES = 5000;
+    private final java.util.List<String> rawLines = new java.util.ArrayList<>();
 
     public LogPanel() {
         setLayout(new BorderLayout());
@@ -51,7 +54,10 @@ public class LogPanel extends JPanel {
 
         JButton clearBtn = new JButton("Clear Log");
         CyberTheme.styleButton(clearBtn, NEON_RED);
-        clearBtn.addActionListener(e -> logArea.setText(""));
+        clearBtn.addActionListener(e -> {
+            rawLines.clear();
+            logArea.setText("");
+        });
         controls.add(clearBtn);
 
         add(controls, BorderLayout.SOUTH);
@@ -62,16 +68,23 @@ public class LogPanel extends JPanel {
         String line = String.format("[%s] [%s] [%s] %s%n", timestamp, level, module, message);
 
         SwingUtilities.invokeLater(() -> {
-            logArea.append(line);
-            // Trim if too many lines
-            if (logArea.getLineCount() > MAX_LINES) {
-                try {
-                    int end = logArea.getLineEndOffset(logArea.getLineCount() - MAX_LINES);
-                    logArea.replaceRange("", 0, end);
-                } catch (Exception ignored) {
-                }
-            }
+            rawLines.add(line);
+            if (rawLines.size() > MAX_LINES) rawLines.remove(0);
+            logArea.append(PrivacyManager.maskForDisplay(line));
+            if (logArea.getLineCount() > MAX_LINES) refreshPrivacyDisplay();
             // Auto-scroll to bottom
+            logArea.setCaretPosition(logArea.getDocument().getLength());
+        });
+    }
+
+    /** Rebuilds the visible log when the global UI privacy preference changes. */
+    public void refreshPrivacyDisplay() {
+        SwingUtilities.invokeLater(() -> {
+            StringBuilder display = new StringBuilder();
+            for (String line : rawLines) {
+                display.append(PrivacyManager.maskForDisplay(line));
+            }
+            logArea.setText(display.toString());
             logArea.setCaretPosition(logArea.getDocument().getLength());
         });
     }

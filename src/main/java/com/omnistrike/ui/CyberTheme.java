@@ -3,6 +3,9 @@ package com.omnistrike.ui;
 import javax.swing.*;
 import javax.swing.border.Border;
 import javax.swing.plaf.basic.BasicScrollBarUI;
+import javax.swing.plaf.basic.BasicButtonUI;
+import javax.swing.plaf.basic.BasicTabbedPaneUI;
+import javax.swing.plaf.UIResource;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.JTableHeader;
@@ -39,6 +42,10 @@ public final class CyberTheme {
 
     /** Client property key used to tag hover MouseListeners added by styleButton(). */
     private static final String HOVER_LISTENER_KEY = "CyberTheme.hoverListener";
+    private static final String BUTTON_ACCENT_KEY = "OmniStrike.buttonAccent";
+    private static final String BUTTON_FILLED_KEY = "OmniStrike.buttonFilled";
+    private static final String TITLED_NAME_KEY = "OmniStrike.titledName";
+    private static final String TITLED_ACCENT_KEY = "OmniStrike.titledAccent";
 
     // ── Core Backgrounds (mutable — updated by GlobalThemeManager) ─────────
     public static Color BG_DARK     = new Color(0x0D, 0x0D, 0x1A);  // near-black with blue tint
@@ -74,6 +81,10 @@ public final class CyberTheme {
     public static final Font MONO_BOLD;
     public static final Font MONO_SMALL;
     public static final Font MONO_LABEL;
+    public static final Font UI_FONT;
+    public static final Font UI_BOLD;
+    public static final Font UI_SMALL;
+    public static final Font UI_TITLE;
 
     static {
         String family = pickMonoFamily();
@@ -81,6 +92,11 @@ public final class CyberTheme {
         MONO_BOLD  = new Font(family, Font.BOLD, 12);
         MONO_SMALL = new Font(family, Font.PLAIN, 11);
         MONO_LABEL = new Font(family, Font.BOLD, 11);
+        String uiFamily = pickUiFamily();
+        UI_FONT  = new Font(uiFamily, Font.PLAIN, 13);
+        UI_BOLD  = new Font(uiFamily, Font.BOLD, 13);
+        UI_SMALL = new Font(uiFamily, Font.PLAIN, 12);
+        UI_TITLE = new Font(uiFamily, Font.BOLD, 22);
     }
 
     private static String pickMonoFamily() {
@@ -90,6 +106,16 @@ public final class CyberTheme {
         if (available.contains("JetBrains Mono")) return "JetBrains Mono";
         if (available.contains("Consolas")) return "Consolas";
         return Font.MONOSPACED;
+    }
+
+    private static String pickUiFamily() {
+        GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
+        java.util.Set<String> available = new java.util.HashSet<>(
+                java.util.Arrays.asList(ge.getAvailableFontFamilyNames()));
+        for (String candidate : new String[]{"Inter", "Segoe UI Variable Text", "Segoe UI", "Arial"}) {
+            if (available.contains(candidate)) return candidate;
+        }
+        return Font.SANS_SERIF;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -184,8 +210,31 @@ public final class CyberTheme {
     /** Apply dark background to a JPanel. */
     public static void stylePanel(JPanel panel) {
         if (nativeMode) return;
+        Object titledName = panel.getClientProperty(TITLED_NAME_KEY);
+        if (titledName instanceof String title) {
+            Object accent = panel.getClientProperty(TITLED_ACCENT_KEY);
+            styleTitledBorder(panel, title, accent instanceof Color c ? c : NEON_CYAN);
+            panel.setBackground(BG_DARK);
+            panel.setForeground(FG_PRIMARY);
+            return;
+        }
+        if (Boolean.TRUE.equals(panel.getClientProperty("OmniStrike.card"))) {
+            styleCard(panel);
+            return;
+        }
         panel.setBackground(BG_DARK);
         panel.setForeground(FG_PRIMARY);
+    }
+
+    /** Gives a panel an elevated card surface with comfortable interior spacing. */
+    public static void styleCard(JPanel panel) {
+        panel.putClientProperty("OmniStrike.card", Boolean.TRUE);
+        if (nativeMode) return;
+        panel.setBackground(BG_PANEL);
+        panel.setForeground(FG_PRIMARY);
+        panel.setBorder(BorderFactory.createCompoundBorder(
+                new RoundedLineBorder(BORDER, 1, 14),
+                BorderFactory.createEmptyBorder(8, 10, 8, 10)));
     }
 
     /** Apply dark background and neon foreground to any component. */
@@ -199,16 +248,23 @@ public final class CyberTheme {
     /** Style a button with a neon border and text color. Pass null for default neon cyan. */
     public static void styleButton(JButton btn, Color neonColor) {
         if (nativeMode) return;
-        Color neon = neonColor != null ? neonColor : NEON_CYAN;
+        Object savedAccent = btn.getClientProperty(BUTTON_ACCENT_KEY);
+        Color neon = neonColor != null ? neonColor
+                : savedAccent instanceof Color c ? c : NEON_CYAN;
+        btn.putClientProperty(BUTTON_ACCENT_KEY, neon);
+        btn.putClientProperty(BUTTON_FILLED_KEY, Boolean.FALSE);
         btn.setBackground(BG_PANEL);
         btn.setForeground(neon);
         btn.setFocusPainted(false);
-        btn.setFont(MONO_FONT);
+        btn.setFont(UI_BOLD);
         btn.setBorder(BorderFactory.createCompoundBorder(
-                new GlowLineBorder(neon, 1),
-                BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+                new RoundedLineBorder(neon, 1, 10),
+                BorderFactory.createEmptyBorder(6, 14, 6, 14)));
         btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        btn.setOpaque(true);
+        btn.setOpaque(false);
+        btn.setContentAreaFilled(false);
+        btn.setRolloverEnabled(true);
+        btn.setUI(new ModernButtonUI(neon, false));
 
         // Remove previous hover listener if present (prevents accumulation on theme switch)
         MouseListener old = (MouseListener) btn.getClientProperty(HOVER_LISTENER_KEY);
@@ -221,16 +277,16 @@ public final class CyberTheme {
                 if (nativeMode) return;
                 btn.setBackground(BG_HOVER);
                 btn.setBorder(BorderFactory.createCompoundBorder(
-                        new GlowLineBorder(neon, 2),
-                        BorderFactory.createEmptyBorder(3, 11, 3, 11)));
+                        new RoundedLineBorder(neon, 2, 10),
+                        BorderFactory.createEmptyBorder(5, 13, 5, 13)));
             }
             @Override
             public void mouseExited(MouseEvent e) {
                 if (nativeMode) return;
                 btn.setBackground(BG_PANEL);
                 btn.setBorder(BorderFactory.createCompoundBorder(
-                        new GlowLineBorder(neon, 1),
-                        BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+                        new RoundedLineBorder(neon, 1, 10),
+                        BorderFactory.createEmptyBorder(6, 14, 6, 14)));
             }
         };
         btn.putClientProperty(HOVER_LISTENER_KEY, hoverListener);
@@ -241,13 +297,20 @@ public final class CyberTheme {
     public static void styleFilledButton(JButton btn, Color neonColor) {
         if (nativeMode) return;
         Color neon = neonColor != null ? neonColor : NEON_CYAN;
+        btn.putClientProperty(BUTTON_ACCENT_KEY, neon);
+        btn.putClientProperty(BUTTON_FILLED_KEY, Boolean.TRUE);
         btn.setBackground(neon);
         btn.setForeground(BG_DARK);
         btn.setFocusPainted(false);
-        btn.setFont(MONO_BOLD);
-        btn.setBorder(BorderFactory.createEmptyBorder(5, 14, 5, 14));
+        btn.setFont(UI_BOLD);
+        btn.setBorder(BorderFactory.createCompoundBorder(
+                new RoundedLineBorder(neon, 1, 10),
+                BorderFactory.createEmptyBorder(6, 16, 6, 16)));
         btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        btn.setOpaque(true);
+        btn.setOpaque(false);
+        btn.setContentAreaFilled(false);
+        btn.setRolloverEnabled(true);
+        btn.setUI(new ModernButtonUI(neon, true));
     }
 
     /** Style a text field with dark input bg, neon cyan caret, light text. */
@@ -256,10 +319,10 @@ public final class CyberTheme {
         field.setBackground(BG_INPUT);
         field.setForeground(FG_PRIMARY);
         field.setCaretColor(NEON_CYAN);
-        field.setFont(MONO_FONT);
+        field.setFont(UI_FONT);
         field.setBorder(BorderFactory.createCompoundBorder(
-                new GlowLineBorder(BORDER, 1),
-                BorderFactory.createEmptyBorder(3, 6, 3, 6)));
+                new RoundedLineBorder(BORDER, 1, 9),
+                BorderFactory.createEmptyBorder(6, 9, 6, 9)));
         field.setSelectionColor(BG_HOVER);
         field.setSelectedTextColor(NEON_CYAN);
     }
@@ -270,10 +333,10 @@ public final class CyberTheme {
         field.setBackground(BG_INPUT);
         field.setForeground(FG_PRIMARY);
         field.setCaretColor(NEON_CYAN);
-        field.setFont(MONO_FONT);
+        field.setFont(UI_FONT);
         field.setBorder(BorderFactory.createCompoundBorder(
-                new GlowLineBorder(BORDER, 1),
-                BorderFactory.createEmptyBorder(3, 6, 3, 6)));
+                new RoundedLineBorder(BORDER, 1, 9),
+                BorderFactory.createEmptyBorder(6, 9, 6, 9)));
         field.setSelectionColor(BG_HOVER);
         field.setSelectedTextColor(NEON_CYAN);
     }
@@ -294,8 +357,8 @@ public final class CyberTheme {
         if (nativeMode) return;
         combo.setBackground(BG_INPUT);
         combo.setForeground(FG_PRIMARY);
-        combo.setFont(MONO_FONT);
-        combo.setBorder(new GlowLineBorder(BORDER, 1));
+        combo.setFont(UI_FONT);
+        combo.setBorder(new RoundedLineBorder(BORDER, 1, 9));
         // Style the renderer for dropdown items
         combo.setRenderer(new DefaultListCellRenderer() {
             @Override
@@ -310,8 +373,8 @@ public final class CyberTheme {
                     setBackground(BG_INPUT);
                     setForeground(FG_PRIMARY);
                 }
-                setFont(MONO_FONT);
-                setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
+                setFont(UI_FONT);
+                setBorder(BorderFactory.createEmptyBorder(6, 9, 6, 9));
                 return this;
             }
         });
@@ -322,8 +385,9 @@ public final class CyberTheme {
         if (nativeMode) return;
         cb.setBackground(BG_DARK);
         cb.setForeground(FG_PRIMARY);
-        cb.setFont(MONO_FONT);
+        cb.setFont(UI_FONT);
         cb.setFocusPainted(false);
+        cb.setOpaque(false);
     }
 
     /** Style a radio button with neon coloring. */
@@ -331,8 +395,9 @@ public final class CyberTheme {
         if (nativeMode) return;
         rb.setBackground(BG_DARK);
         rb.setForeground(FG_PRIMARY);
-        rb.setFont(MONO_FONT);
+        rb.setFont(UI_FONT);
         rb.setFocusPainted(false);
+        rb.setOpaque(false);
     }
 
     /** Style a JTable with dark rows, neon selection, custom header. */
@@ -343,17 +408,20 @@ public final class CyberTheme {
         table.setSelectionBackground(BG_HOVER);
         table.setSelectionForeground(NEON_CYAN);
         table.setGridColor(BORDER);
-        table.setFont(MONO_FONT);
-        table.setRowHeight(24);
-        table.setShowGrid(true);
-        table.setIntercellSpacing(new Dimension(1, 1));
+        table.setFont(UI_FONT);
+        table.setRowHeight(30);
+        table.setShowGrid(false);
+        table.setShowHorizontalLines(true);
+        table.setGridColor(BORDER);
+        table.setIntercellSpacing(new Dimension(0, 0));
 
         // Style table header
         JTableHeader header = table.getTableHeader();
         header.setBackground(BG_SURFACE);
         header.setForeground(NEON_CYAN);
-        header.setFont(MONO_BOLD);
-        header.setBorder(new GlowMatteBorder(0, 0, 2, 0, NEON_CYAN));
+        header.setFont(UI_BOLD);
+        header.setPreferredSize(new Dimension(header.getPreferredSize().width, 34));
+        header.setBorder(new GlowMatteBorder(0, 0, 1, 0, BORDER));
         header.setDefaultRenderer(new DefaultTableCellRenderer() {
             @Override
             public Component getTableCellRendererComponent(JTable t, Object value,
@@ -362,11 +430,11 @@ public final class CyberTheme {
                 if (nativeMode) return this;
                 setBackground(BG_SURFACE);
                 setForeground(NEON_CYAN);
-                setFont(MONO_BOLD);
+                setFont(UI_BOLD);
                 setHorizontalAlignment(SwingConstants.LEFT);
                 setBorder(BorderFactory.createCompoundBorder(
-                        new GlowMatteBorder(0, 0, 2, 1, BORDER),
-                        BorderFactory.createEmptyBorder(4, 6, 4, 6)));
+                        new GlowMatteBorder(0, 0, 1, 0, BORDER),
+                        BorderFactory.createEmptyBorder(7, 10, 7, 10)));
                 return this;
             }
         });
@@ -385,8 +453,8 @@ public final class CyberTheme {
                     setBackground(row % 2 == 0 ? BG_PANEL : BG_SURFACE);
                     setForeground(FG_PRIMARY);
                 }
-                setFont(MONO_FONT);
-                setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
+                setFont(UI_FONT);
+                setBorder(BorderFactory.createEmptyBorder(5, 10, 5, 10));
                 return this;
             }
         });
@@ -397,7 +465,7 @@ public final class CyberTheme {
         if (nativeMode) return;
         sp.setBackground(BG_DARK);
         sp.getViewport().setBackground(BG_DARK);
-        sp.setBorder(new GlowLineBorder(BORDER, 1));
+        sp.setBorder(new RoundedLineBorder(BORDER, 1, 10));
 
         styleScrollBar(sp.getVerticalScrollBar());
         styleScrollBar(sp.getHorizontalScrollBar());
@@ -406,12 +474,25 @@ public final class CyberTheme {
     /** Style a single scrollbar with dark track and neon thumb. */
     private static void styleScrollBar(JScrollBar scrollBar) {
         scrollBar.setBackground(BG_DARK);
+        scrollBar.setPreferredSize(new Dimension(10, 10));
         scrollBar.setUI(new BasicScrollBarUI() {
             @Override
             protected void configureScrollBarColors() {
                 this.thumbColor = BORDER;
                 this.thumbHighlightColor = NEON_CYAN;
                 this.trackColor = BG_DARK;
+            }
+            @Override
+            protected void paintThumb(Graphics g, JComponent c, Rectangle thumbBounds) {
+                if (thumbBounds.isEmpty() || !scrollbar.isEnabled()) return;
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                        RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(isDragging ? NEON_CYAN : BORDER);
+                g2.fillRoundRect(thumbBounds.x + 2, thumbBounds.y + 2,
+                        Math.max(2, thumbBounds.width - 4), Math.max(2, thumbBounds.height - 4),
+                        8, 8);
+                g2.dispose();
             }
             @Override
             protected JButton createDecreaseButton(int orientation) {
@@ -436,8 +517,9 @@ public final class CyberTheme {
         if (nativeMode) return;
         tp.setBackground(BG_DARK);
         tp.setForeground(FG_SECONDARY);
-        tp.setFont(MONO_BOLD);
+        tp.setFont(UI_BOLD);
         tp.setOpaque(true);
+        tp.setUI(new ModernTabbedPaneUI());
     }
 
     /** Style a split pane with dark dividers. */
@@ -445,7 +527,7 @@ public final class CyberTheme {
         if (nativeMode) return;
         sp.setBackground(BG_DARK);
         sp.setBorder(null);
-        sp.setDividerSize(4);
+        sp.setDividerSize(8);
         // Set divider color
         if (sp.getUI() instanceof javax.swing.plaf.basic.BasicSplitPaneUI basicUI) {
             basicUI.getDivider().setBackground(BORDER);
@@ -457,21 +539,21 @@ public final class CyberTheme {
     public static void styleHeading(JLabel label) {
         if (nativeMode) return;
         label.setForeground(NEON_CYAN);
-        label.setFont(MONO_BOLD.deriveFont(14f));
+        label.setFont(UI_BOLD.deriveFont(16f));
     }
 
     /** Style a label as primary text. */
     public static void styleLabel(JLabel label) {
         if (nativeMode) return;
         label.setForeground(FG_PRIMARY);
-        label.setFont(MONO_FONT);
+        label.setFont(UI_FONT);
     }
 
     /** Style a label as secondary/muted text. */
     public static void styleMuted(JLabel label) {
         if (nativeMode) return;
         label.setForeground(FG_SECONDARY);
-        label.setFont(MONO_SMALL);
+        label.setFont(UI_SMALL);
     }
 
     /** Style a progress bar. */
@@ -549,24 +631,26 @@ public final class CyberTheme {
         label.setForeground(neonColor);
         label.setFont(MONO_BOLD.deriveFont(11f));
         label.setBorder(BorderFactory.createCompoundBorder(
-                new GlowLineBorder(neonColor, 1),
-                BorderFactory.createEmptyBorder(2, 8, 2, 8)));
+                new RoundedLineBorder(neonColor, 1, 12),
+                BorderFactory.createEmptyBorder(3, 9, 3, 9)));
         return label;
     }
 
     /** Style a titled border with neon color. */
     public static void styleTitledBorder(JComponent comp, String title, Color neonColor) {
+        comp.putClientProperty(TITLED_NAME_KEY, title);
+        comp.putClientProperty(TITLED_ACCENT_KEY, neonColor);
         if (nativeMode) return;
         Color neon = neonColor != null ? neonColor : NEON_CYAN;
         comp.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder(
-                        new GlowLineBorder(neon, 1),
+                        new RoundedLineBorder(BORDER, 1, 12),
                         title,
                         javax.swing.border.TitledBorder.DEFAULT_JUSTIFICATION,
                         javax.swing.border.TitledBorder.DEFAULT_POSITION,
                         MONO_BOLD,
                         neon),
-                BorderFactory.createEmptyBorder(4, 6, 4, 6)));
+                BorderFactory.createEmptyBorder(8, 10, 10, 10)));
     }
 
     // ── Color Utilities ─────────────────────────────────────────────────────
@@ -580,6 +664,152 @@ public final class CyberTheme {
                 Math.max(BG_DARK.getRed(), Math.min(255, r)),
                 Math.max(BG_DARK.getGreen(), Math.min(255, g)),
                 Math.max(BG_DARK.getBlue(), Math.min(255, b)));
+    }
+
+    /**
+     * Rounded border used by cards and controls. It intentionally stays subtle;
+     * semantic accent colors are reserved for selection and status.
+     */
+    public static class RoundedLineBorder extends javax.swing.border.AbstractBorder {
+        private final Color color;
+        private final int thickness;
+        private final int radius;
+
+        public RoundedLineBorder(Color color, int thickness, int radius) {
+            this.color = color;
+            this.thickness = Math.max(1, thickness);
+            this.radius = Math.max(4, radius);
+        }
+
+        @Override
+        public Insets getBorderInsets(Component c) {
+            return new Insets(thickness, thickness, thickness, thickness);
+        }
+
+        @Override
+        public Insets getBorderInsets(Component c, Insets insets) {
+            insets.set(thickness, thickness, thickness, thickness);
+            return insets;
+        }
+
+        @Override
+        public void paintBorder(Component c, Graphics g, int x, int y, int width, int height) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(color);
+            g2.setStroke(new BasicStroke(thickness));
+            int inset = Math.max(1, thickness / 2);
+            g2.drawRoundRect(x + inset, y + inset,
+                    Math.max(0, width - thickness - 1),
+                    Math.max(0, height - thickness - 1), radius, radius);
+            g2.dispose();
+        }
+    }
+
+    /** Branded, low-noise gradient surface for the application header. */
+    public static class HeroPanel extends JPanel {
+        public HeroPanel() {
+            setOpaque(false);
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            if (nativeMode) {
+                super.paintComponent(g);
+                return;
+            }
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            int w = getWidth();
+            int h = getHeight();
+            g2.setPaint(new GradientPaint(0, 0, BG_SURFACE, w, h, BG_PANEL));
+            g2.fillRoundRect(0, 0, w, h, 18, 18);
+            g2.setColor(new Color(NEON_CYAN.getRed(), NEON_CYAN.getGreen(),
+                    NEON_CYAN.getBlue(), 28));
+            g2.fillOval(Math.max(0, w - 240), -120, 320, 240);
+            g2.setColor(new Color(NEON_MAGENTA.getRed(), NEON_MAGENTA.getGreen(),
+                    NEON_MAGENTA.getBlue(), 18));
+            g2.fillOval(Math.max(0, w - 420), -160, 300, 250);
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    /** Clean tabs with generous spacing and a single selected-state indicator. */
+    private static class ModernTabbedPaneUI extends BasicTabbedPaneUI {
+        @Override
+        protected void installDefaults() {
+            super.installDefaults();
+            tabInsets = new Insets(8, 14, 8, 14);
+            selectedTabPadInsets = new Insets(0, 0, 0, 0);
+            contentBorderInsets = new Insets(1, 0, 0, 0);
+        }
+
+        @Override
+        protected void paintTabBackground(Graphics g, int tabPlacement, int tabIndex,
+                                          int x, int y, int w, int h, boolean isSelected) {
+            g.setColor(isSelected ? BG_SURFACE : BG_DARK);
+            g.fillRect(x, y, w, h);
+            if (isSelected) {
+                g.setColor(NEON_CYAN);
+                g.fillRoundRect(x + 8, y + h - 3, Math.max(4, w - 16), 3, 3, 3);
+            }
+        }
+
+        @Override
+        protected void paintTabBorder(Graphics g, int tabPlacement, int tabIndex,
+                                      int x, int y, int w, int h, boolean isSelected) {
+            // Deliberately borderless; the selected underline provides hierarchy.
+        }
+
+        @Override
+        protected void paintContentBorder(Graphics g, int tabPlacement, int selectedIndex) {
+            g.setColor(BORDER);
+            g.drawLine(0, 0, tabPane.getWidth(), 0);
+        }
+
+        @Override
+        protected void paintFocusIndicator(Graphics g, int tabPlacement, Rectangle[] rects,
+                                           int tabIndex, Rectangle iconRect,
+                                           Rectangle textRect, boolean isSelected) {
+            // Avoid the dated dotted focus rectangle.
+        }
+    }
+
+    /** Rounded button painter that removes the square Swing content fill. */
+    private static class ModernButtonUI extends BasicButtonUI {
+        private final Color accent;
+        private final boolean filled;
+
+        ModernButtonUI(Color accent, boolean filled) {
+            this.accent = accent;
+            this.filled = filled;
+        }
+
+        @Override
+        public void paint(Graphics g, JComponent c) {
+            AbstractButton button = (AbstractButton) c;
+            ButtonModel model = button.getModel();
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            Color fill;
+            if (!button.isEnabled()) {
+                fill = BG_INPUT;
+            } else if (filled) {
+                fill = model.isPressed() ? darken(accent, 0.72f)
+                        : model.isRollover() ? lerpColor(accent, Color.WHITE, 0.12f) : accent;
+            } else {
+                fill = model.isPressed() ? BG_HOVER
+                        : model.isRollover() ? BG_SURFACE : BG_PANEL;
+            }
+            g2.setColor(fill);
+            g2.fillRoundRect(0, 0, c.getWidth(), c.getHeight(), 10, 10);
+            g2.dispose();
+            super.paint(g, c);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -691,7 +921,12 @@ public final class CyberTheme {
                 tb.setBackground(BG_PANEL);
                 tb.setForeground(FG_PRIMARY);
             } else if (child instanceof JButton b) {
-                styleButton(b, null);
+                if (Boolean.TRUE.equals(b.getClientProperty(BUTTON_FILLED_KEY))) {
+                    Object accent = b.getClientProperty(BUTTON_ACCENT_KEY);
+                    styleFilledButton(b, accent instanceof Color c ? c : NEON_CYAN);
+                } else {
+                    styleButton(b, null);
+                }
             } else if (child instanceof JPasswordField pf) {
                 stylePasswordField(pf);
             } else if (child instanceof JTextField tf) {
@@ -703,8 +938,12 @@ public final class CyberTheme {
             } else if (child instanceof JProgressBar pb) {
                 styleProgressBar(pb);
             } else if (child instanceof JLabel l) {
-                l.setForeground(FG_PRIMARY);
-                l.setFont(MONO_FONT);
+                if (l.getForeground() == null || l.getForeground() instanceof UIResource) {
+                    l.setForeground(FG_PRIMARY);
+                }
+                if (l.getFont() == null || l.getFont() instanceof UIResource) {
+                    l.setFont(UI_FONT);
+                }
             } else if (child instanceof JScrollPane sp) {
                 styleScrollPane(sp);
                 if (sp.getViewport() != null) {
@@ -805,6 +1044,35 @@ public final class CyberTheme {
                 btn.removeMouseListener(hover);
                 btn.putClientProperty(HOVER_LISTENER_KEY, null);
             }
+            btn.putClientProperty(BUTTON_ACCENT_KEY, null);
+            btn.putClientProperty(BUTTON_FILLED_KEY, null);
+            btn.setContentAreaFilled(true);
+            btn.setOpaque(true);
+            btn.setBorder(UIManager.getBorder("Button.border"));
+            btn.setFont(UIManager.getFont("Button.font"));
+            btn.updateUI();
+        }
+
+        if (comp instanceof JTextField field) {
+            String key = field instanceof JPasswordField ? "PasswordField" : "TextField";
+            field.setBorder(UIManager.getBorder(key + ".border"));
+            field.setFont(UIManager.getFont(key + ".font"));
+            field.updateUI();
+        }
+
+        if (comp instanceof JComboBox<?> combo) {
+            combo.setBorder(UIManager.getBorder("ComboBox.border"));
+            combo.setFont(UIManager.getFont("ComboBox.font"));
+        }
+
+        if (comp instanceof JScrollPane scrollPane) {
+            scrollPane.setBorder(UIManager.getBorder("ScrollPane.border"));
+        }
+
+        if (comp instanceof JPanel panel
+                && (panel.getClientProperty("OmniStrike.card") != null
+                || panel.getClientProperty(TITLED_NAME_KEY) != null)) {
+            panel.setBorder(null);
         }
 
         // Restore native scrollbar UI

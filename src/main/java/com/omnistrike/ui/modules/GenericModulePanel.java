@@ -2,6 +2,7 @@ package com.omnistrike.ui.modules;
 
 import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.model.Finding;
 
 import static com.omnistrike.ui.CyberTheme.*;
@@ -113,7 +114,7 @@ public class GenericModulePanel extends JPanel {
                             sb.append(formatResponse(f.getRequestResponse().response()));
                         }
 
-                        detailArea.setText(sb.toString());
+                        detailArea.setText(PrivacyManager.maskForDisplay(sb.toString()));
                         detailArea.setCaretPosition(0);
                     }
                 }
@@ -197,7 +198,8 @@ public class GenericModulePanel extends JPanel {
             Finding f = getSelectedFinding();
             if (f != null && f.getUrl() != null && !f.getUrl().isEmpty()) {
                 java.awt.Toolkit.getDefaultToolkit().getSystemClipboard()
-                        .setContents(new java.awt.datatransfer.StringSelection(f.getUrl()), null);
+                        .setContents(new java.awt.datatransfer.StringSelection(
+                                PrivacyManager.maskForDisplay(f.getUrl())), null);
             }
         });
         popup.add(copyUrl);
@@ -270,8 +272,8 @@ public class GenericModulePanel extends JPanel {
         tableModel.addRow(new Object[]{
                 f.getSeverity() != null ? f.getSeverity().name() : "",
                 f.getConfidence() != null ? f.getConfidence().name() : "",
-                f.getTitle() != null ? f.getTitle() : "",
-                f.getUrl() != null ? f.getUrl() : "",
+                PrivacyManager.maskForDisplay(f.getTitle() != null ? f.getTitle() : ""),
+                PrivacyManager.maskForDisplay(f.getUrl() != null ? f.getUrl() : ""),
                 f.getParameter() != null ? f.getParameter() : "",
                 timeFormat.format(new Date(f.getTimestamp()))
         });
@@ -298,12 +300,12 @@ public class GenericModulePanel extends JPanel {
                     pw.println(
                             escapeCsvField(f.getSeverity() != null ? f.getSeverity().name() : "") + ","
                             + escapeCsvField(f.getConfidence() != null ? f.getConfidence().name() : "") + ","
-                            + escapeCsvField(f.getTitle()) + ","
-                            + escapeCsvField(f.getUrl()) + ","
-                            + escapeCsvField(f.getParameter()) + ","
-                            + escapeCsvField(f.getEvidence()) + ","
-                            + escapeCsvField(f.getDescription()) + ","
-                            + escapeCsvField(f.getRemediation())
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getTitle())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getUrl())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getParameter())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getEvidence())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getDescription())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getRemediation()))
                     );
                 }
                 JOptionPane.showMessageDialog(this, "Exported to " + fc.getSelectedFile().getName());
@@ -332,7 +334,7 @@ public class GenericModulePanel extends JPanel {
         } catch (Exception e) {
             sb.append("[Error formatting request: ").append(e.getMessage()).append("]");
         }
-        return sb.toString();
+        return PrivacyManager.maskForDisplay(sb.toString());
     }
 
     private String formatResponse(burp.api.montoya.http.message.responses.HttpResponse resp) {
@@ -359,7 +361,7 @@ public class GenericModulePanel extends JPanel {
         } catch (Exception e) {
             sb.append("[Error formatting response: ").append(e.getMessage()).append("]");
         }
-        return sb.toString();
+        return PrivacyManager.maskForDisplay(sb.toString());
     }
 
     /**

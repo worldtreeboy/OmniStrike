@@ -5,6 +5,7 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.ModuleRegistry;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.framework.ScopeManager;
 import com.omnistrike.model.Finding;
 import com.omnistrike.modules.ai.AiVulnAnalyzer;
@@ -700,7 +701,8 @@ public class AiModulePanel extends JPanel {
             java.util.List<HttpRequestResponse> queue = analyzer.getBatchQueue();
             for (int i = 0; i < queue.size(); i++) {
                 HttpRequestResponse rr = queue.get(i);
-                String url = rr.request() != null ? truncateStr(rr.request().url(), 80) : "";
+                String url = rr.request() != null
+                        ? PrivacyManager.maskForDisplay(truncateStr(rr.request().url(), 80)) : "";
                 String ct = "";
                 String size = "";
                 if (rr.response() != null) {
@@ -1019,7 +1021,8 @@ public class AiModulePanel extends JPanel {
             Finding f = getSelectedFinding();
             if (f != null && f.getUrl() != null && !f.getUrl().isEmpty()) {
                 Toolkit.getDefaultToolkit().getSystemClipboard()
-                        .setContents(new java.awt.datatransfer.StringSelection(f.getUrl()), null);
+                        .setContents(new java.awt.datatransfer.StringSelection(
+                                PrivacyManager.maskForDisplay(f.getUrl())), null);
             }
         });
         popup.add(copyUrl);
@@ -1260,8 +1263,8 @@ public class AiModulePanel extends JPanel {
         tableModel.addRow(new Object[]{
                 f.getSeverity() != null ? f.getSeverity().name() : "",
                 f.getConfidence() != null ? f.getConfidence().name() : "",
-                f.getTitle() != null ? f.getTitle() : "",
-                f.getUrl() != null ? f.getUrl() : "",
+                PrivacyManager.maskForDisplay(f.getTitle() != null ? f.getTitle() : ""),
+                PrivacyManager.maskForDisplay(f.getUrl() != null ? f.getUrl() : ""),
                 f.getParameter() != null ? f.getParameter() : "",
                 timeFormat.format(new Date(f.getTimestamp()))
         });
@@ -1294,7 +1297,7 @@ public class AiModulePanel extends JPanel {
             sb.append("PARAMETER: ").append(f.getParameter()).append("\n");
         }
 
-        detailArea.setText(sb.toString());
+        detailArea.setText(PrivacyManager.maskForDisplay(sb.toString()));
         detailArea.setCaretPosition(0);
     }
 
@@ -1308,6 +1311,13 @@ public class AiModulePanel extends JPanel {
         }
     }
 
+    /** Re-renders URLs and finding detail after UI Privacy Mode changes. */
+    public void refreshPrivacyDisplay() {
+        refreshTable();
+        refreshBatchTable();
+        SwingUtilities.invokeLater(this::showSelectedDetail);
+    }
+
     private void exportFindings() {
         JFileChooser fc = new JFileChooser();
         fc.setSelectedFile(new java.io.File("ai-vuln-analyzer_findings.csv"));
@@ -1319,9 +1329,12 @@ public class AiModulePanel extends JPanel {
                     pw.println(
                             esc(f.getSeverity() != null ? f.getSeverity().name() : "") + ","
                             + esc(f.getConfidence() != null ? f.getConfidence().name() : "") + ","
-                            + esc(f.getTitle()) + "," + esc(f.getUrl()) + ","
-                            + esc(f.getParameter()) + "," + esc(f.getEvidence()) + ","
-                            + esc(f.getDescription()) + "," + esc(f.getRemediation()));
+                            + esc(PrivacyManager.maskForDisplay(f.getTitle())) + ","
+                            + esc(PrivacyManager.maskForDisplay(f.getUrl())) + ","
+                            + esc(PrivacyManager.maskForDisplay(f.getParameter())) + ","
+                            + esc(PrivacyManager.maskForDisplay(f.getEvidence())) + ","
+                            + esc(PrivacyManager.maskForDisplay(f.getDescription())) + ","
+                            + esc(PrivacyManager.maskForDisplay(f.getRemediation())));
                 }
                 JOptionPane.showMessageDialog(this, "Exported to " + fc.getSelectedFile().getName());
             } catch (Exception e) {

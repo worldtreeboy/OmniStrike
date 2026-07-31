@@ -2,6 +2,7 @@ package com.omnistrike.ui;
 
 import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.model.Finding;
 import static com.omnistrike.ui.CyberTheme.*;
 
@@ -345,8 +346,8 @@ public class FindingsOverviewPanel extends JPanel {
                 f.getModuleId() != null ? f.getModuleId() : "",
                 f.getSeverity() != null ? f.getSeverity().name() : "",
                 f.getConfidence() != null ? f.getConfidence().name() : "",
-                f.getTitle() != null ? f.getTitle() : "",
-                f.getUrl() != null ? f.getUrl() : "",
+                PrivacyManager.maskForDisplay(f.getTitle() != null ? f.getTitle() : ""),
+                PrivacyManager.maskForDisplay(f.getUrl() != null ? f.getUrl() : ""),
                 f.getParameter() != null ? f.getParameter() : "",
                 dateFormat.format(new Date(f.getTimestamp()))
         });
@@ -382,7 +383,7 @@ public class FindingsOverviewPanel extends JPanel {
             sb.append(formatResponse(f.getRequestResponse().response()));
         }
 
-        detailArea.setText(sb.toString());
+        detailArea.setText(PrivacyManager.maskForDisplay(sb.toString()));
         detailArea.setCaretPosition(0);
     }
 
@@ -405,7 +406,7 @@ public class FindingsOverviewPanel extends JPanel {
         } catch (Exception e) {
             sb.append("[Error formatting request: ").append(e.getMessage()).append("]");
         }
-        return sb.toString();
+        return PrivacyManager.maskForDisplay(sb.toString());
     }
 
     private String formatResponse(burp.api.montoya.http.message.responses.HttpResponse resp) {
@@ -432,7 +433,7 @@ public class FindingsOverviewPanel extends JPanel {
         } catch (Exception e) {
             sb.append("[Error formatting response: ").append(e.getMessage()).append("]");
         }
-        return sb.toString();
+        return PrivacyManager.maskForDisplay(sb.toString());
     }
 
     /** Sets the Montoya API reference for Send to Repeater integration. */
@@ -472,7 +473,7 @@ public class FindingsOverviewPanel extends JPanel {
         Finding f = getSelectedFinding();
         if (f != null && f.getUrl() != null) {
             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
-                    new StringSelection(f.getUrl()), null);
+                    new StringSelection(PrivacyManager.maskForDisplay(f.getUrl())), null);
         }
     }
 
@@ -495,7 +496,7 @@ public class FindingsOverviewPanel extends JPanel {
         sb.append("Remediation: ").append(f.getRemediation() != null ? f.getRemediation() : "(none)").append("\n");
 
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
-                new StringSelection(sb.toString()), null);
+                new StringSelection(PrivacyManager.maskForDisplay(sb.toString())), null);
     }
 
     /**
@@ -531,15 +532,15 @@ public class FindingsOverviewPanel extends JPanel {
                 for (Finding f : findingsStore.getAllFindings()) {
                     if (!filter.test(f)) continue;
                     pw.println(
-                            escapeCsvField(f.getModuleId()) + ","
+                            escapeCsvField(PrivacyManager.maskForDisplay(f.getModuleId())) + ","
                             + escapeCsvField(f.getSeverity() != null ? f.getSeverity().name() : "") + ","
                             + escapeCsvField(f.getConfidence() != null ? f.getConfidence().name() : "") + ","
-                            + escapeCsvField(f.getTitle()) + ","
-                            + escapeCsvField(f.getUrl()) + ","
-                            + escapeCsvField(f.getParameter()) + ","
-                            + escapeCsvField(f.getEvidence()) + ","
-                            + escapeCsvField(f.getDescription()) + ","
-                            + escapeCsvField(f.getRemediation())
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getTitle())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getUrl())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getParameter())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getEvidence())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getDescription())) + ","
+                            + escapeCsvField(PrivacyManager.maskForDisplay(f.getRemediation()))
                     );
                 }
                 JOptionPane.showMessageDialog(this, "Exported to " + fc.getSelectedFile().getName());
@@ -564,22 +565,28 @@ public class FindingsOverviewPanel extends JPanel {
                     pw.printf("| %d | %s | %s | %s | %s | %s |%n",
                             i++,
                             f.getSeverity() != null ? f.getSeverity() : "",
-                            f.getModuleId() != null ? f.getModuleId() : "",
-                            f.getTitle() != null ? f.getTitle() : "",
-                            f.getUrl() != null ? f.getUrl() : "",
-                            f.getParameter() != null ? f.getParameter() : "");
+                            PrivacyManager.maskForDisplay(f.getModuleId()),
+                            PrivacyManager.maskForDisplay(f.getTitle()),
+                            PrivacyManager.maskForDisplay(f.getUrl()),
+                            PrivacyManager.maskForDisplay(f.getParameter()));
                 }
                 pw.println("\n## Details\n");
                 i = 1;
                 for (Finding f : findingsStore.getAllFindings()) {
                     if (!filter.test(f)) continue;
-                    pw.println("### " + i++ + ". " + (f.getTitle() != null ? f.getTitle() : "N/A"));
+                    pw.println("### " + i++ + ". " + PrivacyManager.maskForDisplay(
+                            f.getTitle() != null ? f.getTitle() : "N/A"));
                     pw.println("- **Severity**: " + f.getSeverity() + " | **Confidence**: " + f.getConfidence());
-                    pw.println("- **URL**: " + (f.getUrl() != null ? f.getUrl() : "N/A"));
-                    pw.println("- **Parameter**: " + (f.getParameter() != null && !f.getParameter().isEmpty() ? f.getParameter() : "N/A"));
-                    pw.println("- **Evidence**: " + (f.getEvidence() != null ? f.getEvidence() : "N/A"));
-                    pw.println("- **Remediation**: " + (f.getRemediation() != null ? f.getRemediation() : "N/A"));
-                    pw.println("\n" + (f.getDescription() != null ? f.getDescription() : "(no description)") + "\n");
+                    pw.println("- **URL**: " + PrivacyManager.maskForDisplay(
+                            f.getUrl() != null ? f.getUrl() : "N/A"));
+                    pw.println("- **Parameter**: " + PrivacyManager.maskForDisplay(
+                            f.getParameter() != null && !f.getParameter().isEmpty() ? f.getParameter() : "N/A"));
+                    pw.println("- **Evidence**: " + PrivacyManager.maskForDisplay(
+                            f.getEvidence() != null ? f.getEvidence() : "N/A"));
+                    pw.println("- **Remediation**: " + PrivacyManager.maskForDisplay(
+                            f.getRemediation() != null ? f.getRemediation() : "N/A"));
+                    pw.println("\n" + PrivacyManager.maskForDisplay(
+                            f.getDescription() != null ? f.getDescription() : "(no description)") + "\n");
                 }
                 JOptionPane.showMessageDialog(this, "Exported to " + fc.getSelectedFile().getName());
             } catch (Exception e) {

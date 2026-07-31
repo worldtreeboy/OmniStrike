@@ -4,6 +4,7 @@ import static com.omnistrike.ui.CyberTheme.*;
 
 import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.model.Finding;
 
 import javax.swing.*;
@@ -244,8 +245,8 @@ public class RequestResponsePanel extends JPanel {
                 f.getSeverity() != null ? f.getSeverity().name() : "",
                 f.getConfidence() != null ? f.getConfidence().name() : "",
                 f.getModuleId() != null ? f.getModuleId() : "",
-                f.getTitle() != null ? f.getTitle() : "",
-                f.getUrl() != null ? f.getUrl() : "",
+                PrivacyManager.maskForDisplay(f.getTitle() != null ? f.getTitle() : ""),
+                PrivacyManager.maskForDisplay(f.getUrl() != null ? f.getUrl() : ""),
                 f.getParameter() != null ? f.getParameter() : "",
                 timeFormat.format(new Date(f.getTimestamp()))
         });
@@ -307,7 +308,7 @@ public class RequestResponsePanel extends JPanel {
         left.append("Parameter:  ").append(f.getParameter() != null && !f.getParameter().isEmpty() ? f.getParameter() : "N/A").append("\n");
         left.append("\n=== EVIDENCE ===\n\n");
         left.append(f.getEvidence() != null ? f.getEvidence() : "(none)");
-        requestArea.setText(left.toString());
+        requestArea.setText(PrivacyManager.maskForDisplay(left.toString()));
         requestArea.setCaretPosition(0);
 
         // Right pane: description + remediation
@@ -337,7 +338,7 @@ public class RequestResponsePanel extends JPanel {
             right.append("No HTTP request/response data is attached to this finding.\n");
             right.append("Check the evidence field for detection details.");
         }
-        responseArea.setText(right.toString());
+        responseArea.setText(PrivacyManager.maskForDisplay(right.toString()));
         responseArea.setCaretPosition(0);
     }
 
@@ -360,7 +361,7 @@ public class RequestResponsePanel extends JPanel {
         } catch (Exception e) {
             sb.append("[Error formatting request: ").append(e.getMessage()).append("]");
         }
-        return sb.toString();
+        return PrivacyManager.maskForDisplay(sb.toString());
     }
 
     private String formatResponse(burp.api.montoya.http.message.responses.HttpResponse resp) {
@@ -387,7 +388,7 @@ public class RequestResponsePanel extends JPanel {
         } catch (Exception e) {
             sb.append("[Error formatting response: ").append(e.getMessage()).append("]");
         }
-        return sb.toString();
+        return PrivacyManager.maskForDisplay(sb.toString());
     }
 
     /** Sets the Montoya API reference for Send to Repeater integration. */
@@ -433,7 +434,7 @@ public class RequestResponsePanel extends JPanel {
         Finding f = getSelectedFinding();
         if (f != null && f.getUrl() != null) {
             Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
-                    new StringSelection(f.getUrl()), null);
+                    new StringSelection(PrivacyManager.maskForDisplay(f.getUrl())), null);
         }
     }
 
@@ -456,7 +457,7 @@ public class RequestResponsePanel extends JPanel {
         sb.append("Remediation: ").append(f.getRemediation() != null ? f.getRemediation() : "(none)").append("\n");
 
         Toolkit.getDefaultToolkit().getSystemClipboard().setContents(
-                new StringSelection(sb.toString()), null);
+                new StringSelection(PrivacyManager.maskForDisplay(sb.toString())), null);
     }
 
     private static String truncateStr(String s, int max) {

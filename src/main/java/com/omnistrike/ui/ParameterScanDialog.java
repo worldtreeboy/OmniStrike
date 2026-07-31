@@ -1,6 +1,7 @@
 package com.omnistrike.ui;
 
 import burp.api.montoya.http.message.HttpRequestResponse;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.model.ScanModule;
 
 import javax.swing.*;
@@ -63,7 +64,8 @@ public class ParameterScanDialog extends JDialog {
 
         // ==================== HEADER ====================
         JLabel headerLabel = new JLabel("<html>Scan target:<br><b>"
-                + escape(truncate(reqResp.request().url(), 90)) + "</b></html>");
+                + escape(truncate(PrivacyManager.maskForDisplay(reqResp.request().url()), 90))
+                + "</b></html>");
         headerLabel.setForeground(NEON_CYAN);
         headerLabel.setFont(MONO_BOLD);
         headerLabel.setBorder(new EmptyBorder(0, 0, 6, 0));
@@ -100,10 +102,7 @@ public class ParameterScanDialog extends JDialog {
         buttonBar.add(cancelBtn);
 
         JButton scanBtn = darkButton("Scan");
-        scanBtn.setBackground(NEON_GREEN);
-        scanBtn.setForeground(BG_DARK);
-        scanBtn.setFont(MONO_BOLD);
-        scanBtn.setBorder(BorderFactory.createEmptyBorder(5, 14, 5, 14));
+        CyberTheme.styleFilledButton(scanBtn, NEON_GREEN);
         scanBtn.addActionListener(e -> { confirmed = true; dispose(); });
         buttonBar.add(scanBtn);
 

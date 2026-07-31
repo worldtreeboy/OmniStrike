@@ -42,15 +42,32 @@ public class ModuleListPanel extends JPanel {
         this.findingsStore = findingsStore;
         setLayout(new BorderLayout());
         setBackground(BG_DARK);
-        CyberTheme.styleTitledBorder(this, "Modules", NEON_CYAN);
-        setPreferredSize(new Dimension(250, 0));
+        setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 6));
+        setPreferredSize(new Dimension(282, 0));
+
+        JPanel north = new JPanel();
+        north.setLayout(new BoxLayout(north, BoxLayout.Y_AXIS));
+        north.setOpaque(false);
+
+        JPanel heading = new JPanel(new BorderLayout(8, 0));
+        heading.setOpaque(false);
+        heading.setBorder(BorderFactory.createEmptyBorder(2, 6, 8, 6));
+        JLabel title = new JLabel("Workspace");
+        title.setFont(UI_BOLD.deriveFont(16f));
+        title.setForeground(FG_PRIMARY);
+        heading.add(title, BorderLayout.WEST);
+        JLabel hint = new JLabel("MODULES + TOOLS");
+        hint.setFont(UI_BOLD.deriveFont(9f));
+        hint.setForeground(NEON_CYAN);
+        heading.add(hint, BorderLayout.EAST);
+        north.add(heading);
 
         // Select All / Deselect All buttons at the top
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
-        buttonPanel.setBackground(BG_DARK);
-        JButton selectAllBtn = new JButton("Select All");
+        JPanel buttonPanel = new JPanel(new GridLayout(1, 2, 8, 0));
+        buttonPanel.setOpaque(false);
+        buttonPanel.setBorder(BorderFactory.createEmptyBorder(0, 4, 10, 4));
+        JButton selectAllBtn = new JButton("Enable all");
         selectAllBtn.setToolTipText("Enable all scan modules");
-        selectAllBtn.setMargin(new Insets(2, 6, 2, 6));
         selectAllBtn.addActionListener(e -> {
             for (ScanModule module : registry.getAllModules()) {
                 if (module.isPassive()
@@ -64,9 +81,8 @@ public class ModuleListPanel extends JPanel {
         CyberTheme.styleButton(selectAllBtn, NEON_CYAN);
         buttonPanel.add(selectAllBtn);
 
-        JButton deselectAllBtn = new JButton("Deselect All");
+        JButton deselectAllBtn = new JButton("Disable all");
         deselectAllBtn.setToolTipText("Disable all scan modules");
-        deselectAllBtn.setMargin(new Insets(2, 6, 2, 6));
         deselectAllBtn.addActionListener(e -> {
             for (ScanModule module : registry.getAllModules()) {
                 if (module.isPassive()
@@ -80,12 +96,14 @@ public class ModuleListPanel extends JPanel {
         CyberTheme.styleButton(deselectAllBtn, NEON_CYAN);
         buttonPanel.add(deselectAllBtn);
 
-        add(buttonPanel, BorderLayout.NORTH);
+        north.add(buttonPanel);
+        add(north, BorderLayout.NORTH);
 
         // Scrollable container for module entries
         listContainer = new JPanel();
         listContainer.setLayout(new BoxLayout(listContainer, BoxLayout.Y_AXIS));
         listContainer.setBackground(BG_DARK);
+        listContainer.setBorder(BorderFactory.createEmptyBorder(0, 3, 8, 3));
         JScrollPane scrollPane = new JScrollPane(listContainer);
         scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
         scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
@@ -134,7 +152,7 @@ public class ModuleListPanel extends JPanel {
         // --- AI section (top of the list) ---
         if (aiModule != null) {
             listContainer.add(createSectionHeader("AI Analysis"));
-            listContainer.add(createModuleEntry(aiModule));
+            addEntry(createModuleEntry(aiModule));
         }
 
         // --- Passive Analyzers section ---
@@ -142,7 +160,7 @@ public class ModuleListPanel extends JPanel {
             listContainer.add(createSectionSeparator());
             listContainer.add(createSectionHeader("Passive Analyzers"));
             for (ScanModule module : passiveModules) {
-                listContainer.add(createModuleEntry(module));
+                addEntry(createModuleEntry(module));
             }
         }
 
@@ -151,7 +169,7 @@ public class ModuleListPanel extends JPanel {
             listContainer.add(createSectionSeparator());
             listContainer.add(createSectionHeader("Framework Tools"));
             for (FrameworkTool tool : frameworkToolIds) {
-                listContainer.add(createFrameworkEntry(tool.id, tool.name, tool.description));
+                addEntry(createFrameworkEntry(tool.id, tool.name, tool.description));
             }
         }
 
@@ -160,18 +178,23 @@ public class ModuleListPanel extends JPanel {
         listContainer.repaint();
     }
 
+    private void addEntry(JPanel entry) {
+        listContainer.add(entry);
+        listContainer.add(Box.createVerticalStrut(6));
+    }
+
     /**
      * Creates a section header label for the module list sidebar.
      */
     private JPanel createSectionHeader(String title) {
         JPanel header = new JPanel(new BorderLayout());
-        header.setMaximumSize(new Dimension(Integer.MAX_VALUE, 24));
-        header.setPreferredSize(new Dimension(250, 24));
-        header.setBorder(BorderFactory.createEmptyBorder(4, 8, 2, 4));
+        header.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
+        header.setPreferredSize(new Dimension(270, 30));
+        header.setBorder(BorderFactory.createEmptyBorder(8, 8, 5, 4));
         header.setBackground(BG_DARK);
 
         JLabel label = new JLabel(title);
-        label.setFont(MONO_LABEL);
+        label.setFont(UI_BOLD.deriveFont(10f));
         label.setForeground(NEON_CYAN);
         header.add(label, BorderLayout.WEST);
 
@@ -183,10 +206,9 @@ public class ModuleListPanel extends JPanel {
      */
     private JPanel createSectionSeparator() {
         JPanel sep = new JPanel();
-        sep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 6));
-        sep.setPreferredSize(new Dimension(250, 6));
+        sep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 10));
+        sep.setPreferredSize(new Dimension(270, 10));
         sep.setBackground(BG_DARK);
-        sep.setBorder(new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER));
         return sep;
     }
 
@@ -200,15 +222,13 @@ public class ModuleListPanel extends JPanel {
         FontMetrics fm = entry.getFontMetrics(entry.getFont().deriveFont(Font.BOLD, 12f));
         int lineHeight = fm.getHeight();
         // Two lines of text + padding
-        int entryHeight = (lineHeight * 2) + 16;
+        int entryHeight = (lineHeight * 2) + 22;
         entry.setMaximumSize(new Dimension(Integer.MAX_VALUE, entryHeight));
-        entry.setPreferredSize(new Dimension(250, entryHeight));
+        entry.setPreferredSize(new Dimension(270, entryHeight));
 
         entry.setBackground(BG_PANEL);
         entry.setOpaque(true);
-        entry.setBorder(BorderFactory.createCompoundBorder(
-                new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER),
-                BorderFactory.createEmptyBorder(4, 4, 4, 4)));
+        styleEntry(entry, false);
         entry.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         JCheckBox enableBox = new JCheckBox();
@@ -240,7 +260,7 @@ public class ModuleListPanel extends JPanel {
 
         JLabel nameLabel = new JLabel(module.getName());
         nameLabel.setForeground(FG_PRIMARY);
-        nameLabel.setFont(MONO_BOLD);
+        nameLabel.setFont(UI_BOLD);
 
         String tag = module.getCategory().name();
         String type = module.isPassive() ? "Passive" : "Active";
@@ -248,15 +268,17 @@ public class ModuleListPanel extends JPanel {
                 : autoTriggered ? " | Auto-triggered"
                 : manualOnly ? " | Right-click only" : "";
         JLabel descLabel = new JLabel(tag + " | " + type + suffix);
-        descLabel.setFont(MONO_SMALL);
+        descLabel.setFont(UI_SMALL.deriveFont(11f));
         descLabel.setForeground(FG_SECONDARY);
 
         textPanel.add(nameLabel);
         textPanel.add(descLabel);
 
         JLabel countLabel = new JLabel("0");
-        countLabel.setFont(MONO_BOLD);
+        countLabel.setFont(UI_BOLD.deriveFont(11f));
         countLabel.setForeground(FG_DIM);
+        countLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        countLabel.setPreferredSize(new Dimension(30, 24));
 
         entry.add(enableBox, BorderLayout.WEST);
         entry.add(textPanel, BorderLayout.CENTER);
@@ -272,14 +294,21 @@ public class ModuleListPanel extends JPanel {
             public void mouseClicked(java.awt.event.MouseEvent e) {
                 selectModule(module.getId());
             }
+
+            @Override
+            public void mouseEntered(java.awt.event.MouseEvent e) {
+                if (!module.getId().equals(selectedModuleId)) entry.setBackground(BG_SURFACE);
+            }
+
+            @Override
+            public void mouseExited(java.awt.event.MouseEvent e) {
+                if (!module.getId().equals(selectedModuleId)) entry.setBackground(BG_PANEL);
+            }
         });
 
         // Restore selection highlight if this module was previously selected
         if (module.getId().equals(selectedModuleId)) {
-            entry.setBackground(BG_HOVER);
-            entry.setBorder(BorderFactory.createCompoundBorder(
-                    new CyberTheme.GlowMatteBorder(0, 3, 0, 0, NEON_CYAN),
-                    BorderFactory.createEmptyBorder(4, 1, 4, 4)));
+            styleEntry(entry, true);
         }
 
         moduleEntries.put(module.getId(), entry);
@@ -304,12 +333,10 @@ public class ModuleListPanel extends JPanel {
         int lineHeight = fm.getHeight();
         int entryHeight = (lineHeight * 2) + 16;
         entry.setMaximumSize(new Dimension(Integer.MAX_VALUE, entryHeight));
-        entry.setPreferredSize(new Dimension(250, entryHeight));
+        entry.setPreferredSize(new Dimension(270, entryHeight));
         entry.setBackground(BG_PANEL);
         entry.setOpaque(true);
-        entry.setBorder(BorderFactory.createCompoundBorder(
-                new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER),
-                BorderFactory.createEmptyBorder(4, 8, 4, 4)));
+        styleEntry(entry, false);
         entry.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
         JPanel textPanel = new JPanel(new GridLayout(2, 1));
@@ -325,6 +352,12 @@ public class ModuleListPanel extends JPanel {
 
         textPanel.add(nameLabel);
         textPanel.add(descLabel);
+        JLabel icon = new JLabel("◇");
+        icon.setForeground(NEON_MAGENTA);
+        icon.setFont(UI_BOLD.deriveFont(16f));
+        icon.setHorizontalAlignment(SwingConstants.CENTER);
+        icon.setPreferredSize(new Dimension(28, 28));
+        entry.add(icon, BorderLayout.WEST);
         entry.add(textPanel, BorderLayout.CENTER);
         entry.setToolTipText(description);
 
@@ -333,13 +366,20 @@ public class ModuleListPanel extends JPanel {
             public void mouseClicked(java.awt.event.MouseEvent e) {
                 selectModule(id);
             }
+
+            @Override
+            public void mouseEntered(java.awt.event.MouseEvent e) {
+                if (!id.equals(selectedModuleId)) entry.setBackground(BG_SURFACE);
+            }
+
+            @Override
+            public void mouseExited(java.awt.event.MouseEvent e) {
+                if (!id.equals(selectedModuleId)) entry.setBackground(BG_PANEL);
+            }
         });
 
         if (id.equals(selectedModuleId)) {
-            entry.setBackground(BG_HOVER);
-            entry.setBorder(BorderFactory.createCompoundBorder(
-                    new CyberTheme.GlowMatteBorder(0, 3, 0, 0, NEON_CYAN),
-                    BorderFactory.createEmptyBorder(4, 5, 4, 4)));
+            styleEntry(entry, true);
         }
 
         moduleEntries.put(id, entry);
@@ -351,25 +391,21 @@ public class ModuleListPanel extends JPanel {
 
         // Update visual selection
         for (Map.Entry<String, JPanel> entry : moduleEntries.entrySet()) {
-            if (entry.getKey().equals(moduleId)) {
-                entry.getValue().setBackground(BG_HOVER);
-                entry.getValue().setOpaque(true);
-                entry.getValue().setBorder(BorderFactory.createCompoundBorder(
-                        new CyberTheme.GlowMatteBorder(0, 3, 0, 0, NEON_CYAN),
-                        BorderFactory.createEmptyBorder(4, 1, 4, 4)));
-            } else {
-                entry.getValue().setBackground(BG_PANEL);
-                entry.getValue().setOpaque(true);
-                entry.getValue().setBorder(BorderFactory.createCompoundBorder(
-                        new CyberTheme.GlowMatteBorder(0, 0, 1, 0, BORDER),
-                        BorderFactory.createEmptyBorder(4, 4, 4, 4)));
-            }
+            styleEntry(entry.getValue(), entry.getKey().equals(moduleId));
             entry.getValue().repaint();
         }
 
         if (onModuleSelected != null) {
             onModuleSelected.accept(moduleId);
         }
+    }
+
+    private void styleEntry(JPanel entry, boolean selected) {
+        entry.setOpaque(true);
+        entry.setBackground(selected ? BG_HOVER : BG_PANEL);
+        entry.setBorder(BorderFactory.createCompoundBorder(
+                new CyberTheme.RoundedLineBorder(selected ? NEON_CYAN : BORDER, 1, 12),
+                BorderFactory.createEmptyBorder(7, 9, 7, 9)));
     }
 
     public void updateFindingsCounts() {

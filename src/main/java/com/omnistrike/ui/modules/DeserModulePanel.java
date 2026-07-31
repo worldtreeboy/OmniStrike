@@ -2,6 +2,7 @@ package com.omnistrike.ui.modules;
 
 import burp.api.montoya.MontoyaApi;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.model.Finding;
 import com.omnistrike.modules.injection.deser.DeserPayloadGenerator;
 import com.omnistrike.modules.injection.deser.DeserPayloadGenerator.Encoding;
@@ -48,6 +49,7 @@ public class DeserModulePanel extends JPanel {
     private final DefaultTableModel findingsTableModel;
     private final List<Finding> findingsList = new ArrayList<>();
     private final javax.swing.Timer autoRefreshTimer;
+    private final JTabbedPane toolTabs;
     private int lastKnownFindingsCount = 0;
 
     public DeserModulePanel(MontoyaApi api, FindingsStore findingsStore) {
@@ -222,10 +224,10 @@ public class DeserModulePanel extends JPanel {
                     int modelRow = findingsTable.convertRowIndexToModel(row);
                     if (modelRow >= 0 && modelRow < findingsList.size()) {
                         Finding f = findingsList.get(modelRow);
-                        findingsDetailArea.setText(
+                        findingsDetailArea.setText(PrivacyManager.maskForDisplay(
                                 "Evidence: " + (f.getEvidence() != null ? f.getEvidence() : "") +
                                 "\nDescription: " + (f.getDescription() != null ? f.getDescription() : "") +
-                                "\nRemediation: " + (f.getRemediation() != null ? f.getRemediation() : ""));
+                                "\nRemediation: " + (f.getRemediation() != null ? f.getRemediation() : "")));
                         findingsDetailArea.setCaretPosition(0);
                     }
                 }
@@ -250,7 +252,7 @@ public class DeserModulePanel extends JPanel {
         findingsTable.setComponentPopupMenu(findingsPopup);
 
         // ── Bottom tabs: Preview + Findings ─────────────────────────────────
-        JTabbedPane toolTabs = new JTabbedPane();
+        toolTabs = new JTabbedPane();
         CyberTheme.styleTabbedPane(toolTabs);
         toolTabs.addTab("Payload Preview", previewWrapper);
 
@@ -512,9 +514,9 @@ public class DeserModulePanel extends JPanel {
                     findingsList.add(f);
                     findingsTableModel.addRow(new Object[]{
                             f.getSeverity() != null ? f.getSeverity().name() : "",
-                            f.getTitle() != null ? f.getTitle() : "",
-                            f.getUrl() != null ? f.getUrl() : "",
-                            f.getParameter() != null ? f.getParameter() : "",
+                            PrivacyManager.maskForDisplay(f.getTitle() != null ? f.getTitle() : ""),
+                            PrivacyManager.maskForDisplay(f.getUrl() != null ? f.getUrl() : ""),
+                            PrivacyManager.maskForDisplay(f.getParameter() != null ? f.getParameter() : ""),
                             fmt.format(new java.util.Date(f.getTimestamp()))
                     });
                 }
@@ -526,6 +528,12 @@ public class DeserModulePanel extends JPanel {
                 }
             }
         });
+    }
+
+    /** Rebuilds captured finding data after UI privacy mode changes. */
+    public void refreshPrivacyDisplay() {
+        lastKnownFindingsCount = -1;
+        autoRefreshFindings(toolTabs);
     }
 
     // ── UI helpers ────────────────────────────────────────────────────────────

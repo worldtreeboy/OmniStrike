@@ -7,7 +7,7 @@
 Turn any request into a deliberate security test with parameter-level targeting,<br/>
 session automation, technology-aware probes, OOB detection, and optional AI analysis.
 
-[![Release](https://img.shields.io/badge/release-v1.81-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.82-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
 [![Java](https://img.shields.io/badge/Java-17%2B-f59e0b?style=for-the-badge&logo=openjdk&logoColor=white&labelColor=111827)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Burp-Montoya_API-f97316?style=for-the-badge&labelColor=111827)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge&color=22c55e&labelColor=111827)](LICENSE)
@@ -275,8 +275,27 @@ The AI Vulnerability Analyzer is disabled by default. It supports:
 - API-key workflows for Anthropic, OpenAI, Google, xAI, Moonshot AI, DeepSeek, Mistral, Groq, OpenRouter, and Ollama
 - Editable model identifiers so newer compatible models can be used without waiting for a UI update
 
-> [!WARNING]
-> AI prompts can contain sensitive headers, cookies, bodies, and attacker-controlled response text. Understand where your chosen backend sends data. Auto-approved CLI modes may also act on prompt-injected instructions; use them only in an environment where that risk is acceptable.
+### Client-data privacy
+
+**Redact AI Data is enabled by default.** Every prompt crosses one shared privacy boundary immediately before it reaches an API or CLI backend. OmniStrike replaces sensitive values with stable, typed placeholders while retaining enough structure for useful analysis:
+
+~~~http
+POST https://[REDACTED_HOST_1]/api/orders?id=[REDACTED_QUERY_VALUE_1]
+Authorization: Bearer [REDACTED_AUTH_1]
+Cookie: session=[REDACTED_COOKIE_1]
+Content-Type: application/json
+
+{"email":"[REDACTED_EMAIL_1]","action":"view"}
+~~~
+
+The original Burp request is never modified. Authentication cookies and headers remain available to OmniStrike's local probe engine, so the scanner can still test an authenticated endpoint; only the AI-facing copy is sanitized.
+
+Redaction covers authorization headers, every cookie value, private/custom headers, URL credentials and hosts, query and form values, sensitive JSON/XML fields, emails, payment cards, phone numbers, national IDs, SSNs, IBANs, IP/MAC addresses, UUIDs, private keys, known provider tokens, and unknown high-entropy secrets. Repeated values receive the same placeholder within a prompt so the model can reason about data flow.
+
+**Mask UI Data** is a separate option for shoulder-surfing and screen sharing. It masks captured values in findings, HTTP viewers, logs, Stepper state, attack-surface hosts, tables, clipboard copies, and exports without changing the stored evidence.
+
+> [!CAUTION]
+> Redaction is defense in depth, not a mathematical guarantee: an unusual client-specific value can evade any local detector. For engagements that prohibit third-party disclosure, use a locally hosted model/CLI or leave AI disabled. Auto-approved CLI modes also process attacker-controlled response text; use them only in an isolated environment.
 
 ## 🎛️ Scan controls
 
@@ -286,6 +305,8 @@ The AI Vulnerability Analyzer is disabled by default. It supports:
 | **Throttle** | None, adaptive backoff, or a fixed delay. |
 | **Time-based testing** | Separately gates slower blind timing checks. |
 | **Static-resource skip** | Avoids active injection against common asset extensions. |
+| **Redact AI Data** | Sanitizes the AI-facing prompt at the shared provider boundary; enabled by default. |
+| **Mask UI Data** | Optionally masks captured target data across views, copies, and exports. |
 | **Themes** | 29 UI themes, scoped to OmniStrike or optionally applied globally. |
 
 ## 🏗️ Build from source
@@ -341,6 +362,17 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 ## 🗒️ Release notes
 
 <details open>
+<summary><strong>v1.82 — Privacy boundary and visual redesign</strong></summary>
+
+- Added default-on, structure-preserving redaction before every API-key and CLI AI backend.
+- Added optional UI privacy masking across evidence viewers, findings, logs, Stepper state, attack-surface data, copies, and exports.
+- Introduced the Omni Pro design system with a branded header, collapsible command controls, modern tables and tabs, painted rounded controls, redesigned workspace navigation, and a responsive welcome state.
+- Preserved Burp's native theme as a permanent option and kept global theming explicitly opt-in.
+- Added adversarial regression tests for credentials, cookies, structured bodies, PII, payment data, infrastructure identifiers, provider tokens, private keys, high-entropy secrets, stability, and false positives.
+
+</details>
+
+<details>
 <summary><strong>v1.81 — Security hardening and scanner reliability</strong></summary>
 
 - Scoped Session Keep-Alive redirects and cookies to their intended origins, paths, and transport security requirements; login requests now remain memory-only.

@@ -1,6 +1,7 @@
 package com.omnistrike.ui;
 
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.PrivacyManager;
 import com.omnistrike.framework.ScopeManager;
 import com.omnistrike.framework.SharedDataBus;
 import com.omnistrike.model.Finding;
@@ -387,10 +388,10 @@ public class AttackSurfacePanel extends JPanel {
         }
 
         StringBuilder html = new StringBuilder();
-        html.append("<h2 style='color:#00F0FF; margin:0'>").append(esc(node.hostname)).append("</h2>");
+        html.append("<h2 style='color:#00F0FF; margin:0'>").append(esc(displayHost(node.hostname))).append("</h2>");
         html.append("<p style='color:gray'>").append(node.isRoot ? "Root domain" : "Subdomain");
         if (node.parent != null) {
-            html.append(" of ").append(esc(node.parent.hostname));
+            html.append(" of ").append(esc(displayHost(node.parent.hostname)));
         }
         html.append("</p>");
 
@@ -414,9 +415,11 @@ public class AttackSurfacePanel extends JPanel {
                 html.append("<p style='margin:4px 0'>");
                 html.append("<span style='color:").append(severityHex(f.getSeverity()))
                         .append("; font-weight:bold'>[").append(f.getSeverity()).append("]</span> ");
-                html.append("<span style='color:#E0E0FF'>").append(esc(f.getTitle())).append("</span>");
+                html.append("<span style='color:#E0E0FF'>")
+                        .append(esc(PrivacyManager.maskForDisplay(f.getTitle()))).append("</span>");
                 if (f.getParameter() != null && !f.getParameter().isEmpty()) {
-                    html.append(" <span style='color:gray'>(").append(esc(f.getParameter())).append(")</span>");
+                    html.append(" <span style='color:gray'>(")
+                            .append(esc(PrivacyManager.maskForDisplay(f.getParameter()))).append(")</span>");
                 }
                 html.append("<br><span style='color:gray; font-size:0.9em'>")
                         .append(esc(f.getModuleId())).append("</span>");
@@ -428,7 +431,7 @@ public class AttackSurfacePanel extends JPanel {
                 html.append("<hr><h3 style='color:#E0E0FF'>Subdomains (")
                         .append(node.children.size()).append(")</h3>");
                 for (HostNode child : node.children) {
-                    html.append("<p style='color:#4488FF'>").append(esc(child.hostname))
+                    html.append("<p style='color:#4488FF'>").append(esc(displayHost(child.hostname)))
                             .append(" <span style='color:gray'>(")
                             .append(child.findings.size()).append(" findings)</span></p>");
                 }
@@ -437,6 +440,16 @@ public class AttackSurfacePanel extends JPanel {
 
         detailPane.setText(htmlWrap(html.toString()));
         detailPane.setCaretPosition(0);
+    }
+
+    private String displayHost(String hostname) {
+        return PrivacyManager.maskValueForDisplay("HOST", hostname);
+    }
+
+    /** Repaints host labels and the selected detail card after privacy mode changes. */
+    public void refreshPrivacyDisplay() {
+        showNodeDetails(selectedNode);
+        canvas.repaint();
     }
 
     // ── Graph canvas (custom rendering) ─────────────────────────────────────
@@ -634,7 +647,7 @@ public class AttackSurfacePanel extends JPanel {
             float fontSize = (float) Math.max(8, 12 * zoom);
             g2.setFont(MONO_FONT.deriveFont(fontSize));
             FontMetrics fm = g2.getFontMetrics();
-            String label = truncateLabel(node.hostname, (int) (sw - 12 * zoom), fm);
+            String label = truncateLabel(displayHost(node.hostname), (int) (sw - 12 * zoom), fm);
             g2.setColor(FG_PRIMARY);
             double textX = sx + (sw - fm.stringWidth(label)) / 2;
             double textY = sy + sh / 2 - 4 * zoom;
