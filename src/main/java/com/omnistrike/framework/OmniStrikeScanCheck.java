@@ -119,7 +119,7 @@ public class OmniStrikeScanCheck implements ScanCheck {
         List<ScanModule> modulesToRun;
         if (requestedModules.isEmpty()) {
             // Empty list = all enabled non-AI modules (AI is invoked separately)
-            modulesToRun = registry.getEnabledNonAiModules();
+            modulesToRun = registry.getEnabledManualScanModules();
             api.logging().logToOutput("[OmniStrikeScanCheck] Running ALL " + modulesToRun.size() + " enabled non-AI module(s)");
         } else {
             // Specific modules requested

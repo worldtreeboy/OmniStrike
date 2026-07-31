@@ -3,6 +3,8 @@ package com.omnistrike.modules.recon;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.ScanTargetIdentity;
+import com.omnistrike.framework.BoundedDeduplication;
 import com.omnistrike.model.*;
 
 import java.util.*;
@@ -137,7 +139,7 @@ public class SensitiveDataExposure implements ScanModule {
     }
 
     @Override
-    public void destroy() { }
+    public void destroy() { seen.clear(); }
 
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
@@ -151,7 +153,7 @@ public class SensitiveDataExposure implements ScanModule {
         String host;
         String path;
         try {
-            host = requestResponse.request().httpService().host();
+            host = ScanTargetIdentity.origin(requestResponse.request().url());
             path = requestResponse.request().pathWithoutQuery();
         } catch (Exception e) {
             return findings;
@@ -401,7 +403,7 @@ public class SensitiveDataExposure implements ScanModule {
      */
     private boolean dedup(String host, String path, PatternType type) {
         String key = host + "|" + path + "|" + type.name();
-        return seen.putIfAbsent(key, Boolean.TRUE) == null;
+        return BoundedDeduplication.markIfNew(seen, key);
     }
 
     /**

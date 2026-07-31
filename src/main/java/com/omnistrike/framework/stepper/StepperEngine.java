@@ -15,6 +15,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.omnistrike.framework.JsonScanSupport;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -101,10 +102,11 @@ public class StepperEngine {
 
     private volatile BiConsumer<String, String> uiLogger;
 
-    /** Persists the chain across Burp restarts. Null until wired; all ops then no-op. */
+    /** Used only to purge credential-bearing state written by older releases. */
     private volatile PersistenceManager persistence;
     private static final String STATE_KEY = "stepper.state";
-    /** Suppresses persist() while we're loading state back in (avoids redundant writes). */
+    private static volatile boolean sensitiveStateMemoryOnly = true;
+    /** Retained only for decoding legacy state before the memory-only migration. */
     private volatile boolean loadingState = false;
 
     public StepperEngine(MontoyaApi api, ScopeManager scopeManager) {
@@ -128,42 +130,10 @@ public class StepperEngine {
      */
     public void saveState() {
         PersistenceManager pm = persistence;
-        if (pm == null || loadingState) return;
-        try {
-            StepperStepCodec.StepperState state = new StepperStepCodec.StepperState();
-            state.enabled = enabled;
-            state.cookieJarEnabled = cookieJarEnabled;
-            state.stopOnFailure = stopOnFailure;
-            state.perRequestMode = perRequestMode;
-            state.cacheTtlSeconds = cacheTtlSeconds;
-            for (StepperStep step : getSteps()) {
-                StepperStepCodec.StepData sd = new StepperStepCodec.StepData();
-                sd.name = step.getName();
-                sd.enabled = step.isEnabled();
-                HttpRequest req = step.getOriginalRequest();
-                HttpService svc = req.httpService();
-                sd.host = svc.host();
-                sd.port = svc.port();
-                sd.secure = svc.secure();
-                sd.requestB64 = Base64.getEncoder().encodeToString(req.toByteArray().getBytes());
-                for (ExtractionRule rule : step.getExtractionRules()) {
-                    StepperStepCodec.RuleData rd = new StepperStepCodec.RuleData();
-                    rd.name = rule.getVariableName();
-                    rd.type = rule.getType().name();
-                    rd.pattern = rule.getPattern();
-                    sd.rules.add(rd);
-                }
-                state.steps.add(sd);
-            }
-            state.pinnedVariables.putAll(getPinnedVariables());
-            state.pinnedCookies.putAll(pinnedCookies);
-            pm.setString(STATE_KEY, StepperStepCodec.toJson(state));
-        } catch (Exception e) {
-            uiLog("Stepper", "Could not persist state: " + e.getMessage());
-        }
+        if (pm != null) pm.deleteString(STATE_KEY);
     }
 
-    /** Internal alias used by mutators. */
+    /** Internal alias used by mutators; this only purges legacy disk state. */
     private void persist() { saveState(); }
 
     /**
@@ -174,6 +144,10 @@ public class StepperEngine {
     public void loadPersistedState() {
         PersistenceManager pm = persistence;
         if (pm == null) return;
+        if (sensitiveStateMemoryOnly) {
+            pm.deleteString(STATE_KEY);
+            return;
+        }
         String json = pm.getString(STATE_KEY, null);
         if (json == null || json.isBlank()) return;
         StepperStepCodec.StepperState state = StepperStepCodec.fromJson(json);
@@ -846,9 +820,13 @@ public class StepperEngine {
         if (body == null || body.isEmpty()) return null;
 
         try {
-            JsonElement root = JsonParser.parseString(body);
-            String found = findJsonKey(root, varName);
-            if (found != null) return found;
+            for (JsonScanSupport.Target target : JsonScanSupport.extractTargets(body)) {
+                List<Object> path = target.path();
+                if (!path.isEmpty() && path.get(path.size() - 1) instanceof String key
+                        && key.equalsIgnoreCase(varName)) {
+                    return target.value();
+                }
+            }
         } catch (Exception ignored) {}
 
         try {

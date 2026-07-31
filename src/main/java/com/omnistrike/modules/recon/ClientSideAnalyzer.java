@@ -3,6 +3,8 @@ package com.omnistrike.modules.recon;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.ScanTargetIdentity;
+import com.omnistrike.framework.BoundedDeduplication;
 import com.omnistrike.model.*;
 
 import java.util.*;
@@ -278,10 +280,9 @@ public class ClientSideAnalyzer implements ScanModule {
         }
 
         // Dedup by host+path+hash
-        String dedupKey = requestResponse.request().httpService().host()
-                + requestResponse.request().path()
+        String dedupKey = ScanTargetIdentity.endpoint(requestResponse.request().url())
                 + "|" + body.hashCode();
-        if (analyzed.putIfAbsent(dedupKey, Boolean.TRUE) != null) {
+        if (!BoundedDeduplication.markIfNew(analyzed, dedupKey)) {
             return findings;
         }
 

@@ -120,7 +120,8 @@ public class SapODataScanner implements ScanModule {
         if (requestResponse.response() == null) return Collections.emptyList();
 
         String url = requestResponse.request().url();
-        String urlPath = extractPath(url);
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                url, requestResponse.request().method(), "endpoint", "");
 
         // PASSIVE GATE: Check response for SAP OData indicators
         SapDetection detection = detectSapOData(requestResponse);

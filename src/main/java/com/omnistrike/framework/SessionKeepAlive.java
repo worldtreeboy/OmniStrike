@@ -23,7 +23,7 @@ import java.util.function.Consumer;
  *
  * <p>Handles 301/302/303/307/308 redirects — follows up to 5 redirects, collecting
  * Set-Cookie headers from same-origin hops in the chain. Redirects to a
- * different origin (scheme/host/port) are followed without credentials.
+ * different origin (scheme/host/port) are blocked.
  *
  * <p>Entirely optional — does nothing unless the user explicitly enables it
  * AND sets a login request via the right-click context menu.
@@ -413,6 +413,12 @@ public class SessionKeepAlive {
             enabled = false;
             stopSchedulerInternal();
         }
+        loginGeneration.incrementAndGet();
+        loginRequest = null;
+        freshCookies.clear();
+        loginDomain = "";
+        loginSecure = false;
+        lastRefreshTime = "";
     }
 
     // ==================== REPLAY LOGIC ====================
@@ -437,9 +443,8 @@ public class SessionKeepAlive {
      * Core replay logic:
      * 1. Send the saved login request
      * 2. Collect Set-Cookie headers from the response
-     * 3. Follow 301/302/303/307/308 redirects (up to MAX_REDIRECTS), collecting cookies from
-     *    each hop that stays on the login origin; origin-changed hops are followed
-     *    without credentials and their Set-Cookie headers are ignored
+     * 3. Follow 301/302/303/307/308 redirects (up to MAX_REDIRECTS) only while every hop
+     *    stays on the saved login origin; cross-origin hops are blocked
      * 4. Store all collected cookies in freshCookies map
      * 5. On failure: log warning, set error state, schedule a retry in 30s
      * 6. On success: update last refresh time, clear error state
@@ -462,6 +467,10 @@ public class SessionKeepAlive {
             HttpResponse response;
             try {
                 HttpRequestResponse result = StepperHttp.sendRequest(currentRequest);
+                if (result == null || result.response() == null) {
+                    handleFailure("Request returned no HTTP response");
+                    return;
+                }
                 response = result.response();
             } catch (Exception e) {
                 handleFailure("Request failed: " + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -500,10 +509,9 @@ public class SessionKeepAlive {
 
                 // Build GET request to the redirect URL, carrying cookies from the chain
                 try {
-                    // ORIGIN = scheme + host + effective port. On ANY origin change the
-                    // redirect is still followed, but credentials are stripped: no
-                    // Authorization/Cookie headers are copied and no collected cookies
-                    // are injected — an open redirect must not leak session credentials.
+                    // ORIGIN = scheme + host + effective port. An origin change is
+                    // terminal: following it would turn the refresher into a periodic
+                    // open-redirect/SSRF client even if credentials were stripped.
                     URI uri = new URI(redirectUrl);
                     String redirectHost = uri.getHost();
                     String redirectOrigin = redirectHost != null
@@ -513,32 +521,38 @@ public class SessionKeepAlive {
                     boolean credentialsAllowed = maySendCredentials(loginOrigin, redirectOrigin);
 
                     if (!credentialsAllowed) {
-                        log("SessionKeepAlive", "Following redirect (" + status + ") outside login origin "
+                        log("SessionKeepAlive", "Blocked redirect (" + status + ") outside login origin "
                                 + (redirectOrigin != null ? redirectOrigin : truncate(redirectUrl, 80))
-                                + " — credentials stripped");
-                    } else {
-                        log("SessionKeepAlive", "Following redirect (" + status + ") → " + truncate(redirectUrl, 80));
+                                + " — login replay will not contact another origin");
+                        break;
                     }
+                    log("SessionKeepAlive", "Following redirect (" + status + ") → " + truncate(redirectUrl, 80));
 
                     HttpRequest redirectRequest = HttpRequest.httpRequestFromUrl(redirectUrl);
-                    if (credentialsAllowed) {
-                        // Copy auth headers from original
-                        for (var h : savedReq.request().headers()) {
-                            String name = h.name().toLowerCase();
-                            if (name.equals("cookie") || name.equals("authorization")) {
-                                redirectRequest = redirectRequest.withRemovedHeader(h.name())
-                                        .withAddedHeader(h.name(), h.value());
-                            }
+                    if (preservesMethodAndBody(status)) {
+                        redirectRequest = redirectRequest.withMethod(currentRequest.method())
+                                .withBody(currentRequest.body());
+                        for (var h : currentRequest.headers()) {
+                            String name = h.name().toLowerCase(Locale.ROOT);
+                            if (!isSafeRedirectHeader(name)) continue;
+                            redirectRequest = redirectRequest.withRemovedHeader(h.name())
+                                    .withAddedHeader(h.name(), h.value());
                         }
-                        // Inject collected cookies so far into the redirect request
-                        if (!collectedCookies.isEmpty()) {
-                            HttpService redirectService = redirectRequest.httpService();
-                            List<SessionCookie> redirectCookies = matchingCookies(
-                                    redirectService.host(), redirectRequest.pathWithoutQuery(),
-                                    redirectService.secure(), collectedCookies.values());
-                            if (!redirectCookies.isEmpty()) {
-                                redirectRequest = injectCookiesIntoRequest(redirectRequest, redirectCookies);
-                            }
+                    }
+                    for (var h : savedReq.request().headers()) {
+                        String name = h.name().toLowerCase(Locale.ROOT);
+                        if (name.equals("cookie") || name.equals("authorization")) {
+                            redirectRequest = redirectRequest.withRemovedHeader(h.name())
+                                    .withAddedHeader(h.name(), h.value());
+                        }
+                    }
+                    if (!collectedCookies.isEmpty()) {
+                        HttpService redirectService = redirectRequest.httpService();
+                        List<SessionCookie> redirectCookies = matchingCookies(
+                                redirectService.host(), redirectRequest.pathWithoutQuery(),
+                                redirectService.secure(), collectedCookies.values());
+                        if (!redirectCookies.isEmpty()) {
+                            redirectRequest = injectCookiesIntoRequest(redirectRequest, redirectCookies);
                         }
                     }
                     currentRequest = redirectRequest;
@@ -704,6 +718,22 @@ public class SessionKeepAlive {
         return loginOrigin != null && loginOrigin.equals(targetOrigin);
     }
 
+    /** RFC redirect semantics: 307 and 308 retain the request method and body. */
+    static boolean preservesMethodAndBody(int status) {
+        return status == 307 || status == 308;
+    }
+
+    /** Headers copied while retaining a 307/308 body must be end-to-end and non-credential. */
+    static boolean isSafeRedirectHeader(String lowerCaseName) {
+        if (lowerCaseName == null) return false;
+        return switch (lowerCaseName.toLowerCase(Locale.ROOT)) {
+            case "host", "content-length", "cookie", "authorization",
+                    "connection", "proxy-connection", "keep-alive", "transfer-encoding",
+                    "te", "trailer", "upgrade", "proxy-authorization" -> false;
+            default -> true;
+        };
+    }
+
     static boolean domainMatches(String requestHost, String cookieDomain) {
         if (requestHost == null || cookieDomain == null) return false;
         String host = normalizeHost(requestHost);
@@ -826,6 +856,11 @@ public class SessionKeepAlive {
      * Handles: absolute URLs, protocol-relative, and path-relative.
      */
     private String resolveRedirectUrl(HttpRequest originalRequest, String location) {
+        try {
+            return resolveRedirectUrl(originalRequest.url(), location);
+        } catch (Exception ignored) {
+            // Fall through to the legacy best-effort resolver for malformed URLs.
+        }
         if (location.startsWith("http://") || location.startsWith("https://")) {
             return location; // Already absolute
         }
@@ -854,6 +889,11 @@ public class SessionKeepAlive {
 
         // Relative to current path — append to base
         return baseUrl + "/" + location;
+    }
+
+    static String resolveRedirectUrl(String baseUrl, String location) {
+        if (baseUrl == null || location == null) return location;
+        return URI.create(baseUrl).resolve(location).toString();
     }
 
     private String truncate(String s, int max) {

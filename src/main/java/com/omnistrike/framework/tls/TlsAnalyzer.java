@@ -62,6 +62,7 @@ public class TlsAnalyzer {
 
     private static final int CONNECT_TIMEOUT_MS = 6000;
     private static final int READ_TIMEOUT_MS    = 6000;
+    private static final int MAX_CACHE_ENTRIES  = 2000;
 
     // Lowercase substring → severity.
     // Order matters only insofar as we report the worst issue per cipher.
@@ -91,11 +92,12 @@ public class TlsAnalyzer {
     public TlsAnalyzer(MontoyaApi api, FindingsStore findingsStore) {
         this.api = api;
         this.findingsStore = findingsStore;
-        this.executor = Executors.newFixedThreadPool(2, r -> {
-            Thread t = new Thread(r, "OmniStrike-TLSAnalyzer");
-            t.setDaemon(true);
-            return t;
-        });
+        this.executor = new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(100), r -> {
+                    Thread t = new Thread(r, "OmniStrike-TLSAnalyzer");
+                    t.setDaemon(true);
+                    return t;
+                }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     public void setUiLogger(BiConsumer<String, String> logger) { this.uiLogger = logger; }
@@ -150,13 +152,10 @@ public class TlsAnalyzer {
             return;
         }
         final String cacheKey = key(host, port);
-        AnalysisHandle existing = active.get(cacheKey);
-        if (existing != null && !existing.future.isDone()) {
-            log("Analysis already in progress for " + cacheKey);
-            return;
-        }
         AtomicBoolean cancelled = new AtomicBoolean(false);
-        Future<?> future = executor.submit(() -> {
+        java.util.concurrent.atomic.AtomicReference<AnalysisHandle> self =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        FutureTask<Void> task = new FutureTask<>(() -> {
             TlsResult result = new TlsResult(host, port);
             try {
                 log("Starting TLS analysis: " + host + ":" + port);
@@ -174,6 +173,10 @@ public class TlsAnalyzer {
 
                 evaluateIssues(result);
                 result.freeze();
+                if (cache.size() >= MAX_CACHE_ENTRIES && !cache.containsKey(cacheKey)) {
+                    Enumeration<String> keys = cache.keys();
+                    if (keys.hasMoreElements()) cache.remove(keys.nextElement());
+                }
                 cache.put(cacheKey, result);
 
                 if (reportFindings && findingsStore != null) {
@@ -188,11 +191,31 @@ public class TlsAnalyzer {
             } catch (Throwable t) {
                 log("TLS analysis failed for " + cacheKey + ": " + t.getMessage());
             } finally {
-                active.remove(cacheKey);
+                AnalysisHandle ownHandle = self.get();
+                if (ownHandle != null) active.remove(cacheKey, ownHandle);
                 if (onComplete != null) onComplete.accept(result);
             }
-        });
-        active.put(cacheKey, new AnalysisHandle(future, cancelled));
+        }, null);
+        AnalysisHandle handle = new AnalysisHandle(task, cancelled);
+        self.set(handle);
+
+        while (true) {
+            AnalysisHandle existing = active.putIfAbsent(cacheKey, handle);
+            if (existing == null) break;
+            if (!existing.future.isDone()) {
+                log("Analysis already in progress for " + cacheKey);
+                return;
+            }
+            if (active.replace(cacheKey, existing, handle)) break;
+        }
+
+        try {
+            executor.execute(task);
+        } catch (RejectedExecutionException rejected) {
+            active.remove(cacheKey, handle);
+            log("TLS analysis queue is full; rejected " + cacheKey);
+            if (onComplete != null) onComplete.accept(null);
+        }
     }
 
     // ── Protocol probing ───────────────────────────────────────────────────

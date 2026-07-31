@@ -3,6 +3,8 @@ package com.omnistrike.modules.recon;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.ScanTargetIdentity;
+import com.omnistrike.framework.BoundedDeduplication;
 import com.omnistrike.model.*;
 
 import java.util.*;
@@ -103,9 +105,10 @@ public class SecurityHeaderAnalyzer implements ScanModule {
 
         String url = requestResponse.request().url();
         String host = requestResponse.request().httpService().host();
+        String origin = ScanTargetIdentity.origin(url);
 
-        // Only do full header analysis once per host
-        boolean firstTimeHost = analyzedHosts.putIfAbsent(host, Boolean.TRUE) == null;
+        // Scheme and non-default port are security boundaries.
+        boolean firstTimeHost = BoundedDeduplication.markIfNew(analyzedHosts, origin);
 
         // Use merge to preserve ALL values for multi-valued headers (e.g., multiple
         // Content-Security-Policy or Set-Cookie headers). Values are joined with \n
@@ -116,7 +119,8 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                     (existing, newVal) -> existing + "\n" + newVal);
         }
 
-        List<HeaderFinding> hostFindings = headerFindings.computeIfAbsent(host,
+        BoundedDeduplication.trimToSize(headerFindings, 10_000);
+        List<HeaderFinding> hostFindings = headerFindings.computeIfAbsent(origin,
                 k -> Collections.synchronizedList(new ArrayList<>()));
 
         if (firstTimeHost) {
@@ -128,11 +132,8 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         }
 
         // Per-path dedup for endpoint-specific checks — strip query params for normalization
-        String path = url;
-        int qIdx = path.indexOf('?');
-        if (qIdx > 0) path = path.substring(0, qIdx);
-        String pathKey = host + "|" + path;
-        boolean firstTimePath = analyzedPaths.putIfAbsent(pathKey, Boolean.TRUE) == null;
+        String pathKey = ScanTargetIdentity.endpoint(url);
+        boolean firstTimePath = BoundedDeduplication.markIfNew(analyzedPaths, pathKey);
 
         if (firstTimePath) {
             // CORS, CSP, cookies, HSTS — only check once per host+path
@@ -150,9 +151,19 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         List<String> missingHeaders = new ArrayList<>();
         StringBuilder evidence = new StringBuilder();
         StringBuilder description = new StringBuilder();
+        boolean secure = url.regionMatches(true, 0, "https://", 0, 8);
+        String contentType = headers.getOrDefault("content-type", "").toLowerCase(Locale.ROOT);
+        boolean htmlDocument = contentType.isBlank()
+                || contentType.contains("text/html") || contentType.contains("application/xhtml+xml");
 
         for (Map.Entry<String, String> required : REQUIRED_HEADERS.entrySet()) {
             String headerName = required.getKey();
+            if (headerName.equalsIgnoreCase("Strict-Transport-Security") && !secure) continue;
+            if (!htmlDocument && isDocumentOnlyHeader(headerName)) continue;
+            if (headerName.equalsIgnoreCase("X-Frame-Options")) {
+                String csp = headers.get("content-security-policy");
+                if (csp != null && extractDirective(csp, "frame-ancestors") != null) continue;
+            }
             if (!headers.containsKey(headerName.toLowerCase())) {
                 HeaderFinding hf = new HeaderFinding(headerName, "Missing", Severity.LOW, required.getValue());
                 hostFindings.add(hf);
@@ -173,6 +184,15 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             + host + ":\n\n" + description.toString().trim())
                     .build());
         }
+    }
+
+    private static boolean isDocumentOnlyHeader(String headerName) {
+        return headerName.equalsIgnoreCase("X-Frame-Options")
+                || headerName.equalsIgnoreCase("Content-Security-Policy")
+                || headerName.equalsIgnoreCase("Referrer-Policy")
+                || headerName.equalsIgnoreCase("Permissions-Policy")
+                || headerName.equalsIgnoreCase("Cross-Origin-Opener-Policy")
+                || headerName.equalsIgnoreCase("Cross-Origin-Embedder-Policy");
     }
 
     private void checkInfoDisclosure(Map<String, String> headers, String url, String host,
@@ -214,16 +234,16 @@ public class SecurityHeaderAnalyzer implements ScanModule {
 
         if ("*".equals(acao) && allowsCreds) {
             HeaderFinding hf = new HeaderFinding("CORS", "Wildcard origin with credentials",
-                    Severity.HIGH, "Access-Control-Allow-Origin: * with Allow-Credentials: true");
+                    Severity.INFO, "Access-Control-Allow-Origin: * with Allow-Credentials: true");
             hostFindings.add(hf);
             findings.add(Finding.builder("header-analyzer",
-                            "CORS misconfiguration: wildcard origin with credentials",
-                            Severity.HIGH, Confidence.CERTAIN)
+                            "CORS invalid wildcard/credentials combination",
+                            Severity.INFO, Confidence.CERTAIN)
                     .url(url)
                     .evidence("Access-Control-Allow-Origin: * with Access-Control-Allow-Credentials: true")
                     .responseEvidence(acao)
-                    .description("Dangerous CORS config. Any origin can make credentialed requests. "
-                            + "Browsers actually block this combo, but it indicates a misconfigured server.")
+                    .description("Browsers reject credentialed CORS responses that use a wildcard origin. "
+                            + "This is a configuration error, but is not by itself an exploitable credential leak.")
                     .build());
         } else if ("*".equals(acao)) {
             findings.add(Finding.builder("header-analyzer",
@@ -250,9 +270,10 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                            List<Finding> findings, List<HeaderFinding> hostFindings) {
         String csp = headers.get("content-security-policy");
         if (csp == null) return;
+        String cspLower = csp.toLowerCase(Locale.ROOT);
 
         // Check for unsafe directives
-        if (csp.contains("'unsafe-inline'")) {
+        if (cspLower.contains("'unsafe-inline'")) {
             findings.add(Finding.builder("header-analyzer",
                             "CSP allows unsafe-inline",
                             Severity.MEDIUM, Confidence.CERTAIN)
@@ -263,7 +284,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                     .build());
         }
 
-        if (csp.contains("'unsafe-eval'")) {
+        if (cspLower.contains("'unsafe-eval'")) {
             findings.add(Finding.builder("header-analyzer",
                             "CSP allows unsafe-eval",
                             Severity.MEDIUM, Confidence.CERTAIN)
@@ -275,7 +296,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         }
 
         // Check for wildcard sources
-        Matcher wm = CSP_WILDCARD_SRC_PATTERN.matcher(csp);
+        Matcher wm = CSP_WILDCARD_SRC_PATTERN.matcher(cspLower);
         while (wm.find()) {
             String directive = wm.group(1);
             if (!directive.contains("*.") && directive.contains(" *")) {
@@ -292,7 +313,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
 
         // CDN bypass detection -- check directive values with word boundary matching,
         // excluding report-uri/report-to directives where CDN hostnames are harmless
-        String[] cspDirectives = csp.split(";");
+        String[] cspDirectives = cspLower.split(";");
         for (String cdn : CSP_BYPASS_CDNS) {
             String cdnBare = cdn.startsWith("*.") ? cdn.substring(2) : cdn;
             Pattern cdnPattern = Pattern.compile("\\b" + Pattern.quote(cdnBare) + "\\b");
@@ -339,11 +360,13 @@ public class SecurityHeaderAnalyzer implements ScanModule {
             String cookieName = extractCookieName(value);
             if (cookieName == null) continue;
 
-            boolean isSession = SESSION_COOKIE_NAME_PATTERN.matcher(cookieName).find();
-            String flagLower = value.toLowerCase();
+            boolean isSession = looksLikeSessionCookie(cookieName);
+            boolean hasSecure = hasCookieAttribute(value, "Secure");
+            boolean hasHttpOnly = hasCookieAttribute(value, "HttpOnly");
+            String sameSite = cookieAttributeValue(value, "SameSite");
 
             if (isSession) {
-                if (!flagLower.contains("secure")) {
+                if (!hasSecure) {
                     findings.add(Finding.builder("header-analyzer",
                                     "Session cookie missing Secure flag: " + cookieName,
                                     Severity.MEDIUM, Confidence.CERTAIN)
@@ -355,7 +378,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             .build());
                 }
 
-                if (!flagLower.contains("httponly")) {
+                if (!hasHttpOnly) {
                     findings.add(Finding.builder("header-analyzer",
                                     "Session cookie missing HttpOnly flag: " + cookieName,
                                     Severity.MEDIUM, Confidence.CERTAIN)
@@ -367,7 +390,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             .build());
                 }
 
-                if (!flagLower.contains("samesite")) {
+                if (sameSite == null) {
                     findings.add(Finding.builder("header-analyzer",
                                     "Session cookie missing SameSite attribute: " + cookieName,
                                     Severity.LOW, Confidence.CERTAIN)
@@ -377,7 +400,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
                             .description("Cookie '" + cookieName + "' lacks SameSite attribute. "
                                     + "May be vulnerable to CSRF attacks in older browsers.")
                             .build());
-                } else if (flagLower.contains("samesite=none") && !flagLower.contains("secure")) {
+                } else if (sameSite.equalsIgnoreCase("none") && !hasSecure) {
                     findings.add(Finding.builder("header-analyzer",
                                     "SameSite=None without Secure: " + cookieName,
                                     Severity.MEDIUM, Confidence.CERTAIN)
@@ -394,41 +417,10 @@ public class SecurityHeaderAnalyzer implements ScanModule {
             //  - Vulnerable to CSRF (browser auto-attaches cookies to cross-origin requests)
             //  - Subject to cookie size limits (~4KB) which can silently truncate the token
             //  - Exposed to XSS if HttpOnly is missing
-            String cookieValue = extractCookieValue(value);
-            if (cookieValue != null && JWT_PATTERN.matcher(cookieValue).find()) {
-                findings.add(Finding.builder("header-analyzer",
-                                "JWT stored in cookie instead of Authorization header: " + cookieName,
-                                Severity.MEDIUM, Confidence.FIRM)
-                        .url(url)
-                        .evidence("Set-Cookie: " + cookieName + "=eyJ...")
-                        .responseEvidence(cookieName + "=eyJ")
-                        .description("A JSON Web Token (JWT) was detected in the Set-Cookie "
-                                + "header for cookie '" + cookieName + "'. "
-                                + "JWTs should be transmitted via the Authorization: Bearer "
-                                + "header instead of cookies.\n\n"
-                                + "Why this matters:\n"
-                                + "- CSRF vulnerability: Cookies are automatically attached by the browser "
-                                + "on every request to the domain, including cross-origin requests. An attacker's "
-                                + "page can forge authenticated requests without needing the JWT value. "
-                                + "The Authorization header is NOT auto-attached, making it inherently CSRF-safe.\n"
-                                + "- Cookie size limits: Cookies are limited to ~4KB. JWTs can exceed this, "
-                                + "causing silent truncation and authentication failures.\n"
-                                + "- XSS exposure: If the cookie lacks the HttpOnly flag, the JWT is "
-                                + "accessible to JavaScript, enabling token theft via XSS.")
-                        .remediation("Store JWTs in the Authorization header (Bearer scheme) instead of cookies. "
-                                + "Use localStorage or sessionStorage on the client side, and attach the token "
-                                + "via JavaScript on each API request. If cookies must be used (e.g., for SSR), "
-                                + "ensure HttpOnly, Secure, SameSite=Strict flags are set.")
-                        .build());
-            }
         }
     }
 
-    private static final Pattern JWT_PATTERN = Pattern.compile(
-            "eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+");
     private static final Pattern CSP_WILDCARD_SRC_PATTERN = Pattern.compile("(\\w+-src\\s+[^;]*\\*)");
-    private static final Pattern SESSION_COOKIE_NAME_PATTERN =
-            Pattern.compile("\\b(session|sess|sid|token|auth|jwt|csrf|xsrf)\\b", Pattern.CASE_INSENSITIVE);
     private static final Pattern HSTS_MAX_AGE_PATTERN = Pattern.compile("max-age=(\\d+)");
 
     private void checkHsts(Map<String, String> headers, String url, String host,
@@ -437,9 +429,14 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         if (hsts == null) return;
 
         // Check max-age
-        Matcher maxAgeMatcher = HSTS_MAX_AGE_PATTERN.matcher(hsts.toLowerCase());
+        Matcher maxAgeMatcher = HSTS_MAX_AGE_PATTERN.matcher(hsts.toLowerCase(Locale.ROOT));
         if (maxAgeMatcher.find()) {
-            long maxAge = Long.parseLong(maxAgeMatcher.group(1));
+            long maxAge;
+            try {
+                maxAge = Long.parseLong(maxAgeMatcher.group(1));
+            } catch (NumberFormatException ignored) {
+                maxAge = Long.MAX_VALUE;
+            }
             if (maxAge < 15768000) { // Less than 6 months
                 findings.add(Finding.builder("header-analyzer",
                                 "HSTS max-age too low: " + maxAge + "s",
@@ -454,7 +451,7 @@ public class SecurityHeaderAnalyzer implements ScanModule {
         }
 
         // Check for includeSubDomains
-        if (!hsts.toLowerCase().contains("includesubdomains")) {
+        if (!hsts.toLowerCase(Locale.ROOT).contains("includesubdomains")) {
             findings.add(Finding.builder("header-analyzer",
                             "HSTS missing includeSubDomains",
                             Severity.INFO, Confidence.CERTAIN)
@@ -495,18 +492,36 @@ public class SecurityHeaderAnalyzer implements ScanModule {
      * Extracts the cookie value from a Set-Cookie header string.
      * E.g., "token=eyJhbGciOi...; Path=/; HttpOnly" → "eyJhbGciOi..."
      */
-    private String extractCookieValue(String setCookieValue) {
-        if (setCookieValue == null) return null;
-        int eqIdx = setCookieValue.indexOf('=');
-        if (eqIdx < 0) return null;
-        String rest = setCookieValue.substring(eqIdx + 1);
-        // Value ends at the first ';' (cookie attributes) or end of string
-        int semiIdx = rest.indexOf(';');
-        return semiIdx > 0 ? rest.substring(0, semiIdx).trim() : rest.trim();
+    static boolean looksLikeSessionCookie(String cookieName) {
+        if (cookieName == null) return false;
+        String normalized = cookieName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+        return normalized.equals("sid") || normalized.endsWith("sessionid")
+                || normalized.contains("session") || normalized.equals("phpsessid")
+                || normalized.equals("connectsid") || normalized.equals("auth")
+                || normalized.equals("authtoken") || normalized.equals("accesstoken")
+                || normalized.equals("jwt") || normalized.equals("jwttoken");
+    }
+
+    static boolean hasCookieAttribute(String setCookieValue, String attributeName) {
+        return cookieAttributeValue(setCookieValue, attributeName) != null;
+    }
+
+    static String cookieAttributeValue(String setCookieValue, String attributeName) {
+        if (setCookieValue == null || attributeName == null) return null;
+        String[] segments = setCookieValue.split(";", -1);
+        for (int i = 1; i < segments.length; i++) {
+            String attribute = segments[i].trim();
+            int equals = attribute.indexOf('=');
+            String name = equals < 0 ? attribute : attribute.substring(0, equals).trim();
+            if (name.equalsIgnoreCase(attributeName)) {
+                return equals < 0 ? "" : attribute.substring(equals + 1).trim();
+            }
+        }
+        return null;
     }
 
     @Override
-    public void destroy() {}
+    public void destroy() { clearAll(); }
 
     public ConcurrentHashMap<String, List<HeaderFinding>> getHeaderFindings() { return headerFindings; }
     public void clearAll() { analyzedHosts.clear(); analyzedPaths.clear(); headerFindings.clear(); }

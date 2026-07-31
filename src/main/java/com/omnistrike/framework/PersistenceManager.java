@@ -66,6 +66,16 @@ public final class PersistenceManager {
         }
     }
 
+    /** Deletes a persisted string value, used for sensitive-state migrations. */
+    public void deleteString(String key) {
+        if (prefs == null) return;
+        try {
+            prefs.deleteString(PREFIX + key);
+        } catch (Exception e) {
+            logErr(key, e);
+        }
+    }
+
     // ── Integer ───────────────────────────────────────────────────────────
 
     public int getInt(String key, int def) {

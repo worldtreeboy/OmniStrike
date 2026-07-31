@@ -70,7 +70,8 @@ public class CorsMisconfScanner implements ScanModule {
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                request.url(), request.method(), "endpoint", "");
 
         if (!dedup.markIfNew("cors-scanner", urlPath, "Origin")) return Collections.emptyList();
 
@@ -344,6 +345,7 @@ public class CorsMisconfScanner implements ScanModule {
         try {
             HttpRequest simpleGet = HttpRequest.httpRequestFromUrl(url)
                     .withAddedHeader("Origin", attackerOrigin);
+            simpleGet = copyBrowserCookies(original.request(), simpleGet);
 
             HttpRequestResponse result = StepperHttp.sendRequest(simpleGet);
             if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
@@ -752,7 +754,8 @@ public class CorsMisconfScanner implements ScanModule {
             String testUrl = url + sep + param + "=" + marker;
 
             try {
-                HttpRequest req = HttpRequest.httpRequestFromUrl(testUrl);
+                HttpRequest req = copyBrowserCookies(
+                        original.request(), HttpRequest.httpRequestFromUrl(testUrl));
                 HttpRequestResponse result = StepperHttp.sendRequest(req);
                 if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
                 if (result == null || result.response() == null) { perHostDelay(); continue; }
@@ -977,4 +980,15 @@ public class CorsMisconfScanner implements ScanModule {
 
     @Override
     public void destroy() { }
+
+    /** Browser cross-origin requests may carry cookies, but never the captured Bearer token. */
+    private static HttpRequest copyBrowserCookies(HttpRequest original, HttpRequest probe) {
+        for (var header : original.headers()) {
+            if ("Cookie".equalsIgnoreCase(header.name())) {
+                return probe.withRemovedHeader("Cookie")
+                        .withAddedHeader("Cookie", header.value());
+            }
+        }
+        return probe;
+    }
 }

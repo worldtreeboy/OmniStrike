@@ -60,6 +60,7 @@ public class ActiveScanExecutor {
                                 + MAX_QUEUE_SIZE + " tasks). Total discarded: " + total
                                 + ". Consider reducing scan scope or increasing thread pool size.");
                     }
+                    throw new RejectedExecutionException("OmniStrike active-scan queue is full");
                 }
         );
     }
@@ -97,6 +98,7 @@ public class ActiveScanExecutor {
      * during extension unload while threads are still running.
      */
     private Runnable wrapWithRateLimit(Runnable task) {
+        long submittedEpoch = ScanState.currentEpoch();
         return () -> {
             // Block until unpaused
             while (paused && !unloading) {
@@ -126,7 +128,9 @@ public class ActiveScanExecutor {
             // after the sleep completed but before task execution, bail out.
             if (Thread.currentThread().isInterrupted()) return;
 
+            ScanState.bindTask(submittedEpoch);
             try {
+                if (ScanState.isCancelled()) return;
                 task.run();
             } catch (NullPointerException e) {
                 if (!unloading) {
@@ -137,6 +141,8 @@ public class ActiveScanExecutor {
                     }
                 }
                 // During unload: Burp invalidates its API proxy, causing NPE — discard safely.
+            } finally {
+                ScanState.clearTaskBinding();
             }
         };
     }

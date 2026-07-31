@@ -8,6 +8,7 @@ import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.ResponseGuard;
+import com.omnistrike.framework.ScanTargetIdentity;
 
 import com.omnistrike.model.*;
 
@@ -76,8 +77,8 @@ public class PrototypePollutionScanner implements ScanModule {
             return Collections.emptyList();
         }
 
-        String urlPath = extractPath(request.url());
-        if (!dedup.markIfNew("proto-pollution", urlPath, "__proto__")) return Collections.emptyList();
+        String targetKey = ScanTargetIdentity.build(request.url(), request.method(), "json", "__proto__");
+        if (!dedup.markIfNewRaw("proto-pollution:" + targetKey)) return Collections.emptyList();
 
         try {
             String url = request.url();
@@ -92,7 +93,7 @@ public class PrototypePollutionScanner implements ScanModule {
 
             // Phase 3: Known gadgets (Express/Fastify)
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return Collections.emptyList();
-            if (config.getBool("proto.gadgets.enabled", true)) {
+            if (config.getBool("proto.gadgets.enabled", false)) {
                 testKnownGadgets(requestResponse, url);
             }
 
@@ -100,7 +101,7 @@ public class PrototypePollutionScanner implements ScanModule {
             Thread.currentThread().interrupt();
             return Collections.emptyList();
         } catch (Exception e) {
-            api.logging().logToError("Prototype pollution test error on " + urlPath + ": " + e.getMessage());
+            api.logging().logToError("Prototype pollution test error on " + request.url() + ": " + e.getMessage());
         }
 
         return Collections.emptyList();
@@ -135,14 +136,13 @@ public class PrototypePollutionScanner implements ScanModule {
         if (persisted) {
             findingsStore.addFinding(Finding.builder("proto-pollution",
                             "Server-Side Prototype Pollution Confirmed (__proto__)",
-                            Severity.HIGH, Confidence.CERTAIN)
+                            Severity.MEDIUM, Confidence.TENTATIVE)
                     .url(url).parameter("__proto__." + canaryKey)
                     .evidence("Canary key: " + canaryKey + " | Canary value: " + canary
                             + " | Injected via __proto__ | Canary persisted in follow-up request")
-                    .description("Server-side prototype pollution confirmed. The injected __proto__ property "
-                            + "persisted across requests, meaning the server's Object.prototype was polluted. "
-                            + "This can lead to denial of service, authentication bypass, or remote code "
-                            + "execution depending on how the polluted properties are used.")
+                    .description("A unique value supplied under __proto__ appeared in a later response. "
+                            + "This is evidence of unsafe handling, but normal application persistence can "
+                            + "mimic this behavior. Confirm actual Object.prototype pollution manually.")
                     .remediation("Use Object.create(null) for user-controlled objects. Use Map instead of plain "
                             + "objects. Filter __proto__ and constructor keys from user input. Use --frozen-intrinsics "
                             + "in Node.js.")
@@ -152,7 +152,7 @@ public class PrototypePollutionScanner implements ScanModule {
                     .build());
 
             // Cleanup and verify
-            if (config.getBool("proto.cleanupEnabled", true)) {
+            if (config.getBool("proto.cleanupEnabled", false)) {
                 cleanupPollution(original, canaryKey);
                 // Verify cleanup
                 if (checkPersistence(original, canary)) {
@@ -198,12 +198,13 @@ public class PrototypePollutionScanner implements ScanModule {
             if (persisted) {
                 findingsStore.addFinding(Finding.builder("proto-pollution",
                                 "Server-Side Prototype Pollution Confirmed (constructor.prototype)",
-                                Severity.HIGH, Confidence.CERTAIN)
+                                Severity.MEDIUM, Confidence.TENTATIVE)
                         .url(url).parameter("constructor.prototype." + canaryKey)
                         .evidence("Canary key: " + canaryKey + " | Canary value: " + canary
                                 + " | Injected via constructor.prototype | Persisted")
-                        .description("Server-side prototype pollution confirmed via constructor.prototype vector. "
-                                + "This bypasses __proto__ filters but achieves the same effect.")
+                        .description("A unique constructor.prototype value appeared in a later response. "
+                                + "This indicates unsafe handling but needs manual confirmation because normal "
+                                + "application persistence can produce the same observation.")
                         .remediation("Filter both __proto__ and constructor keys from user input. "
                                 + "Use Object.create(null) or Map for user-controlled objects.")
                         .payload(pollutedBody)
@@ -211,8 +212,8 @@ public class PrototypePollutionScanner implements ScanModule {
                         .requestResponse(result)
                         .build());
 
-                if (config.getBool("proto.cleanupEnabled", true)) {
-                    cleanupPollution(original, canaryKey);
+                if (config.getBool("proto.cleanupEnabled", false)) {
+                    cleanupConstructorPollution(original, canaryKey);
                     if (checkPersistence(original, canary)) {
                         api.logging().logToOutput("[ProtoPollution] WARNING: Cleanup failed for constructor.prototype." + canaryKey);
                     }
@@ -280,7 +281,7 @@ public class PrototypePollutionScanner implements ScanModule {
                         .build());
 
                 // Cleanup
-                if (config.getBool("proto.cleanupEnabled", true)) {
+                if (config.getBool("proto.cleanupEnabled", false)) {
                     cleanupPollution(original, "status");
                 }
             }
@@ -343,7 +344,7 @@ public class PrototypePollutionScanner implements ScanModule {
                                 .requestResponse(result)
                                 .build());
 
-                        if (config.getBool("proto.cleanupEnabled", true)) {
+                        if (config.getBool("proto.cleanupEnabled", false)) {
                             cleanupPollution(original, "content-type");
                         }
                         break;
@@ -406,7 +407,7 @@ public class PrototypePollutionScanner implements ScanModule {
                                 .requestResponse(result)
                                 .build());
 
-                        if (config.getBool("proto.cleanupEnabled", true)) {
+                        if (config.getBool("proto.cleanupEnabled", false)) {
                             cleanupPollution(original, "json spaces");
                         }
                     }
@@ -426,16 +427,22 @@ public class PrototypePollutionScanner implements ScanModule {
     private boolean isJsonRequest(HttpRequest request) {
         for (var h : request.headers()) {
             if (h.name().equalsIgnoreCase("Content-Type")) {
-                return h.value().contains("application/json");
+                return isJsonContentType(h.value());
             }
         }
         return false;
     }
 
+    static boolean isJsonContentType(String value) {
+        if (value == null) return false;
+        String lower = value.toLowerCase(Locale.ROOT);
+        return lower.contains("application/json") || lower.contains("+json");
+    }
+
     /**
      * Inject a __proto__ (or other root-level key) payload into a JSON body.
      */
-    private String injectProtoPayload(String jsonBody, String protoKey, String propertyName, String propertyValue) {
+    static String injectProtoPayload(String jsonBody, String protoKey, String propertyName, String propertyValue) {
         try {
             com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(jsonBody).getAsJsonObject();
             com.google.gson.JsonObject protoObj = new com.google.gson.JsonObject();
@@ -461,16 +468,7 @@ public class PrototypePollutionScanner implements ScanModule {
             // Probe with the same method as the original request — POST endpoints often
             // return 404/405 for GET, causing false negatives. Send a clean body-less
             // request using the original method and all original headers (auth, cookies).
-            String probeUrl = original.request().url();
-            String method = original.request().method();
-            HttpRequest probe;
-            if ("GET".equalsIgnoreCase(method)) {
-                probe = HttpRequest.httpRequestFromUrl(probeUrl);
-            } else {
-                // Re-send the original request unchanged (with the original JSON body)
-                // so the endpoint routes correctly. The canary detection checks the response.
-                probe = original.request();
-            }
+            HttpRequest probe = original.request();
 
             HttpRequestResponse result = StepperHttp.sendRequest(probe);
             if (!ResponseGuard.isUsableResponse(result)) return false;
@@ -503,6 +501,23 @@ public class PrototypePollutionScanner implements ScanModule {
             api.logging().logToOutput("[ProtoPollution] Sent cleanup for property: " + propertyName);
         } catch (Exception e) {
             api.logging().logToError("Prototype pollution cleanup failed: " + e.getMessage());
+        }
+    }
+
+    private void cleanupConstructorPollution(HttpRequestResponse original, String propertyName) {
+        try {
+            com.google.gson.JsonObject root = com.google.gson.JsonParser.parseString(
+                    original.request().bodyToString()).getAsJsonObject();
+            com.google.gson.JsonObject prototype = new com.google.gson.JsonObject();
+            prototype.add(propertyName, com.google.gson.JsonNull.INSTANCE);
+            com.google.gson.JsonObject constructor = new com.google.gson.JsonObject();
+            constructor.add("prototype", prototype);
+            root.add("constructor", constructor);
+            sendWithBody(original, new com.google.gson.Gson().toJson(root));
+            api.logging().logToOutput("[ProtoPollution] Sent constructor.prototype cleanup for property: "
+                    + propertyName);
+        } catch (Exception e) {
+            api.logging().logToError("Constructor.prototype cleanup failed: " + e.getMessage());
         }
     }
 

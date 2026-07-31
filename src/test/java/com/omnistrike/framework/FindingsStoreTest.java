@@ -70,4 +70,24 @@ class FindingsStoreTest {
         assertEquals(1, store.getCountByModule("header-analyzer"));
         assertEquals(1, store.getCountByModule("cors-scanner"));
     }
+
+    @Test
+    void confidenceAndSeverityUpgradesAreNotHiddenByEarlierFinding() {
+        FindingsStore store = new FindingsStore();
+        store.addFinding(Finding.builder("ssrf", "OOB", Severity.HIGH, Confidence.FIRM)
+                .url("https://example.com/callback").parameter("url").build());
+        store.addFinding(Finding.builder("ssrf", "OOB", Severity.CRITICAL, Confidence.CERTAIN)
+                .url("https://example.com/callback").parameter("url").build());
+        assertEquals(2, store.getCount());
+    }
+
+    @Test
+    void caseSensitivePathsRemainDistinct() {
+        FindingsStore store = new FindingsStore();
+        store.addFinding(Finding.builder("mod", "Finding", Severity.HIGH, Confidence.FIRM)
+                .url("https://EXAMPLE.com/Admin").parameter("id").build());
+        store.addFinding(Finding.builder("mod", "Finding", Severity.HIGH, Confidence.FIRM)
+                .url("https://example.com/admin").parameter("id").build());
+        assertEquals(2, store.getCount());
+    }
 }

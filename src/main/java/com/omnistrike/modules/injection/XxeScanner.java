@@ -14,6 +14,8 @@ import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.framework.ResponseGuard;
+import com.omnistrike.framework.JsonScanSupport;
+import com.omnistrike.framework.ScanTargetIdentity;
 
 import com.omnistrike.model.*;
 
@@ -337,7 +339,11 @@ public class XxeScanner implements ScanModule {
             HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
         String url = request.url();
-        String urlPath = extractPath(url);
+        String urlPath = ScanTargetIdentity.build(url, request.method(), "endpoint", "");
+
+        if (isOobConfirmed(url)) {
+            return Collections.emptyList();
+        }
 
         // For targeted parameter scan, only run XInclude injection on the selected parameter
         if (config.getBool("xxe.xinclude.enabled", true)) {
@@ -345,7 +351,7 @@ public class XxeScanner implements ScanModule {
             paramTargets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
             for (XxeTarget target : paramTargets) {
                 if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
-                if (!dedup.markIfNew("xxe-xinclude", urlPath, target.name)) continue;
+                if (!dedup.markIfNew("xxe-xinclude", urlPath, target.identityName())) continue;
                 try {
                     testXInclude(requestResponse, target, url);
                 } catch (InterruptedException e) {
@@ -365,7 +371,7 @@ public class XxeScanner implements ScanModule {
         HttpRequest request = requestResponse.request();
         HttpResponse response = requestResponse.response();
         String url = request.url();
-        String urlPath = extractPath(url);
+        String urlPath = ScanTargetIdentity.build(url, request.method(), "endpoint", "");
         String contentType = getContentType(request);
 
         // -------- PASSIVE ANALYSIS --------
@@ -397,12 +403,13 @@ public class XxeScanner implements ScanModule {
         }
 
         // Phase 2: XInclude injection in individual parameters
-        if (oobConfirmedParams.contains("xml_body")) return Collections.emptyList();
+        if (isOobConfirmed(url)) return Collections.emptyList();
         if (config.getBool("xxe.xinclude.enabled", true)) {
             List<XxeTarget> paramTargets = extractParameterTargets(request);
             for (XxeTarget target : paramTargets) {
                 if (Thread.currentThread().isInterrupted()) return Collections.emptyList();
-                if (!dedup.markIfNew("xxe-xinclude", urlPath, target.name)) continue;
+                if (isOobConfirmed(url)) return Collections.emptyList();
+                if (!dedup.markIfNew("xxe-xinclude", urlPath, target.identityName())) continue;
                 try {
                     testXInclude(requestResponse, target, url);
                 } catch (InterruptedException e) {
@@ -415,7 +422,7 @@ public class XxeScanner implements ScanModule {
         }
 
         // Phase 3: Content-Type conversion (JSON -> XML)
-        if (oobConfirmedParams.contains("xml_body")) return Collections.emptyList();
+        if (isOobConfirmed(url)) return Collections.emptyList();
         if (config.getBool("xxe.contentTypeConversion.enabled", true) && isJsonRequest) {
             if (dedup.markIfNew("xxe-convert", urlPath, "__json_to_xml__")) {
                 try {
@@ -434,7 +441,7 @@ public class XxeScanner implements ScanModule {
         // Many frameworks (Rails, Spring, JAX-RS, Express) auto-detect Content-Type and will
         // parse XML if you simply switch the Content-Type header. Send a minimal XXE probe
         // as XML to check if the server processes it.
-        if (oobConfirmedParams.contains("xml_body")) return Collections.emptyList();
+        if (isOobConfirmed(url)) return Collections.emptyList();
         if (config.getBool("xxe.contentTypeForcing.enabled", true) && !isXmlRequest && !isJsonRequest) {
             String body = null;
             try { body = request.bodyToString(); } catch (Exception ignored) {}
@@ -908,6 +915,11 @@ public class XxeScanner implements ScanModule {
     private void testBlindXxeOob(HttpRequestResponse original, String url,
                                   String requestBody) throws InterruptedException {
 
+        // External OAST providers are third parties.  Fixed canary callbacks are
+        // sufficient to prove XXE; never place target file contents in an OOB
+        // request unless a future advanced configuration explicitly opts in.
+        boolean dataExfilEnabled = config.getBool("xxe.oobDataExfil.enabled", false);
+
         // OOB Payload 1: Parameter entity loading external DTD from Collaborator
         AtomicReference<HttpRequestResponse> sentRequest1 = new AtomicReference<>();
         String collabPayload1 = collaboratorManager.generatePayload(
@@ -976,6 +988,7 @@ public class XxeScanner implements ScanModule {
         // OOB Payload 4: Data exfiltration via nested parameter entities
         // This technique uses a parameter entity to read a file, then sends its
         // content as part of a URL to the Collaborator server.
+        if (dataExfilEnabled) {
         AtomicReference<HttpRequestResponse> sentRequest4 = new AtomicReference<>();
         String collabPayload4 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB data exfiltration via parameter entity",
@@ -996,6 +1009,7 @@ public class XxeScanner implements ScanModule {
             HttpRequestResponse result4 = sendRawRequest(original, exfilPayload);
             sentRequest4.set(result4);
             perHostDelay();
+        }
         }
 
         // OOB Payload 5: Standalone XML with OOB parameter entity
@@ -1044,6 +1058,7 @@ public class XxeScanner implements ScanModule {
         }
 
         // OOB Payload 7: FTP protocol for blind exfiltration
+        if (dataExfilEnabled) {
         AtomicReference<HttpRequestResponse> sentRequest7 = new AtomicReference<>();
         String collabPayload7 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB FTP exfiltration",
@@ -1064,6 +1079,7 @@ public class XxeScanner implements ScanModule {
             HttpRequestResponse result7 = sendRawRequest(original, ftpPayload);
             sentRequest7.set(result7);
             perHostDelay();
+        }
         }
 
         // OOB Payload 8: JAR protocol (Java-specific)
@@ -1177,6 +1193,7 @@ public class XxeScanner implements ScanModule {
         }
 
         // OOB Payload 13: Data exfiltration of /etc/passwd via nested parameter entities + external DTD
+        if (dataExfilEnabled) {
         AtomicReference<HttpRequestResponse> sentRequest13 = new AtomicReference<>();
         String collabPayload13 = collaboratorManager.generatePayload(
                 "xxe-scanner", url, "xml_body", "XXE OOB /etc/passwd exfiltration via external DTD",
@@ -1228,6 +1245,7 @@ public class XxeScanner implements ScanModule {
             sentRequest14.set(result14);
             perHostDelay();
         }
+        }
     }
 
     /**
@@ -1244,9 +1262,9 @@ public class XxeScanner implements ScanModule {
      */
     private void reportOobFinding(Interaction interaction, String url, String technique,
                                    HttpRequestResponse requestResponse) {
-        // Mark xml_body as confirmed — skip remaining XXE phases (HTTP only, DNS continues scanning)
+        // Stop only this endpoint's remaining phases (HTTP callbacks are conclusive).
         if (interaction.type() == InteractionType.HTTP) {
-            oobConfirmedParams.add("xml_body");
+            oobConfirmedParams.add(oobEndpointKey(url));
         }
         Finding.Builder builder = Finding.builder("xxe-scanner",
                         "XXE Confirmed (Out-of-Band): " + technique,
@@ -1698,7 +1716,7 @@ public class XxeScanner implements ScanModule {
                     interaction -> {
                         // Only stop scanning on HTTP OOB, DNS continues scanning
                         if (interaction.type() == InteractionType.HTTP) {
-                            oobConfirmedParams.add(target.name);
+                            oobConfirmedParams.add(oobEndpointKey(url));
                         }
                         findingsStore.addFinding(Finding.builder("xxe-scanner",
                                         "XXE via XInclude Confirmed (Out-of-Band)",
@@ -1941,7 +1959,7 @@ public class XxeScanner implements ScanModule {
                     interaction -> {
                         // Only stop scanning on HTTP OOB, DNS continues scanning
                         if (interaction.type() == InteractionType.HTTP) {
-                            oobConfirmedParams.add("Content-Type conversion");
+                            oobConfirmedParams.add(oobEndpointKey(url));
                         }
                         findingsStore.addFinding(Finding.builder("xxe-scanner",
                                         "XXE via Content-Type Conversion Confirmed (Out-of-Band)",
@@ -2198,7 +2216,7 @@ public class XxeScanner implements ScanModule {
                     interaction -> {
                         // Only stop scanning on HTTP OOB, DNS continues scanning
                         if (interaction.type() == InteractionType.HTTP) {
-                            oobConfirmedParams.add("Content-Type forcing");
+                            oobConfirmedParams.add(oobEndpointKey(url));
                         }
                         reportOobFinding(interaction, url,
                                 "Content-Type forcing parameter entity OOB", sentForceOob1.get());
@@ -2233,7 +2251,7 @@ public class XxeScanner implements ScanModule {
                     interaction -> {
                         // Only stop scanning on HTTP OOB, DNS continues scanning
                         if (interaction.type() == InteractionType.HTTP) {
-                            oobConfirmedParams.add("Content-Type forcing");
+                            oobConfirmedParams.add(oobEndpointKey(url));
                         }
                         reportOobFinding(interaction, url,
                                 "Content-Type forcing direct entity OOB", sentForceOob2.get());
@@ -2307,6 +2325,10 @@ public class XxeScanner implements ScanModule {
             case COOKIE:
                 return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
+                if (!target.jsonPath.isEmpty()) {
+                    return request.withBody(JsonScanSupport.replaceValue(
+                            request.bodyToString(), target.jsonPath, payload));
+                }
                 String body = request.bodyToString();
                 if (target.name.contains(".")) {
                     // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
@@ -2507,17 +2529,8 @@ public class XxeScanner implements ScanModule {
             }
         }
 
-        // Extract ALL injectable request headers (skip non-injectable framework headers)
-        Set<String> skipHeaders = Set.of("host", "content-length", "connection", "accept-encoding",
-                "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
-                "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
-                "upgrade-insecure-requests", "if-modified-since", "if-none-match",
-                "cookie"); // individual cookies already extracted as COOKIE parameters
-        for (var h : request.headers()) {
-            if (!skipHeaders.contains(h.name().toLowerCase())) {
-                targets.add(new XxeTarget(h.name(), h.value(), XxeTargetType.HEADER));
-            }
-        }
+        // XInclude is meaningful in parsed parameter values and document bodies;
+        // injecting XML into arbitrary transport/auth headers only breaks context.
 
         // JSON body parameters (with recursive nested JSON traversal)
         String ct = getContentType(request);
@@ -2525,9 +2538,9 @@ public class XxeScanner implements ScanModule {
             try {
                 String body = request.bodyToString();
                 if (body != null) {
-                    com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
-                    if (el.isJsonObject()) {
-                        extractJsonTargetsRecursive(el.getAsJsonObject(), "", targets);
+                    for (JsonScanSupport.Target jsonTarget : JsonScanSupport.extractTargets(body)) {
+                        targets.add(new XxeTarget(jsonTarget.displayName(), jsonTarget.value(),
+                                XxeTargetType.JSON, jsonTarget.path()));
                     }
                 }
             } catch (Exception ignored) {}
@@ -2735,8 +2748,17 @@ public class XxeScanner implements ScanModule {
         return responseBody == null || !responseBody.contains(probe);
     }
 
+    static String oobEndpointKey(String url) {
+        return ScanTargetIdentity.endpoint(url);
+    }
+
+    private boolean isOobConfirmed(String url) {
+        return (dedup == null || !dedup.isBypass())
+                && oobConfirmedParams.contains(oobEndpointKey(url));
+    }
+
     @Override
-    public void destroy() { }
+    public void destroy() { oobConfirmedParams.clear(); }
 
     // ==================== INNER TYPES ====================
 
@@ -2758,11 +2780,24 @@ public class XxeScanner implements ScanModule {
         final String name;
         final String originalValue;
         final XxeTargetType type;
+        final List<Object> jsonPath;
 
         XxeTarget(String n, String v, XxeTargetType t) {
+            this(n, v, t, List.of());
+        }
+
+        XxeTarget(String n, String v, XxeTargetType t, List<Object> path) {
             name = n;
             originalValue = v != null ? v : "";
             type = t;
+            jsonPath = List.copyOf(path);
+        }
+
+        String identityName() {
+            if (type != XxeTargetType.JSON || jsonPath.isEmpty()) return type + ":" + name;
+            StringBuilder out = new StringBuilder("JSON:");
+            for (Object part : jsonPath) out.append('/').append(part);
+            return out.toString();
         }
     }
 

@@ -26,6 +26,13 @@ public class ModuleRegistry {
             "ws-scanner"           // WebSocket — user triggers fuzzing from panel
     );
 
+    private static final Set<String> STATEFUL_MANUAL_ONLY_IDS = Set.of(
+            "deser-scanner", "proto-pollution", "host-header");
+
+    private static boolean isManualOnlyId(String moduleId) {
+        return MANUAL_ONLY_IDS.contains(moduleId) || STATEFUL_MANUAL_ONLY_IDS.contains(moduleId);
+    }
+
     /**
      * Modules that fire automatically based on technology fingerprinting and are
      * NOT user-triggerable (no right-click entry, no custom-scan checkbox).
@@ -124,7 +131,7 @@ public class ModuleRegistry {
      * Used by TrafficInterceptor for auto-scanning proxied traffic.
      */
     public List<ScanModule> getEnabledPassiveModules() {
-        return filterModules(m -> m.isPassive() && !MANUAL_ONLY_IDS.contains(m.getId()));
+        return filterModules(m -> m.isPassive() && !isManualOnlyId(m.getId()));
     }
 
     /**
@@ -134,18 +141,28 @@ public class ModuleRegistry {
      * scanRequest() which looks up modules by explicit ID.
      */
     public List<ScanModule> getEnabledActiveModules() {
-        return filterModules(m -> !m.isPassive() && !MANUAL_ONLY_IDS.contains(m.getId()));
+        return filterModules(m -> !m.isPassive() && !isManualOnlyId(m.getId()));
     }
 
     /** Returns all enabled modules except the AI module and manual-only modules. */
     public List<ScanModule> getEnabledNonAiModules() {
         return filterModules(m -> !AI_MODULE_ID.equals(m.getId())
-                && !MANUAL_ONLY_IDS.contains(m.getId()));
+                && !isManualOnlyId(m.getId()));
+    }
+
+    /**
+     * Returns the modules eligible for an explicit user-triggered scan.
+     * Unlike the automatic-routing views, this deliberately includes modules
+     * marked manual-only; otherwise "All Modules" and the right-click picker
+     * silently hide the very scanners that can only be run from those actions.
+     */
+    public List<ScanModule> getEnabledManualScanModules() {
+        return filterModules(m -> !AI_MODULE_ID.equals(m.getId()));
     }
 
     /** Returns true if the given module ID is manual-trigger-only (excluded from auto-scan). */
     public boolean isManualOnly(String moduleId) {
-        return MANUAL_ONLY_IDS.contains(moduleId);
+        return isManualOnlyId(moduleId);
     }
 
     /**

@@ -113,7 +113,8 @@ public class OdooDomainScanner implements ScanModule {
         if (requestResponse.response() == null) return Collections.emptyList();
 
         String url = requestResponse.request().url();
-        String urlPath = extractPath(url);
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                url, requestResponse.request().method(), "endpoint", "");
 
         // PASSIVE GATE: Check response for Odoo indicators
         OdooDetection detection = detectOdoo(requestResponse);
@@ -659,7 +660,9 @@ public class OdooDomainScanner implements ScanModule {
         try {
             StringBuilder headers = new StringBuilder();
             headers.append("POST ").append(path).append(" HTTP/1.1\r\n");
-            headers.append("Host: ").append(originalRequest.httpService().host()).append("\r\n");
+            String originalHost = originalRequest.headerValue("Host");
+            headers.append("Host: ").append(originalHost == null || originalHost.isBlank()
+                    ? originalRequest.httpService().host() : originalHost).append("\r\n");
             headers.append("Content-Type: application/json\r\n");
             headers.append("Content-Length: ")
                     .append(jsonBody.getBytes(StandardCharsets.UTF_8).length)

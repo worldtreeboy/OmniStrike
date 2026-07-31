@@ -3,9 +3,12 @@ package com.omnistrike.modules.ai.llm;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -31,14 +34,9 @@ import com.google.gson.JsonParser;
  *     written to a temp file (deleted after the call), which is both injection-safe and
  *     free of the Windows 32K argv limit.
  *
- * All providers are invoked with their headless auto-approve flag so unattended tool use
- * doesn't stall on a permission prompt: Claude --dangerously-skip-permissions, Gemini
- * --yolo, Codex --dangerously-bypass-approvals-and-sandbox, Grok --yolo. Kimi rejects
- * --yolo in -p mode (auto permission is already the default there), and `opencode run`
- * is inherently non-interactive. NOTE: auto-approve means the CLI executes LLM-decided
- * actions without confirmation — and prompts contain attacker-controlled HTTP data, so a
- * prompt-injection attack against the target app could steer the local agent. Use on
- * machines/VMs you are comfortable exposing to that risk.
+ * Dangerous auto-approval flags are deliberately not used. Captured HTTP data is
+ * attacker-controlled and must not be able to turn a prompt injection into local command
+ * execution on the pentester's workstation.
  */
 public class CliBackend {
 
@@ -52,6 +50,7 @@ public class CliBackend {
      * instructions at the end of the prompt).
      */
     private static final int MAX_ARG_PROMPT_CHARS = 30_000;
+    private static final int MAX_OUTPUT_CHARS = 16 * 1024 * 1024;
     private static final Pattern ANSI_STRIP = Pattern.compile("\u001B\\[[;\\d]*[A-Za-z]");
     private static final boolean IS_WINDOWS = System.getProperty("os.name", "").toLowerCase().contains("win");
 
@@ -78,8 +77,14 @@ public class CliBackend {
             promptFile = writePromptTempFile(prompt);
         }
 
+        boolean kimiStdinBridge = provider == LlmProvider.CLI_KIMI
+                && IS_WINDOWS && !binary.toLowerCase().endsWith(".exe");
+        boolean promptViaStdin = provider.usesStdinForPrompt() || kimiStdinBridge;
+
         List<String> command;
-        if (provider.usesStdinForPrompt()) {
+        if (kimiStdinBridge) {
+            command = buildKimiStdinCommand(binary);
+        } else if (provider.usesStdinForPrompt()) {
             command = buildCommand(provider, binary);
 
             // On Windows, wrap with cmd.exe /c so .cmd/.bat wrappers (npm globals) are found.
@@ -110,13 +115,11 @@ public class CliBackend {
             // its own write, never drain our stdin, and deadlock against our
             // blocking stdin write below.
             StringBuilder output = new StringBuilder();
+            AtomicBoolean outputTruncated = new AtomicBoolean(false);
             Thread reader = new Thread(() -> {
-                try (BufferedReader br = new BufferedReader(
-                        new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        output.append(line).append("\n");
-                    }
+                try {
+                    outputTruncated.set(readUtf8Bounded(
+                            process.getInputStream(), output, MAX_OUTPUT_CHARS));
                 } catch (IOException ignored) {}
             }, "OmniStrike-CLI-Reader");
             reader.setDaemon(true);
@@ -125,7 +128,7 @@ public class CliBackend {
             // Pipe the prompt via stdin for stdin-based providers — never as a CLI
             // argument. Other providers (CLI_KIMI / CLI_GROK) already carry the prompt
             // in argv or a prompt file; just close stdin so the process doesn't wait on it.
-            if (provider.usesStdinForPrompt()) {
+            if (promptViaStdin) {
                 try (OutputStream os = process.getOutputStream()) {
                     os.write(prompt.getBytes(StandardCharsets.UTF_8));
                     os.flush();
@@ -149,6 +152,18 @@ public class CliBackend {
 
             // Wait for the reader thread to finish
             reader.join(5000);
+            if (reader.isAlive()) {
+                try { process.getInputStream().close(); } catch (IOException ignored) {}
+                reader.interrupt();
+                throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                        provider.getDisplayName() + " output stream did not close after process exit");
+            }
+
+            if (outputTruncated.get()) {
+                throw new LlmException(LlmException.ErrorType.PARSE_ERROR,
+                        provider.getDisplayName() + " output exceeded the "
+                                + MAX_OUTPUT_CHARS + " character safety limit");
+            }
 
             int exitCode = process.exitValue();
             String result = stripAnsi(output.toString().trim());
@@ -209,10 +224,8 @@ public class CliBackend {
 
         switch (provider) {
             case CLI_CLAUDE -> {
-                // claude -p --dangerously-skip-permissions  (reads prompt from stdin;
-                // skip-permissions = headless auto-approve, required for unattended tool use)
+                // Text analysis does not require local tool execution.
                 cmd.add("-p");
-                cmd.add("--dangerously-skip-permissions");
             }
             case CLI_GEMINI -> {
                 // gemini --output-format text -p . --yolo  (reads prompt from stdin,
@@ -221,7 +234,6 @@ public class CliBackend {
                 cmd.add("text");
                 cmd.add("-p");
                 cmd.add(".");
-                cmd.add("--yolo");
             }
             case CLI_CODEX -> {
                 // codex exec --color never --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -
@@ -230,7 +242,6 @@ public class CliBackend {
                 cmd.add("--color");
                 cmd.add("never");
                 cmd.add("--skip-git-repo-check");
-                cmd.add("--dangerously-bypass-approvals-and-sandbox");
                 cmd.add("-");
             }
             case CLI_OPENCODE -> {
@@ -274,8 +285,6 @@ public class CliBackend {
         if (provider == LlmProvider.CLI_GROK) {
             cmd.add("--prompt-file");
             cmd.add(promptFile.getAbsolutePath());
-            // Headless auto-approve (documented for -p/--prompt-file automation)
-            cmd.add("--yolo");
             // Structured output: a single JSON object on stdout; the response text is
             // extracted from its "text" field (see extractGrokText).
             cmd.add("--output-format");
@@ -299,6 +308,39 @@ public class CliBackend {
         return cmd;
     }
 
+    static boolean readUtf8Bounded(InputStream input, StringBuilder output, int maximumChars)
+            throws IOException {
+        if (maximumChars < 1) throw new IllegalArgumentException("maximumChars must be positive");
+        boolean truncated = false;
+        try (Reader reader = new InputStreamReader(input, StandardCharsets.UTF_8)) {
+            char[] buffer = new char[8192];
+            int count;
+            while ((count = reader.read(buffer)) != -1) {
+                int remaining = maximumChars - output.length();
+                if (remaining > 0) output.append(buffer, 0, Math.min(count, remaining));
+                if (count > remaining) truncated = true;
+            }
+        }
+        return truncated;
+    }
+
+    /**
+     * Kimi's CLI accepts prompts only through -p. On Windows npm installs expose
+     * a JavaScript entry, so this fixed Node bridge reads the sensitive prompt
+     * from stdin and constructs argv inside the child process. The prompt never
+     * appears in the OS process list.
+     */
+    private List<String> buildKimiStdinCommand(String binary) throws LlmException {
+        String entry = resolveCliJsEntry(LlmProvider.CLI_KIMI, binary);
+        String bridge = "const{pathToFileURL}=require('url');let p='';"
+                + "process.stdin.setEncoding('utf8');"
+                + "process.stdin.on('data',c=>p+=c);"
+                + "process.stdin.on('end',async()=>{const e=process.argv[1];"
+                + "process.argv=[process.execPath,e,'-p',p,'--output-format','stream-json'];"
+                + "await import(pathToFileURL(e).href);});";
+        return new ArrayList<>(List.of("node", "-e", bridge, entry));
+    }
+
     /**
      * Writes the prompt to a temp file for CLI_GROK's --prompt-file flag.
      * The caller deletes the file in a finally block after the process exits.
@@ -306,6 +348,12 @@ public class CliBackend {
     private File writePromptTempFile(String prompt) throws LlmException {
         try {
             File f = Files.createTempFile("omnistrike-grok-prompt-", ".txt").toFile();
+            try {
+                Files.setPosixFilePermissions(f.toPath(), Set.of(
+                        PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+            } catch (UnsupportedOperationException ignored) {
+                // Windows ACLs inherit from the user's temp directory.
+            }
             Files.writeString(f.toPath(), prompt, StandardCharsets.UTF_8);
             return f;
         } catch (IOException e) {

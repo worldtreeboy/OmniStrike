@@ -10,6 +10,8 @@ import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.framework.ResponseGuard;
+import com.omnistrike.framework.JsonScanSupport;
+import com.omnistrike.framework.ScanTargetIdentity;
 
 import com.omnistrike.model.*;
 
@@ -107,7 +109,7 @@ public class PathTraversalScanner implements ScanModule {
     public List<Finding> processHttpFlowForParameter(
             HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
+        String urlPath = ScanTargetIdentity.build(request.url(), request.method(), "endpoint", "");
         List<TraversalTarget> targets = extractTargets(request);
         targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
         return runTraversalTargets(requestResponse, targets, urlPath);
@@ -116,7 +118,7 @@ public class PathTraversalScanner implements ScanModule {
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
+        String urlPath = ScanTargetIdentity.build(request.url(), request.method(), "endpoint", "");
         List<TraversalTarget> targets = extractTargets(request);
         return runTraversalTargets(requestResponse, targets, urlPath);
     }
@@ -125,7 +127,7 @@ public class PathTraversalScanner implements ScanModule {
                                                List<TraversalTarget> targets, String urlPath) {
         for (TraversalTarget target : targets) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return Collections.emptyList();
-            if (!dedup.markIfNew("path-traversal", urlPath, target.name)) continue;
+            if (!dedup.markIfNew("path-traversal", urlPath, target.identityName())) continue;
 
             try {
                 testTraversal(requestResponse, target);
@@ -784,26 +786,28 @@ public class PathTraversalScanner implements ScanModule {
         for (var h : request.headers()) {
             if (h.name().equalsIgnoreCase("Content-Type")) { ct = h.value(); break; }
         }
-        if (ct.contains("application/json")) {
+        if (ct.toLowerCase(Locale.ROOT).contains("application/json")) {
             try {
                 String body = request.bodyToString();
                 if (body != null) {
-                    com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
-                    if (el.isJsonObject()) {
-                        extractJsonTargets(el.getAsJsonObject(), "", targets);
+                    for (JsonScanSupport.Target jsonTarget : JsonScanSupport.extractTargets(body)) {
+                        String key = jsonTarget.displayName();
+                        String value = jsonTarget.value();
+                        if (FILE_PARAM_PATTERN.matcher(key).find()
+                                || value.contains("/") || value.contains("\\")
+                                || value.matches(".*\\.[a-zA-Z]{2,5}$")) {
+                            targets.add(new TraversalTarget(key, value, TargetType.JSON,
+                                    jsonTarget.path()));
+                        }
                     }
                 }
             } catch (Exception ignored) {}
         }
 
-        // Extract ALL injectable request headers (skip non-injectable framework headers)
-        Set<String> skipHeaders = Set.of("host", "content-length", "connection", "accept-encoding",
-                "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
-                "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
-                "upgrade-insecure-requests", "if-modified-since", "if-none-match",
-                "cookie"); // individual cookies already extracted as COOKIE parameters
+        Set<String> fileHeaders = Set.of("x-original-url", "x-rewrite-url", "x-sendfile",
+                "x-accel-redirect", "content-location", "destination", "referer");
         for (var h : request.headers()) {
-            if (!skipHeaders.contains(h.name().toLowerCase())) {
+            if (fileHeaders.contains(h.name().toLowerCase(Locale.ROOT))) {
                 targets.add(new TraversalTarget(h.name(), h.value(), TargetType.HEADER));
             }
         }
@@ -1260,6 +1264,10 @@ public class PathTraversalScanner implements ScanModule {
             case COOKIE:
                 return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
+                if (!target.jsonPath.isEmpty()) {
+                    return request.withBody(JsonScanSupport.replaceValue(
+                            request.bodyToString(), target.jsonPath, payload));
+                }
                 return injectJsonPayload(request, target.name, payload);
             case HEADER:
                 return request.withRemovedHeader(target.name)
@@ -1321,14 +1329,27 @@ public class PathTraversalScanner implements ScanModule {
     private static class TraversalTarget {
         final String name, originalValue;
         final TargetType type;
-        TraversalTarget(String n, String v, TargetType t) { name = n; originalValue = v != null ? v : ""; type = t; }
+        final List<Object> jsonPath;
+        TraversalTarget(String n, String v, TargetType t) { this(n, v, t, List.of()); }
+        TraversalTarget(String n, String v, TargetType t, List<Object> path) {
+            name = n;
+            originalValue = v != null ? v : "";
+            type = t;
+            jsonPath = List.copyOf(path);
+        }
+        String identityName() {
+            if (type != TargetType.JSON || jsonPath.isEmpty()) return type + ":" + name;
+            StringBuilder out = new StringBuilder("JSON:");
+            for (Object part : jsonPath) out.append('/').append(part);
+            return out.toString();
+        }
         @Override public boolean equals(Object o) {
             if (this == o) return true;
             if (!(o instanceof TraversalTarget)) return false;
             TraversalTarget t = (TraversalTarget) o;
-            return name.equals(t.name) && type == t.type;
+            return name.equals(t.name) && type == t.type && jsonPath.equals(t.jsonPath);
         }
-        @Override public int hashCode() { return Objects.hash(name, type); }
+        @Override public int hashCode() { return Objects.hash(name, type, jsonPath); }
     }
 
     private static class ConfirmedRead {

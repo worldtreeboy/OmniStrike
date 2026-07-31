@@ -3,6 +3,8 @@ package com.omnistrike.modules.recon;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.ScanTargetIdentity;
+import com.omnistrike.framework.BoundedDeduplication;
 import com.omnistrike.model.*;
 
 import java.util.*;
@@ -261,7 +263,7 @@ public class TechFingerprinter implements ScanModule {
     }
 
     @Override
-    public void destroy() { }
+    public void destroy() { seen.clear(); }
 
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
@@ -276,6 +278,7 @@ public class TechFingerprinter implements ScanModule {
             return findings;
         }
         String url = requestResponse.request().url();
+        String origin = ScanTargetIdentity.origin(url);
         int statusCode = response.statusCode();
         boolean isErrorPage = statusCode >= 400;
 
@@ -293,8 +296,8 @@ public class TechFingerprinter implements ScanModule {
 
         // 4. Emit findings (one per unique host+tech)
         for (TechMatch tech : detectedTechs) {
-            String dedupKey = host + "|" + tech.name;
-            if (seen.putIfAbsent(dedupKey, Boolean.TRUE) != null) continue;
+            String dedupKey = origin + "|" + tech.name;
+            if (!BoundedDeduplication.markIfNew(seen, dedupKey)) continue;
 
             boolean hasVersion = tech.version != null && !tech.version.isEmpty();
             Severity severity = hasVersion ? Severity.LOW : Severity.INFO;

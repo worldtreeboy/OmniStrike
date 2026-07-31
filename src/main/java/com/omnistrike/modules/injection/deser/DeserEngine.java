@@ -190,7 +190,9 @@ public class DeserEngine {
         }
         String oldValue = loc.getRawValue();
         if (rawRequest.contains(oldValue)) {
-            return rawRequest.replace(oldValue, payload);
+            int offset = rawRequest.indexOf(oldValue);
+            return rawRequest.substring(0, offset) + payload
+                    + rawRequest.substring(offset + oldValue.length());
         }
         return rawRequest;
     }
@@ -231,6 +233,7 @@ public class DeserEngine {
 
     private boolean sendAndAnalyze(String modifiedRequest, String chainName,
                                     String injectPoint, Language language) {
+        modifiedRequest = normalizeRequestFraming(modifiedRequest);
         String[] lines = modifiedRequest.split("\r\n");
         String host = null;
         boolean useHttps = false;
@@ -328,7 +331,6 @@ public class DeserEngine {
         }
 
         if (errorCount >= 2) return "INTERESTING";
-        if (elapsed > 10000) return "INTERESTING";
         if (status == 500 && errorCount > 0) return "INTERESTING";
 
         if (status >= 200 && status < 300) return "OK";
@@ -337,6 +339,24 @@ public class DeserEngine {
         if (status == 500) return "ERROR_500";
 
         return "UNKNOWN";
+    }
+
+    /** Rebuild framing after body mutation so stale lengths cannot desynchronize a connection. */
+    private static String normalizeRequestFraming(String raw) {
+        String[] parts = raw.split("\r\n\r\n", 2);
+        String body = parts.length > 1 ? parts[1] : "";
+        StringBuilder headers = new StringBuilder();
+        for (String line : parts[0].split("\r\n")) {
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("content-length:") || lower.startsWith("transfer-encoding:")) continue;
+            if (headers.length() > 0) headers.append("\r\n");
+            headers.append(line);
+        }
+        headers.append("\r\nContent-Length: ")
+                .append(body.getBytes(StandardCharsets.UTF_8).length)
+                .append("\r\n\r\n")
+                .append(body);
+        return headers.toString();
     }
 
     // ── Parameter extraction for blind testing ───────────────────────────────

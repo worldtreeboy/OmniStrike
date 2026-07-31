@@ -139,7 +139,8 @@ public class SpringActuatorScanner implements ScanModule {
         if (requestResponse.response() == null) return Collections.emptyList();
 
         String url = requestResponse.request().url();
-        String urlPath = extractPath(url);
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                url, requestResponse.request().method(), "endpoint", "");
 
         // PASSIVE GATE: Check response for Spring Boot indicators
         SpringDetection detection = detectSpringBoot(requestResponse);
@@ -298,6 +299,11 @@ public class SpringActuatorScanner implements ScanModule {
             String description = endpoint[1];
             String severityStr = endpoint[2];
 
+            // A heap dump can be gigabytes. Montoya materializes the response,
+            // so probing it by GET can exhaust Burp's heap. Keep this opt-in.
+            if (path.contains("heapdump")
+                    && !config.getBool("spring-actuator.heapdump.enabled", false)) continue;
+
             String probeUrl = baseUrl + path;
             HttpRequestResponse result = sendProbeRequest(original, probeUrl);
             if (result == null || result.response() == null) { perHostDelay(); continue; }
@@ -366,6 +372,9 @@ public class SpringActuatorScanner implements ScanModule {
             String path = endpoint[0];
             String description = endpoint[1];
             String severityStr = endpoint[2];
+
+            if (path.contains("heapdump")
+                    && !config.getBool("spring-actuator.heapdump.enabled", false)) continue;
 
             String probeUrl = baseUrl + path;
             HttpRequestResponse result = sendProbeRequest(original, probeUrl);

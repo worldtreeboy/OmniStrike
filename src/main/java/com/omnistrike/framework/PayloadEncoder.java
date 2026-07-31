@@ -89,13 +89,38 @@ public final class PayloadEncoder {
             return request.withAddedHeader("Cookie", cookieName + "=" + safePayload);
         }
 
-        // Replace the cookie value using regex that matches from '=' to next '; ' or end of string
-        String escaped = java.util.regex.Pattern.quote(cookieName);
-        String replaced = cookieHeader.replaceFirst(
-                escaped + "=[^;]*",
-                java.util.regex.Matcher.quoteReplacement(cookieName + "=" + safePayload));
+        String replaced = replaceCookieHeaderValue(cookieHeader, cookieName, safePayload);
 
         return request.withRemovedHeader("Cookie").withAddedHeader("Cookie", replaced);
+    }
+
+    /** Replaces exactly one named cookie, or appends it when it is absent. */
+    static String replaceCookieHeaderValue(String cookieHeader, String cookieName, String safePayload) {
+        if (cookieHeader == null || cookieHeader.isBlank()) {
+            return cookieName + "=" + safePayload;
+        }
+
+        StringBuilder result = new StringBuilder(cookieHeader.length() + safePayload.length() + 8);
+        boolean replaced = false;
+        for (String segment : cookieHeader.split(";", -1)) {
+            String trimmed = segment.trim();
+            if (trimmed.isEmpty()) continue;
+            if (result.length() > 0) result.append("; ");
+
+            int equals = trimmed.indexOf('=');
+            String currentName = equals >= 0 ? trimmed.substring(0, equals).trim() : trimmed;
+            if (!replaced && currentName.equalsIgnoreCase(cookieName)) {
+                result.append(cookieName).append('=').append(safePayload);
+                replaced = true;
+            } else {
+                result.append(trimmed);
+            }
+        }
+        if (!replaced) {
+            if (result.length() > 0) result.append("; ");
+            result.append(cookieName).append('=').append(safePayload);
+        }
+        return result.toString();
     }
 
     /**

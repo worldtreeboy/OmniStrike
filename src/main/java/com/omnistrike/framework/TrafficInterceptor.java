@@ -14,6 +14,7 @@ import com.omnistrike.framework.stepper.StepperEngine;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 
 /**
@@ -28,26 +29,21 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     private final ActiveScanExecutor executor;
     private final ScopeManager scopeManager;
     private volatile boolean running = false;
-    /**
-     * Gates automatic PASSIVE analysis of in-scope proxy traffic. Default on:
-     * as you browse, passive analyzers (Tech Fingerprinter, Sensitive Data,
-     * Security Headers, etc.) run automatically — they only read responses and
-     * never send requests. Active scanners are NEVER auto-triggered from proxy
-     * traffic; they remain strictly right-click only ("Send to OmniStrike").
-     */
-    private volatile boolean passiveAutoScanEnabled = true;
     /** When true, log every in-scope passive routing decision (noisy under heavy browsing). */
     private volatile boolean verboseLogging = false;
     private volatile BiConsumer<String, String> uiLogger;
     private volatile StepperEngine stepperEngine;
     private volatile SessionKeepAlive sessionKeepAlive;
     // Used to bypass dedup for explicit manual scans (right-click), so re-scanning
-    // a target already covered by automatic scanning actually re-tests it.
+    // a target that was already tested actually re-runs it.
     private volatile DeduplicationStore dedup;
 
     // Executor for passive modules so they don't block the proxy thread.
     // Not final — recreated when stopManualScans() is called to kill queued passive tasks.
     private volatile ExecutorService passiveExecutor;
+    private static final int PASSIVE_QUEUE_CAPACITY = 256;
+    private final AtomicLong droppedPassiveTasks = new AtomicLong();
+    private final AtomicLong lastPassiveQueueWarningNanos = new AtomicLong();
 
     // Track futures from manual scans (context menu) so they can be cancelled
     private final CopyOnWriteArrayList<Future<?>> manualScanFutures = new CopyOnWriteArrayList<>();
@@ -73,11 +69,32 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         this.findingsStore = findingsStore;
         this.executor = executor;
         this.scopeManager = scopeManager;
-        this.passiveExecutor = Executors.newFixedThreadPool(2, r -> {
+        this.passiveExecutor = createPassiveExecutor();
+    }
+
+    private static ExecutorService createPassiveExecutor() {
+        return new ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(PASSIVE_QUEUE_CAPACITY), r -> {
             Thread t = new Thread(r, "OmniStrike-Passive");
             t.setDaemon(true);
             return t;
-        });
+        }, new ThreadPoolExecutor.AbortPolicy());
+    }
+
+    private Future<?> submitPassive(Runnable task, String context) {
+        try {
+            return passiveExecutor.submit(task);
+        } catch (RejectedExecutionException rejected) {
+            long dropped = droppedPassiveTasks.incrementAndGet();
+            long now = System.nanoTime();
+            long previous = lastPassiveQueueWarningNanos.get();
+            if (now - previous > TimeUnit.SECONDS.toNanos(5)
+                    && lastPassiveQueueWarningNanos.compareAndSet(previous, now)) {
+                uiLog("PassiveScan", "Queue full; skipped " + context
+                        + " task (" + dropped + " skipped total). Reduce scan concurrency or retry later.");
+            }
+            return null;
+        }
     }
 
     /** Set a callback to log events to the UI Activity Log. Args: (module, message) */
@@ -119,15 +136,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
     public boolean isRunning() {
         return running;
-    }
-
-    /** Enable/disable automatic passive analysis of in-scope proxy traffic. */
-    public void setPassiveAutoScanEnabled(boolean enabled) {
-        this.passiveAutoScanEnabled = enabled;
-    }
-
-    public boolean isPassiveAutoScanEnabled() {
-        return passiveAutoScanEnabled;
     }
 
     /** Enable/disable verbose per-request routing logs. */
@@ -261,8 +269,12 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         if (ssr != null) ssr.setPaused(false);
         manualScanFutures.removeIf(Future::isDone);
 
-        List<ScanModule> passiveModules = registry.getEnabledPassiveModules();
-        List<ScanModule> activeModules = registry.getEnabledActiveModules();
+        List<ScanModule> passiveModules = new ArrayList<>();
+        List<ScanModule> activeModules = new ArrayList<>();
+        for (ScanModule module : registry.getEnabledManualScanModules()) {
+            if (module.isPassive()) passiveModules.add(module);
+            else activeModules.add(module);
+        }
         String url = reqResp.request().url();
         uiLog("ManualScan", "Scanning " + url + " with ALL "
                 + (passiveModules.size() + activeModules.size()) + " enabled module(s)");
@@ -328,7 +340,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
 
         // ---- Passive modules: run once over the whole request ----
         for (ScanModule module : passiveModules) {
-            Future<?> f = passiveExecutor.submit(() -> {
+            Future<?> f = submitPassive(() -> {
                 if (manualScansCancelled) return;
                 DeduplicationStore d = dedup;
                 if (d != null) d.setBypass(true);
@@ -348,8 +360,8 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 } finally {
                     if (d != null) d.setBypass(false);
                 }
-            });
-            manualScanFutures.add(f);
+            }, "manual " + module.getId());
+            if (f != null) manualScanFutures.add(f);
         }
 
         // ---- Active modules ----
@@ -406,36 +418,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         }
     }
 
-    private void processPassive(HttpRequestResponse reqResp,
-                                List<ScanModule> passiveModules) {
-        // This is the automatic PASSIVE path for proxy traffic. It is gated only by
-        // passiveAutoScanEnabled — NOT by manualScansCancelled, so the "Stop Scans"
-        // button (which stops active/manual scans) doesn't also kill passive
-        // observation. Passive analyzers send nothing, so they're safe to keep on.
-        for (ScanModule module : passiveModules) {
-            passiveExecutor.submit(() -> {
-                if (!passiveAutoScanEnabled || Thread.currentThread().isInterrupted()) return;
-                try {
-                    List<Finding> findings = module.processHttpFlow(reqResp, api);
-                    if (!passiveAutoScanEnabled || Thread.currentThread().isInterrupted()) return;
-                    if (findings != null && !findings.isEmpty()) {
-                        findingsStore.addFindings(autoFillReqResp(findings, reqResp));
-                    }
-                } catch (NullPointerException e) {
-                    // During extension unload Burp's API proxy becomes null — discard safely.
-                    // But if we're still running, this is a real bug — log it.
-                    if (running) {
-                        uiLog(module.getId(), "ERROR (passive): NullPointerException: " + e.getMessage());
-                    }
-                } catch (Exception e) {
-                    if (Thread.currentThread().isInterrupted()) return;
-                    uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
-                            + ": " + e.getMessage());
-                }
-            });
-        }
-    }
-
     /**
      * Like processWithModules but tracks futures for cancellation.
      * Used by scanRequest() (context menu scans).
@@ -445,9 +427,9 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
     private void processWithModulesTracked(HttpRequestResponse reqResp,
                                             List<ScanModule> passiveModules,
                                             List<ScanModule> activeModules,
-                                            String targetParameter) {
+        String targetParameter) {
         for (ScanModule module : passiveModules) {
-            Future<?> f = passiveExecutor.submit(() -> {
+            Future<?> f = submitPassive(() -> {
                 if (manualScansCancelled) return; // Check before starting
                 try {
                     List<Finding> findings = module.processHttpFlow(reqResp, api);
@@ -464,15 +446,15 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                     uiLog(module.getId(), "ERROR (passive): " + e.getClass().getName()
                             + ": " + e.getMessage());
                 }
-            });
-            manualScanFutures.add(f);
+            }, "manual " + module.getId());
+            if (f != null) manualScanFutures.add(f);
         }
 
         for (ScanModule module : activeModules) {
             Future<?> f = executor.submitTracked(() -> {
                 if (manualScansCancelled) return; // Check before starting
-                // Explicit manual scan: bypass dedup so targets already covered by
-                // automatic scanning are re-tested. Reset in finally — threads are pooled.
+                // Explicit manual scan: bypass dedup so repeated user-requested scans
+                // actually re-test the target. Reset in finally — threads are pooled.
                 DeduplicationStore d = dedup;
                 if (d != null) d.setBypass(true);
                 try {
@@ -524,8 +506,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         ScanState.cancel();
         // NOTE: do NOT clear `running` here. `running` means "extension is live"
         // (used to tell real NPEs from unload noise); only unload clears it.
-        // Stopping manual scans must not disable automatic passive analysis,
-        // which is gated separately by passiveAutoScanEnabled.
         // Tell Stepper to pause so in-flight chains abort and new ones are blocked.
         StepperEngine s = stepperEngine;
         if (s != null) s.setPaused(true);
@@ -550,11 +530,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         if (oldPassive != null) {
             passivePurged = oldPassive.shutdownNow().size();
         }
-        this.passiveExecutor = java.util.concurrent.Executors.newFixedThreadPool(2, r -> {
-            Thread t = new Thread(r, "OmniStrike-Passive");
-            t.setDaemon(true);
-            return t;
-        });
+        this.passiveExecutor = createPassiveExecutor();
 
         // Stop internal thread pools inside modules
         stopModuleInternalPools();

@@ -23,6 +23,38 @@ class SessionKeepAliveTest {
     }
 
     @Test
+    void only307And308PreserveLoginMethodAndBody() {
+        assertFalse(SessionKeepAlive.preservesMethodAndBody(301));
+        assertFalse(SessionKeepAlive.preservesMethodAndBody(302));
+        assertFalse(SessionKeepAlive.preservesMethodAndBody(303));
+        assertTrue(SessionKeepAlive.preservesMethodAndBody(307));
+        assertTrue(SessionKeepAlive.preservesMethodAndBody(308));
+    }
+
+    @Test
+    void redirectHeaderFilterRejectsCredentialsAndHopByHopHeaders() {
+        assertFalse(SessionKeepAlive.isSafeRedirectHeader("Authorization"));
+        assertFalse(SessionKeepAlive.isSafeRedirectHeader("cookie"));
+        assertFalse(SessionKeepAlive.isSafeRedirectHeader("Transfer-Encoding"));
+        assertFalse(SessionKeepAlive.isSafeRedirectHeader("Connection"));
+        assertTrue(SessionKeepAlive.isSafeRedirectHeader("Content-Type"));
+        assertTrue(SessionKeepAlive.isSafeRedirectHeader("X-CSRF-Token"));
+    }
+
+    @Test
+    void redirectLocationsResolveAgainstTheCurrentDirectory() {
+        assertEquals("https://example.test/login/continue",
+                SessionKeepAlive.resolveRedirectUrl(
+                        "https://example.test/login/start", "continue"));
+        assertEquals("https://example.test/continue",
+                SessionKeepAlive.resolveRedirectUrl(
+                        "https://example.test/login/start", "/continue"));
+        assertEquals("https://other.test/next",
+                SessionKeepAlive.resolveRedirectUrl(
+                        "https://example.test/login/start", "//other.test/next"));
+    }
+
+    @Test
     void hostOnlyCookieNeverRidesToSubdomain() {
         assertTrue(SessionKeepAlive.cookieMatches(
                 "example.com", "/", true, "example.com", true, "/", true));

@@ -6,6 +6,9 @@ import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.omnistrike.framework.*;
 import com.omnistrike.model.*;
 
@@ -130,7 +133,8 @@ public class ElasticsearchQueryScanner implements ScanModule {
         if (requestResponse.response() == null) return Collections.emptyList();
 
         String url = requestResponse.request().url();
-        String urlPath = extractPath(url);
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                url, requestResponse.request().method(), "endpoint", "");
 
         // PASSIVE GATE: Check response for Elasticsearch indicators
         ESDetection detection = detectElasticsearch(requestResponse);
@@ -263,9 +267,7 @@ public class ElasticsearchQueryScanner implements ScanModule {
         {
             String requestBody = original.request().bodyToString();
             if (requestBody != null && requestBody.contains("\"query\"") && requestBody.contains("{")) {
-                String matchAllBody = requestBody.replaceFirst(
-                        "\"query\"\\s*:\\s*\\{[^}]*\\}",
-                        "\"query\":{\"match_all\":{}}");
+                String matchAllBody = replaceRootQueryWithMatchAll(requestBody);
                 if (!matchAllBody.equals(requestBody)) {
                     HttpRequest modified = original.request().withBody(matchAllBody);
                     HttpRequestResponse result = sendModifiedRequest(original, modified);
@@ -718,6 +720,20 @@ public class ElasticsearchQueryScanner implements ScanModule {
             if (!baselineKeys.contains(rm.group(1))) newKeys.add(rm.group(1));
         }
         return newKeys.size();
+    }
+
+    /** Replaces the root JSON DSL query without regex-truncating nested objects. */
+    static String replaceRootQueryWithMatchAll(String requestBody) {
+        try {
+            JsonObject root = JsonParser.parseString(requestBody).getAsJsonObject();
+            if (!root.has("query")) return requestBody;
+            JsonObject matchAll = new JsonObject();
+            matchAll.add("match_all", new JsonObject());
+            root.add("query", matchAll);
+            return new Gson().toJson(root);
+        } catch (Exception ignored) {
+            return requestBody;
+        }
     }
 
     /**

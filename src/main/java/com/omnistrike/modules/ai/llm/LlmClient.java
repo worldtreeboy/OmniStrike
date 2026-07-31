@@ -61,7 +61,9 @@ public class LlmClient {
     // ==================== Connection mode ====================
 
     public void setConnectionMode(AiConnectionMode mode) {
-        this.connectionMode = mode;
+        AiConnectionMode selected = mode != null ? mode : AiConnectionMode.NONE;
+        if (selected != AiConnectionMode.API_KEY) clearApiKey();
+        this.connectionMode = selected;
     }
 
     public AiConnectionMode getConnectionMode() {
@@ -90,6 +92,17 @@ public class LlmClient {
         this.apiKey = apiKey != null ? apiKey : "";
         this.apiKeyModel = (model != null && !model.isBlank()) ? model : provider.getDefaultModel();
         this.apiKeyConfigured = true;
+    }
+
+    /** Erases the in-memory API secret whenever API mode is left or the extension unloads. */
+    public void clearApiKey() {
+        this.apiKey = "";
+        this.apiKeyConfigured = false;
+    }
+
+    public void clearSensitiveConfiguration() {
+        clearApiKey();
+        connectionMode = AiConnectionMode.NONE;
     }
 
     // ==================== Unified call / test ====================

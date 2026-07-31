@@ -56,7 +56,6 @@ public class CachePoisonScanner implements ScanModule {
             "X-Cluster-Client-IP",
             "X-Original-Forwarded-For",
             "Via",
-            "Transfer-Encoding",
             "X-Wap-Profile",
             "X-Arbitrary",
             "X-HTTP-DestinationURL",
@@ -128,7 +127,8 @@ public class CachePoisonScanner implements ScanModule {
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                request.url(), request.method(), "endpoint", "");
         String url = request.url();
 
         // Test unkeyed headers

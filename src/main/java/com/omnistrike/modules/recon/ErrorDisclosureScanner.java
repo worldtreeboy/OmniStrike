@@ -3,6 +3,8 @@ package com.omnistrike.modules.recon;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.ScanTargetIdentity;
+import com.omnistrike.framework.BoundedDeduplication;
 import com.omnistrike.model.*;
 
 import java.util.*;
@@ -276,7 +278,7 @@ public class ErrorDisclosureScanner implements ScanModule {
         this.config = config;
     }
 
-    @Override public void destroy() { }
+    @Override public void destroy() { seen.clear(); }
 
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
@@ -294,7 +296,7 @@ public class ErrorDisclosureScanner implements ScanModule {
 
         String host, path, url;
         try {
-            host = requestResponse.request().httpService().host();
+            host = ScanTargetIdentity.origin(requestResponse.request().url());
             path = requestResponse.request().pathWithoutQuery();
             url  = requestResponse.request().url();
         } catch (Exception e) { return findings; }
@@ -577,7 +579,8 @@ public class ErrorDisclosureScanner implements ScanModule {
     }
 
     private boolean mark(String host, String path, Category cat) {
-        return seen.putIfAbsent(host + "|" + path + "|" + cat.name(), Boolean.TRUE) == null;
+        return BoundedDeduplication.markIfNew(
+                seen, host + "|" + path + "|" + cat.name());
     }
 
     private void unmark(String host, String path, Category cat) {

@@ -3,6 +3,7 @@ package com.omnistrike.modules.recon;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.BoundedDeduplication;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.SharedDataBus;
 import com.omnistrike.model.*;
@@ -20,6 +21,7 @@ public class HiddenEndpointFinder implements ScanModule {
 
     /** Constant title used for the single consolidated finding. */
     public static final String CONSOLIDATED_TITLE = "Discovered Endpoints";
+    private static final int MAX_BODY_SIZE = 512_000;
 
     private MontoyaApi api;
     private ModuleConfig config;
@@ -131,6 +133,7 @@ public class HiddenEndpointFinder implements ScanModule {
             return findings;
         }
         if (body == null || body.isBlank()) return findings;
+        if (body.length() > MAX_BODY_SIZE) body = body.substring(0, MAX_BODY_SIZE);
 
         Set<String> discovered = new HashSet<>();
 
@@ -189,6 +192,8 @@ public class HiddenEndpointFinder implements ScanModule {
                 String method = guessMethod(raw, body);
                 EndpointInfo info = new EndpointInfo(normalized, url, method);
                 if (endpoints.putIfAbsent(normalized, info) == null) {
+                    BoundedDeduplication.trimToSize(
+                            endpoints, BoundedDeduplication.DEFAULT_MAX_ENTRIES);
                     foundNew = true;
                     // Publish discovered endpoint to SharedDataBus for other modules
                     if (dataBus != null) {
@@ -303,7 +308,7 @@ public class HiddenEndpointFinder implements ScanModule {
     }
 
     @Override
-    public void destroy() {}
+    public void destroy() { endpoints.clear(); }
 
     public ConcurrentHashMap<String, EndpointInfo> getEndpoints() { return endpoints; }
 

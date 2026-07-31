@@ -528,7 +528,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
      * (WS scanner, auto-triggered tech scanners, passive wordlist harvester).
      */
     private void collectScannableModules(List<ScanModule> activeOut, List<ScanModule> passiveOut) {
-        for (ScanModule m : registry.getEnabledNonAiModules()) {
+        for (ScanModule m : registry.getEnabledManualScanModules()) {
             if (MANUAL_SCAN_EXCLUDED.contains(m.getId())) continue;
             if (m.isPassive()) passiveOut.add(m);
             else activeOut.add(m);

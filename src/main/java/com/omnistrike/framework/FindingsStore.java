@@ -73,7 +73,8 @@ public class FindingsStore {
             String param = finding.getParameter() != null ? finding.getParameter() : "";
             String normalizedUrl = normalizeUrlForDedup(finding.getUrl());
             // Primary key: module + title + normalized URL (no query params) + parameter
-            String key = finding.getModuleId() + "|" + finding.getTitle() + "|" + normalizedUrl + "|" + param;
+            String key = finding.getModuleId() + "|" + finding.getTitle() + "|" + normalizedUrl + "|" + param
+                    + "|" + finding.getSeverity() + "|" + finding.getConfidence();
             if (seenKeys.putIfAbsent(key, finding.getModuleId()) != null) return; // exact duplicate
 
             findings.add(finding);
@@ -153,11 +154,9 @@ public class FindingsStore {
      */
     private static String normalizeUrlForDedup(String url) {
         if (url == null || url.isEmpty()) return "";
-        int qIdx = url.indexOf('?');
-        if (qIdx > 0) url = url.substring(0, qIdx);
-        int fIdx = url.indexOf('#');
-        if (fIdx > 0) url = url.substring(0, fIdx);
-        return url.toLowerCase();
+        // Scheme and host are case-insensitive; path is not. Lowercasing the
+        // whole URL merged distinct endpoints such as /Admin and /admin.
+        return ScanTargetIdentity.normalizeEndpoint(url);
     }
 
 }

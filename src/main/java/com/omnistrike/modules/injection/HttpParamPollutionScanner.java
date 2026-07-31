@@ -100,7 +100,8 @@ public class HttpParamPollutionScanner implements ScanModule {
     public List<Finding> processHttpFlowForParameter(
             HttpRequestResponse requestResponse, String targetParameterName, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                request.url(), request.method(), "endpoint", "");
         List<HppTarget> targets = extractTargets(request);
         targets.removeIf(t -> !t.name.equalsIgnoreCase(targetParameterName));
         return runHppTargets(requestResponse, targets, urlPath);
@@ -109,7 +110,8 @@ public class HttpParamPollutionScanner implements ScanModule {
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                request.url(), request.method(), "endpoint", "");
         List<HppTarget> targets = extractTargets(request);
         return runHppTargets(requestResponse, targets, urlPath);
     }

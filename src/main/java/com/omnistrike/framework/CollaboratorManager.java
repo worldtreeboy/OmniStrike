@@ -12,7 +12,7 @@ import java.util.function.Consumer;
 
 /**
  * Manages OOB (Out-of-Band) interaction detection for all scanner modules.
- * Supports two mutually exclusive modes:
+ * Supports three mutually exclusive modes, including Interactsh / external OAST.
  * <ul>
  *   <li><b>BURP_COLLABORATOR</b> — Uses Burp's built-in Collaborator (requires Professional + internet)</li>
  *   <li><b>CUSTOM_OOB</b> — Self-hosted HTTP listener inside the extension (works on intranets)</li>
@@ -23,7 +23,8 @@ public class CollaboratorManager {
 
     public enum OobMode {
         BURP_COLLABORATOR,
-        CUSTOM_OOB
+        CUSTOM_OOB,
+        INTERACTSH
     }
 
     private final MontoyaApi api;
@@ -42,6 +43,10 @@ public class CollaboratorManager {
     private volatile int customDnsPort;    // DNS port (UDP)
     private volatile int customLdapPort;   // LDAP port (TCP, 0 = disabled)
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+
+    // --- Interactsh mode ---
+    private volatile InteractshClient interactshClient;
+    private volatile String interactshServer;
 
     // Stale payload cleanup — shared by both modes
     private volatile ScheduledExecutorService cleanupExecutor;
@@ -101,6 +106,7 @@ public class CollaboratorManager {
      */
     public void switchToBurpCollaborator() {
         stopCustomOob();
+        stopInteractsh();
         mode = OobMode.BURP_COLLABORATOR;
         // Re-initialize Collaborator client if not already done
         if (client == null) {
@@ -121,9 +127,19 @@ public class CollaboratorManager {
     public void switchToCustomOob() {
         // Stop Collaborator polling (but keep pendingPayloads — they're shared)
         stopCollaboratorPolling();
+        stopInteractsh();
         mode = OobMode.CUSTOM_OOB;
         // Available is false until initializeCustomOob() starts the listener
         available = (oobListener != null && oobListener.isRunning());
+    }
+
+    /** Select Interactsh. Call initializeInteractsh() to register and start polling. */
+    public void switchToInteractsh() {
+        stopCollaboratorPolling();
+        stopCustomOob();
+        stopInteractsh();
+        mode = OobMode.INTERACTSH;
+        available = false;
     }
 
     // ==================== BURP COLLABORATOR MODE ====================
@@ -298,13 +314,86 @@ public class CollaboratorManager {
         return customLdapPort;
     }
 
-    // ==================== PAYLOAD GENERATION (both modes) ====================
+    // ==================== INTERACTSH MODE ====================
+
+    /**
+     * Register with ProjectDiscovery Interactsh (public or self-hosted) and start polling.
+     * The optional authentication token is kept in memory only.
+     */
+    public boolean initializeInteractsh(String server, String token) {
+        stopCollaboratorPolling();
+        stopCustomOob();
+        stopInteractsh();
+        mode = OobMode.INTERACTSH;
+        interactshServer = server != null ? server.trim() : null;
+
+        try {
+            InteractshClient newClient = new InteractshClient(
+                    interactshServer, token, this::handleInteractshInteraction, this::uiLog);
+            interactshClient = newClient;
+            uiLog("Registering with Interactsh server " + interactshServer + "...");
+            newClient.connect();
+            available = true;
+            startCleanupTask();
+            uiLog("Interactsh connected - payload domain: " + newClient.getServerAddress());
+            return true;
+        } catch (Exception e) {
+            InteractshClient failed = interactshClient;
+            interactshClient = null;
+            if (failed != null) failed.close();
+            available = false;
+            uiLog("Interactsh connection FAILED: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Stop polling and best-effort deregister the current Interactsh session. */
+    public void stopInteractsh() {
+        InteractshClient current = interactshClient;
+        interactshClient = null;
+        if (current != null) {
+            current.close();
+            uiLog("Interactsh session stopped.");
+        }
+        if (mode == OobMode.INTERACTSH) available = false;
+    }
+
+    private void handleInteractshInteraction(String payloadId, CustomOobInteraction interaction) {
+        PendingPayload matched = pendingPayloads.remove(payloadId);
+        String protocol = interaction.getProtocol();
+        if (matched != null) {
+            try {
+                matched.callback.accept(interaction);
+            } catch (Exception e) {
+                uiLog("Callback error for Interactsh payload " + payloadId + ": " + e.getMessage());
+            }
+            uiLog("Received Interactsh " + protocol + " from "
+                    + interaction.clientIp().getHostAddress() + " - matched payload "
+                    + payloadId + " (" + matched.moduleId + ")");
+        } else {
+            uiLog("Received Interactsh " + protocol + " from "
+                    + interaction.clientIp().getHostAddress()
+                    + " payloadId=" + payloadId + " (no matching payload)");
+        }
+    }
+
+    public boolean isInteractshConnected() {
+        InteractshClient current = interactshClient;
+        return current != null && current.isConnected();
+    }
+
+    public String getInteractshServer() {
+        return interactshServer;
+    }
+
+    // ==================== PAYLOAD GENERATION (all modes) ====================
 
     /**
      * Generate an OOB payload and register a callback for when it receives an interaction.
      *
      * In BURP_COLLABORATOR mode: returns {@code "abc123.oastify.com"}
      * In CUSTOM_OOB mode: returns {@code "192.168.1.10:47832/abc123"} (used as: {@code http://<payload>/path})
+     * In INTERACTSH mode: returns {@code "correlation-and-nonce.oast.pro"}
      *
      * @return The payload string, or null if unavailable
      */
@@ -314,6 +403,10 @@ public class CollaboratorManager {
 
         if (mode == OobMode.CUSTOM_OOB) {
             return generateCustomPayload(moduleId, url, parameter, payloadDescription, callback);
+        }
+
+        if (mode == OobMode.INTERACTSH) {
+            return generateInteractshPayload(moduleId, url, parameter, payloadDescription, callback, false);
         }
 
         // Burp Collaborator mode
@@ -350,6 +443,10 @@ public class CollaboratorManager {
             return payloadId;
         }
 
+        if (mode == OobMode.INTERACTSH) {
+            return generateInteractshPayload(moduleId, url, parameter, payloadDescription, callback, true);
+        }
+
         // Burp Collaborator mode
         if (client == null) return null;
         try {
@@ -378,6 +475,10 @@ public class CollaboratorManager {
                 return customAddress + ":" + customPort;
             }
             return null;
+        }
+        if (mode == OobMode.INTERACTSH) {
+            InteractshClient current = interactshClient;
+            return current != null && current.isConnected() ? current.getServerAddress() : null;
         }
         // Burp Collaborator mode
         if (!available || client == null) return null;
@@ -478,12 +579,14 @@ public class CollaboratorManager {
                 // nslookup domain server — sends query to our listener on port 53
                 result = result.replaceAll(
                         "(?i)nslookup\\s+COLLAB_PLACEHOLDER",
-                        "nslookup " + dnsDomain + " " + addr);
+                        java.util.regex.Matcher.quoteReplacement(
+                                "nslookup " + dnsDomain + " " + addr));
             } else {
                 // nslookup can't specify non-53 ports; use dig instead
                 result = result.replaceAll(
                         "(?i)nslookup\\s+COLLAB_PLACEHOLDER",
-                        "dig @" + addr + " -p " + dnsPort + " " + dnsDomain);
+                        java.util.regex.Matcher.quoteReplacement(
+                                "dig @" + addr + " -p " + dnsPort + " " + dnsDomain));
             }
         }
 
@@ -492,7 +595,8 @@ public class CollaboratorManager {
             // Replace "dig COLLAB_PLACEHOLDER" or "dig +short COLLAB_PLACEHOLDER" etc.
             result = result.replaceAll(
                     "(?i)dig\\s+(?:\\+\\S+\\s+)?COLLAB_PLACEHOLDER",
-                    "dig @" + addr + " -p " + dnsPort + " " + dnsDomain);
+                    java.util.regex.Matcher.quoteReplacement(
+                            "dig @" + addr + " -p " + dnsPort + " " + dnsDomain));
         }
 
         // host COLLAB_PLACEHOLDER → dig @addr -p port domain (host can't set port)
@@ -500,11 +604,13 @@ public class CollaboratorManager {
             if (dnsPort == 53) {
                 result = result.replaceAll(
                         "(?i)host\\s+COLLAB_PLACEHOLDER",
-                        "host " + dnsDomain + " " + addr);
+                        java.util.regex.Matcher.quoteReplacement(
+                                "host " + dnsDomain + " " + addr));
             } else {
                 result = result.replaceAll(
                         "(?i)host\\s+COLLAB_PLACEHOLDER",
-                        "dig @" + addr + " -p " + dnsPort + " " + dnsDomain);
+                        java.util.regex.Matcher.quoteReplacement(
+                                "dig @" + addr + " -p " + dnsPort + " " + dnsDomain));
             }
         }
 
@@ -512,14 +618,15 @@ public class CollaboratorManager {
         if (containsIgnoreCase(result, "ping")) {
             result = result.replaceAll(
                     "(?i)(ping\\s+(?:-[cnw]\\s*\\d+\\s+)*)COLLAB_PLACEHOLDER",
-                    "$1" + dnsDomain);
+                    "$1" + java.util.regex.Matcher.quoteReplacement(dnsDomain));
         }
 
         // Resolve-DnsName COLLAB_PLACEHOLDER → Resolve-DnsName domain -Server addr
         if (containsIgnoreCase(result, "resolve-dnsname")) {
             result = result.replaceAll(
                     "(?i)Resolve-DnsName\\s+COLLAB_PLACEHOLDER",
-                    "Resolve-DnsName " + dnsDomain + " -Server " + addr);
+                    java.util.regex.Matcher.quoteReplacement(
+                            "Resolve-DnsName " + dnsDomain + " -Server " + addr));
         }
 
         return result;
@@ -542,6 +649,19 @@ public class CollaboratorManager {
                 moduleId, url, parameter, payloadDescription, callback));
         // Return address:port/id — modules prepend "http://" and append "/path"
         return customAddress + ":" + customPort + "/" + payloadId;
+    }
+
+    private String generateInteractshPayload(String moduleId, String url, String parameter,
+                                              String payloadDescription, Consumer<Interaction> callback,
+                                              boolean shortPayload) {
+        InteractshClient current = interactshClient;
+        if (current == null || !current.isConnected()) return null;
+
+        String payloadId = current.generatePayloadId();
+        if (payloadId == null) return null;
+        pendingPayloads.put(payloadId, new PendingPayload(
+                moduleId, url, parameter, payloadDescription, callback));
+        return shortPayload ? payloadId : payloadId + "." + current.getServerAddress();
     }
 
     /**
@@ -636,6 +756,7 @@ public class CollaboratorManager {
     public void shutdown() {
         stopCollaboratorPolling();
         stopCustomOob();
+        stopInteractsh();
         if (cleanupExecutor != null) {
             cleanupExecutor.shutdown();
             try {

@@ -3,6 +3,7 @@ package com.omnistrike.modules.recon;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
+import com.omnistrike.framework.BoundedDeduplication;
 import com.omnistrike.framework.SharedDataBus;
 import com.omnistrike.model.*;
 
@@ -19,6 +20,7 @@ import java.util.regex.Pattern;
  * CORS headers, redirects, and other sources.
  */
 public class SubdomainCollector implements ScanModule {
+    private static final int MAX_BODY_SIZE = 512_000;
 
     private MontoyaApi api;
     private ModuleConfig config;
@@ -128,7 +130,10 @@ public class SubdomainCollector implements ScanModule {
 
         // Response body
         try {
-            String body = response.bodyToString();
+        String body = response.bodyToString();
+        if (body != null && body.length() > MAX_BODY_SIZE) {
+            body = body.substring(0, MAX_BODY_SIZE);
+        }
             if (body != null && !body.isBlank()) {
                 extractSubdomains(body, "Response body", url, rootDomain, findings, subdomainPattern);
             }
@@ -177,9 +182,12 @@ public class SubdomainCollector implements ScanModule {
 
     private void trackSubdomain(String subdomain, String sourceType, String url,
                                  List<Finding> findings, boolean isWildcard) {
-        if (subdomains.putIfAbsent(subdomain, new SubdomainInfo(subdomain, sourceType, url)) == null) {
+        SubdomainInfo info = new SubdomainInfo(subdomain, sourceType, url);
+        if (subdomains.putIfAbsent(subdomain, info) == null) {
+            BoundedDeduplication.trimToSize(
+                    subdomains, BoundedDeduplication.DEFAULT_MAX_ENTRIES);
             if (isWildcard) {
-                subdomains.get(subdomain).isWildcard = true;
+                info.isWildcard = true;
             }
             // Publish discovered subdomain to SharedDataBus for other modules
             if (dataBus != null) {
@@ -229,7 +237,7 @@ public class SubdomainCollector implements ScanModule {
     }
 
     @Override
-    public void destroy() {}
+    public void destroy() { subdomains.clear(); }
 
     public ConcurrentHashMap<String, SubdomainInfo> getSubdomains() { return subdomains; }
 

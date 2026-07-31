@@ -7,7 +7,7 @@
 Turn any request into a deliberate security test with parameter-level targeting,<br/>
 session automation, technology-aware probes, OOB detection, and optional AI analysis.
 
-[![Release](https://img.shields.io/badge/release-v1.82-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.83-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
 [![Java](https://img.shields.io/badge/Java-17%2B-f59e0b?style=for-the-badge&logo=openjdk&logoColor=white&labelColor=111827)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Burp-Montoya_API-f97316?style=for-the-badge&labelColor=111827)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge&color=22c55e&labelColor=111827)](LICENSE)
@@ -40,7 +40,7 @@ session automation, technology-aware probes, OOB detection, and optional AI anal
 - **Pick exactly what to test.** Select individual query, body, cookie, JSON, header, and path parameters, then choose the modules to run.
 - **Keep complex sessions alive.** Refresh login cookies or replay multi-step authentication flows before a probe leaves Burp.
 - **Go beyond generic payload lists.** Run focused scanners for modern injection classes, enterprise platforms, cloud products, and API technologies.
-- **Detect blind behavior.** Use Burp Collaborator or OmniStrike's custom HTTP/DNS OOB listener.
+- **Detect blind behavior.** Use Burp Collaborator, ProjectDiscovery Interactsh, or OmniStrike's custom HTTP/DNS OOB listener.
 - **Keep control of AI.** AI analysis is optional, disabled by default, and supports local CLI or API-key backends.
 - **Review findings in one place.** Findings appear in OmniStrike and are forwarded to Burp's Dashboard with request/response evidence.
 
@@ -260,12 +260,18 @@ Click **Run Chain** and inspect **Current Variables**, **Cookie Jar**, and **Act
 
 ## 📡 Out-of-band testing
 
-OmniStrike exposes one callback abstraction with two backends:
+OmniStrike exposes one callback abstraction with three backends:
 
 - **Burp Collaborator** when available
 - **Custom OOB** with built-in HTTP and DNS listeners
+- **Interactsh / External OAST** using a ProjectDiscovery public or self-hosted server, with optional token authentication
 
 The custom listener makes blind testing possible without Burp Professional, but it must be reachable from the target. Bind and expose listener ports only on networks you trust, and stop the listeners when the assessment ends.
+
+Interactsh mode registers an isolated session, generates a fresh correlated subdomain for every probe, decrypts polled interactions locally, and forwards confirmed DNS, HTTP, SMTP, and LDAP events through the same finding pipeline. The server address is remembered; the optional authentication token is held in memory only and is never persisted.
+
+> [!WARNING]
+> Use only an OOB service you trust. OOB payloads are sent by the target directly to that service and can include target-derived values for proof or correlation. This traffic does not pass through AI redaction. Disable OOB testing when assessment rules prohibit third-party callbacks or data egress.
 
 ## 🤖 AI analysis
 
@@ -295,7 +301,7 @@ Redaction covers authorization headers, every cookie value, private/custom heade
 **Mask UI Data** is a separate option for shoulder-surfing and screen sharing. It masks captured values in findings, HTTP viewers, logs, Stepper state, attack-surface hosts, tables, clipboard copies, and exports without changing the stored evidence.
 
 > [!CAUTION]
-> Redaction is defense in depth, not a mathematical guarantee: an unusual client-specific value can evade any local detector. For engagements that prohibit third-party disclosure, use a locally hosted model/CLI or leave AI disabled. Auto-approved CLI modes also process attacker-controlled response text; use them only in an isolated environment.
+> Redaction is defense in depth, not a mathematical guarantee: an unusual client-specific value can evade any local detector. For engagements that prohibit third-party disclosure, use a locally hosted model/CLI or leave AI disabled. CLI backends also process attacker-controlled response text and may expose local tool capabilities depending on the CLI's own configuration; use them only in an isolated environment.
 
 ## 🎛️ Scan controls
 
@@ -362,6 +368,20 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 ## 🗒️ Release notes
 
 <details open>
+<summary><strong>v1.83 — Full scanner hardening and verified release</strong></summary>
+
+- Audited every active scanner, passive analyzer, OOB path, session workflow, and shared scan primitive; added regression coverage for the confirmed failure modes.
+- Corrected structured JSON/XML mutation, endpoint-scoped OOB confirmation, baseline-aware SSRF evidence, CORS authentication semantics, SQLi/SSTI/command-injection verification, and deserialization payload reliability on Java 17.
+- Made high-impact scanners explicit/manual-only where appropriate and disabled destructive, state-changing, data-exfiltration, and timing-heavy probes by default.
+- Added Burp Collaborator, Interactsh, and custom OOB backends with safer placeholder expansion, bounded parsing, absolute connection deadlines, and per-payload correlation.
+- Hardened Session Keep-Alive and Stepper origin, redirect, cookie, cache, framing, persistence, and shutdown behavior.
+- Bounded scan queues, subprocess/API output, passive discovery stores, deduplication caches, response parsing, and AI state; rejected work is now visible instead of silently disappearing.
+- Kept AI redaction default-on, removed API-key persistence, reduced CLI prompt exposure, and preserved authenticated local scanning while sanitizing only the AI-facing copy.
+- Confirmed all scanning remains explicitly right-click-driven; no active or passive module runs automatically on proxy traffic.
+
+</details>
+
+<details>
 <summary><strong>v1.82 — Privacy boundary and visual redesign</strong></summary>
 
 - Added default-on, structure-preserving redaction before every API-key and CLI AI backend.

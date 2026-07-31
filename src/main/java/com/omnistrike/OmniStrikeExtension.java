@@ -21,9 +21,9 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.77 — Entry Point
+ * OmniStrike v1.83 — Entry Point
  *
- * A unified vulnerability scanning framework for Burp Suite with 23 modules:
+ * A unified multi-module vulnerability scanning framework for Burp Suite:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
  *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer,
  *       Technology Fingerprinter, Sensitive Data Exposure
@@ -50,7 +50,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.77 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.83 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -401,11 +401,15 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.77 ready ===");
-        String oobMode = collaboratorManager.getMode() == CollaboratorManager.OobMode.BURP_COLLABORATOR
-                ? "Burp Collaborator" : "Custom OOB (configure listener in UI)";
+        api.logging().logToOutput("=== OmniStrike v1.83 ready ===");
+        String oobMode = switch (collaboratorManager.getMode()) {
+            case BURP_COLLABORATOR -> "Burp Collaborator";
+            case CUSTOM_OOB -> "Custom OOB (configure listener in UI)";
+            case INTERACTSH -> "Interactsh (connect in UI)";
+        };
         api.logging().logToOutput("Modules: " + registry.getAllModules().size()
                 + " | OOB: " + oobMode);
-        api.logging().logToOutput("Configure target scope and click Start to begin scanning.");
+        api.logging().logToOutput(
+                "Configure target scope, then right-click a request and choose Send to OmniStrike.");
     }
 }

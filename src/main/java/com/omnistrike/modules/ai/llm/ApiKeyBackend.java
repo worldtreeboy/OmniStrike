@@ -2,6 +2,8 @@ package com.omnistrike.modules.ai.llm;
 
 import com.google.gson.*;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -21,6 +23,7 @@ import java.time.Duration;
 public class ApiKeyBackend {
 
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(120);
+    private static final int MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
     private static final Gson GSON = new Gson();
 
     private final HttpClient httpClient;
@@ -56,27 +59,31 @@ public class ApiKeyBackend {
 
             addAuthHeaders(reqBuilder, provider, apiKey);
 
-            HttpResponse<String> response = httpClient.send(reqBuilder.build(),
-                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            HttpResponse<InputStream> response = httpClient.send(reqBuilder.build(),
+                    HttpResponse.BodyHandlers.ofInputStream());
+            String responseBody;
+            try (InputStream stream = response.body()) {
+                responseBody = readBoundedUtf8(stream, MAX_RESPONSE_BYTES);
+            }
 
             int status = response.statusCode();
             if (status == 401 || status == 403) {
                 throw new LlmException(LlmException.ErrorType.AUTH_FAILURE,
                         provider.getDisplayName() + " authentication failed (HTTP " + status + "): "
-                                + truncate(response.body(), 200));
+                                + truncate(responseBody, 200));
             }
             if (status == 429) {
                 throw new LlmException(LlmException.ErrorType.RATE_LIMITED,
                         provider.getDisplayName() + " rate limited (HTTP 429): "
-                                + truncate(response.body(), 200));
+                                + truncate(responseBody, 200));
             }
             if (status < 200 || status >= 300) {
                 throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
                         provider.getDisplayName() + " returned HTTP " + status + ": "
-                                + truncate(response.body(), 300));
+                                + truncate(responseBody, 300));
             }
 
-            return extractResponseText(provider, response.body());
+            return extractResponseText(provider, responseBody);
 
         } catch (LlmException e) {
             throw e;
@@ -94,6 +101,17 @@ public class ApiKeyBackend {
             throw new LlmException(LlmException.ErrorType.PARSE_ERROR,
                     provider.getDisplayName() + " unexpected error: " + e.getMessage(), e);
         }
+    }
+
+    static String readBoundedUtf8(InputStream stream, int maximumBytes) throws IOException, LlmException {
+        if (stream == null) return "";
+        if (maximumBytes < 1) throw new IllegalArgumentException("maximumBytes must be positive");
+        byte[] bytes = stream.readNBytes(maximumBytes + 1);
+        if (bytes.length > maximumBytes) {
+            throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                    "AI provider response exceeded the " + maximumBytes + " byte safety limit");
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     /**

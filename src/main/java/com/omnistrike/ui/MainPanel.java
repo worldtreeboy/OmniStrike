@@ -161,7 +161,7 @@ public class MainPanel extends JPanel {
         JLabel privacyStateLabel = CyberTheme.createSeverityBadge(
                 PrivacyManager.isAiRedactionEnabled() ? "AI PRIVACY ON" : "AI PRIVACY OFF",
                 PrivacyManager.isAiRedactionEnabled() ? NEON_GREEN : NEON_RED);
-        JLabel versionChip = CyberTheme.createSeverityBadge("v1.82", NEON_MAGENTA);
+        JLabel versionChip = CyberTheme.createSeverityBadge("v1.83", NEON_MAGENTA);
         JButton controlsButton = new JButton(controlsExpanded ? "Hide controls" : "Controls");
         CyberTheme.styleButton(controlsButton, NEON_CYAN);
         controlsButton.setToolTipText("Show or hide scan profile, OOB, session, and theme controls");
@@ -923,16 +923,21 @@ public class MainPanel extends JPanel {
         styleRadioButton(burpCollabRadio);
         JRadioButton customOobRadio = new JRadioButton("Custom OOB Listener (intranet / self-hosted)");
         styleRadioButton(customOobRadio);
+        JRadioButton interactshRadio = new JRadioButton("Interactsh / External OAST");
+        styleRadioButton(interactshRadio);
 
         ButtonGroup oobGroup = new ButtonGroup();
         oobGroup.add(burpCollabRadio);
         oobGroup.add(customOobRadio);
+        oobGroup.add(interactshRadio);
 
         // Restore the saved OOB mode (the listener is never fired by setSelected,
         // so apply it to the manager directly via switchTo* below).
         String savedOobMode = persistence.getString("oob.mode", null);
         if ("CUSTOM".equals(savedOobMode)) {
             collaboratorManager.switchToCustomOob();
+        } else if ("INTERACTSH".equals(savedOobMode)) {
+            collaboratorManager.switchToInteractsh();
         } else if ("BURP".equals(savedOobMode)) {
             collaboratorManager.switchToBurpCollaborator();
         }
@@ -940,12 +945,15 @@ public class MainPanel extends JPanel {
         // Default selection based on current mode
         if (collaboratorManager.getMode() == OobMode.CUSTOM_OOB) {
             customOobRadio.setSelected(true);
+        } else if (collaboratorManager.getMode() == OobMode.INTERACTSH) {
+            interactshRadio.setSelected(true);
         } else {
             burpCollabRadio.setSelected(true);
         }
 
         radioRow.add(burpCollabRadio);
         radioRow.add(customOobRadio);
+        radioRow.add(interactshRadio);
         oobPanel.add(radioRow);
 
         // --- Custom OOB controls (hidden when Burp Collaborator is selected) ---
@@ -1030,6 +1038,44 @@ public class MainPanel extends JPanel {
 
         oobPanel.add(customControls);
 
+        // --- Interactsh / external OAST controls ---
+        JPanel interactshControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        interactshControls.setBackground(BG_DARK);
+
+        JLabel interactshServerLabel = new JLabel("Server:");
+        interactshServerLabel.setForeground(NEON_CYAN);
+        interactshServerLabel.setFont(MONO_LABEL);
+        interactshControls.add(interactshServerLabel);
+
+        String initialInteractshServer = persistence.getString("oob.interactsh.server", "https://oast.pro");
+        JTextField interactshServerField = new JTextField(initialInteractshServer, 24);
+        styleTextField(interactshServerField);
+        interactshServerField.setToolTipText(
+                "ProjectDiscovery Interactsh server URL, e.g. https://oast.pro or your self-hosted server");
+        interactshControls.add(interactshServerField);
+
+        JLabel interactshTokenLabel = new JLabel("Token:");
+        interactshTokenLabel.setForeground(NEON_CYAN);
+        interactshTokenLabel.setFont(MONO_LABEL);
+        interactshControls.add(interactshTokenLabel);
+
+        JPasswordField interactshTokenField = new JPasswordField(18);
+        styleTextField(interactshTokenField);
+        interactshTokenField.setToolTipText(
+                "Optional token for a protected Interactsh server. Held in memory only and never saved.");
+        interactshControls.add(interactshTokenField);
+
+        JToggleButton interactshToggle = new JToggleButton("Connect");
+        interactshToggle.setBackground(BG_PANEL);
+        interactshToggle.setForeground(NEON_GREEN);
+        interactshToggle.setFocusPainted(false);
+        interactshToggle.setFont(MONO_BOLD);
+        interactshToggle.setBorder(BorderFactory.createCompoundBorder(
+                new CyberTheme.GlowLineBorder(NEON_GREEN, 1),
+                BorderFactory.createEmptyBorder(4, 12, 4, 12)));
+        interactshControls.add(interactshToggle);
+        oobPanel.add(interactshControls);
+
         // --- Listener status row (separate line so it doesn't get truncated) ---
         JPanel statusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
         statusRow.setBackground(BG_DARK);
@@ -1039,6 +1085,19 @@ public class MainPanel extends JPanel {
         statusRow.add(listenerStatusLabel);
         oobPanel.add(statusRow);
 
+        JPanel interactshStatusRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        interactshStatusRow.setBackground(BG_DARK);
+        JLabel interactshStatusLabel = new JLabel("Status: Not connected");
+        interactshStatusLabel.setForeground(FG_SECONDARY);
+        interactshStatusLabel.setFont(MONO_BOLD);
+        interactshStatusRow.add(interactshStatusLabel);
+        JLabel interactshPrivacyLabel = new JLabel(
+                "Use a trusted server: OOB requests may contain target-derived data and bypass AI redaction.");
+        interactshPrivacyLabel.setForeground(NEON_ORANGE);
+        interactshPrivacyLabel.setFont(MONO_SMALL);
+        interactshStatusRow.add(interactshPrivacyLabel);
+        oobPanel.add(interactshStatusRow);
+
         // --- Payload preview label ---
         JPanel previewRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
         previewRow.setBackground(BG_DARK);
@@ -1047,6 +1106,15 @@ public class MainPanel extends JPanel {
         previewLabel.setFont(MONO_SMALL);
         previewRow.add(previewLabel);
         oobPanel.add(previewRow);
+
+        JPanel interactshPreviewRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
+        interactshPreviewRow.setBackground(BG_DARK);
+        JLabel interactshPreviewLabel = new JLabel(
+                "Automatic registration, encrypted polling, and per-payload correlation (DNS / HTTP / SMTP / LDAP).");
+        interactshPreviewLabel.setForeground(FG_DIM);
+        interactshPreviewLabel.setFont(MONO_SMALL);
+        interactshPreviewRow.add(interactshPreviewLabel);
+        oobPanel.add(interactshPreviewRow);
 
         // --- Update preview when interface or port changes ---
         Runnable updatePreview = () -> {
@@ -1090,20 +1158,40 @@ public class MainPanel extends JPanel {
         ldapPortField.getDocument().addDocumentListener(previewDocListener);
         updatePreview.run();
 
+        interactshServerField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            private void save() {
+                persistence.setString("oob.interactsh.server", interactshServerField.getText().trim());
+            }
+            @Override public void insertUpdate(javax.swing.event.DocumentEvent e) { save(); }
+            @Override public void removeUpdate(javax.swing.event.DocumentEvent e) { save(); }
+            @Override public void changedUpdate(javax.swing.event.DocumentEvent e) { save(); }
+        });
+
         // --- Visibility toggle ---
         customControls.setVisible(customOobRadio.isSelected());
         statusRow.setVisible(customOobRadio.isSelected());
         previewRow.setVisible(customOobRadio.isSelected());
+        interactshControls.setVisible(interactshRadio.isSelected());
+        interactshStatusRow.setVisible(interactshRadio.isSelected());
+        interactshPreviewRow.setVisible(interactshRadio.isSelected());
 
         // --- Radio button actions ---
         burpCollabRadio.addActionListener(e -> {
             customControls.setVisible(false);
             statusRow.setVisible(false);
             previewRow.setVisible(false);
+            interactshControls.setVisible(false);
+            interactshStatusRow.setVisible(false);
+            interactshPreviewRow.setVisible(false);
             // Stop listener if running
             if (listenerToggle.isSelected()) {
                 listenerToggle.doClick(); // triggers stop
             }
+            interactshToggle.setSelected(false);
+            interactshToggle.setText("Connect");
+            interactshToggle.setForeground(NEON_GREEN);
+            interactshServerField.setEnabled(true);
+            interactshTokenField.setEnabled(true);
             collaboratorManager.switchToBurpCollaborator();
             persistence.setString("oob.mode", "BURP");
             updateOobStatus(oobStatusLabel);
@@ -1114,10 +1202,101 @@ public class MainPanel extends JPanel {
             customControls.setVisible(true);
             statusRow.setVisible(true);
             previewRow.setVisible(true);
+            interactshControls.setVisible(false);
+            interactshStatusRow.setVisible(false);
+            interactshPreviewRow.setVisible(false);
+            interactshToggle.setSelected(false);
+            interactshToggle.setText("Connect");
+            interactshToggle.setForeground(NEON_GREEN);
+            interactshServerField.setEnabled(true);
+            interactshTokenField.setEnabled(true);
             collaboratorManager.switchToCustomOob();
             persistence.setString("oob.mode", "CUSTOM");
             updateOobStatus(oobStatusLabel);
             logPanel.log("INFO", "OOB", "Switched to Custom OOB Listener mode");
+        });
+
+        interactshRadio.addActionListener(e -> {
+            customControls.setVisible(false);
+            statusRow.setVisible(false);
+            previewRow.setVisible(false);
+            interactshControls.setVisible(true);
+            interactshStatusRow.setVisible(true);
+            interactshPreviewRow.setVisible(true);
+            if (listenerToggle.isSelected()) listenerToggle.doClick();
+            collaboratorManager.switchToInteractsh();
+            persistence.setString("oob.mode", "INTERACTSH");
+            updateOobStatus(oobStatusLabel);
+            logPanel.log("INFO", "OOB", "Switched to Interactsh / External OAST mode");
+        });
+
+        interactshToggle.addActionListener(e -> {
+            if (!interactshToggle.isSelected()) {
+                collaboratorManager.stopInteractsh();
+                interactshToggle.setText("Connect");
+                interactshToggle.setForeground(NEON_GREEN);
+                interactshStatusLabel.setText("Status: Disconnected");
+                interactshStatusLabel.setForeground(FG_SECONDARY);
+                interactshServerField.setEnabled(true);
+                interactshTokenField.setEnabled(true);
+                updateOobStatus(oobStatusLabel);
+                return;
+            }
+
+            String server = interactshServerField.getText().trim();
+            if (server.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Enter an Interactsh server URL.");
+                interactshToggle.setSelected(false);
+                return;
+            }
+            char[] tokenChars = interactshTokenField.getPassword();
+            String token = new String(tokenChars);
+            java.util.Arrays.fill(tokenChars, '\0');
+
+            interactshToggle.setEnabled(false);
+            burpCollabRadio.setEnabled(false);
+            customOobRadio.setEnabled(false);
+            interactshRadio.setEnabled(false);
+            interactshServerField.setEnabled(false);
+            interactshTokenField.setEnabled(false);
+            interactshStatusLabel.setText("Status: Registering and verifying encrypted polling...");
+            interactshStatusLabel.setForeground(NEON_ORANGE);
+
+            new SwingWorker<Boolean, Void>() {
+                @Override
+                protected Boolean doInBackground() {
+                    return collaboratorManager.initializeInteractsh(server, token);
+                }
+
+                @Override
+                protected void done() {
+                    boolean connected = false;
+                    try { connected = get(); } catch (Exception ignored) { }
+                    interactshTokenField.setText("");
+                    interactshToggle.setEnabled(true);
+                    burpCollabRadio.setEnabled(true);
+                    customOobRadio.setEnabled(true);
+                    interactshRadio.setEnabled(true);
+                    if (connected) {
+                        interactshToggle.setText("Disconnect");
+                        interactshToggle.setForeground(NEON_RED);
+                        interactshStatusLabel.setText("Status: Connected - "
+                                + collaboratorManager.getServerAddress());
+                        interactshStatusLabel.setForeground(NEON_GREEN);
+                        logPanel.log("INFO", "OOB", "Interactsh connected: "
+                                + collaboratorManager.getServerAddress());
+                    } else {
+                        interactshToggle.setSelected(false);
+                        interactshToggle.setText("Connect");
+                        interactshToggle.setForeground(NEON_GREEN);
+                        interactshStatusLabel.setText("Status: Connection failed - check Activity Log");
+                        interactshStatusLabel.setForeground(NEON_RED);
+                        interactshServerField.setEnabled(true);
+                        interactshTokenField.setEnabled(true);
+                    }
+                    updateOobStatus(oobStatusLabel);
+                }
+            }.execute();
         });
 
         // --- Start/Stop listener toggle ---
@@ -1243,6 +1422,14 @@ public class MainPanel extends JPanel {
                     oobStatusLabel.setForeground(NEON_GREEN);
                 } else {
                     oobStatusLabel.setText("OOB: Custom (not started)");
+                    oobStatusLabel.setForeground(NEON_ORANGE);
+                }
+            } else if (collaboratorManager.getMode() == OobMode.INTERACTSH) {
+                if (collaboratorManager.isInteractshConnected()) {
+                    oobStatusLabel.setText("OOB: Interactsh (" + collaboratorManager.getServerAddress() + ")");
+                    oobStatusLabel.setForeground(NEON_GREEN);
+                } else {
+                    oobStatusLabel.setText("OOB: Interactsh (not connected)");
                     oobStatusLabel.setForeground(NEON_ORANGE);
                 }
             } else {

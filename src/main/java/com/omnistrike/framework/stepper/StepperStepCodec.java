@@ -8,11 +8,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Pure (Montoya-free) serialization of Stepper configuration to/from JSON, used
- * to persist the chain across Burp restarts.
+ * Legacy Stepper serialization codec retained only for migration tests.
  *
- * <p>HTTP requests are stored as their host/port/secure tuple plus the raw
- * request bytes (Base64) so they can be reconstructed later. The actual
+ * <p>Older releases stored HTTP requests as their host/port/secure tuple plus
+ * raw Base64 bytes. Current releases purge that state because it can contain
+ * credentials. The actual
  * {@link burp.api.montoya.http.message.requests.HttpRequest} conversion lives in
  * {@link StepperEngine}; this class only deals with plain data, which keeps it
  * unit-testable without a running Burp.

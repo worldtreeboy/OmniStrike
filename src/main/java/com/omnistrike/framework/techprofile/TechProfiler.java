@@ -372,6 +372,12 @@ public final class TechProfiler implements TechRegistry.TechUpdateListener {
      */
     private void probeTtl(String host) {
         try {
+            // The host originates in an HTTP request but still crosses a local
+            // process boundary. Reject option-like or otherwise malformed values.
+            if (host == null || host.length() > 253
+                    || !host.matches("[A-Za-z0-9][A-Za-z0-9.:-]*")) {
+                return;
+            }
             // Determine ping syntax based on OmniStrike's OWN OS (not the target's)
             boolean isWindows = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
             String[] cmd = isWindows
@@ -382,24 +388,20 @@ public final class TechProfiler implements TechRegistry.TechUpdateListener {
                     .redirectErrorStream(true)
                     .start();
 
-            // Read output with timeout — don't block scanner threads forever
-            String output;
-            try (var reader = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(process.getInputStream()))) {
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line).append('\n');
-                }
-                output = sb.toString();
-            }
-
             boolean exited = process.waitFor(3, java.util.concurrent.TimeUnit.SECONDS);
             if (!exited) {
                 process.destroyForcibly();
                 return;
             }
             if (process.exitValue() != 0) return; // Host unreachable or ICMP blocked
+
+            // Read only after the process exits and cap output so a replaced or
+            // malfunctioning local ping binary cannot retain scanner memory.
+            String output;
+            try (var input = process.getInputStream()) {
+                output = new String(input.readNBytes(64 * 1024),
+                        java.nio.charset.StandardCharsets.UTF_8);
+            }
 
             // Extract TTL from ping output
             // Linux format:  "64 bytes from x.x.x.x: icmp_seq=1 ttl=64 time=1.23 ms"

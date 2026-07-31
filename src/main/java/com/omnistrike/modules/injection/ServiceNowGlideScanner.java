@@ -134,7 +134,8 @@ public class ServiceNowGlideScanner implements ScanModule {
         if (requestResponse.response() == null) return Collections.emptyList();
 
         String url = requestResponse.request().url();
-        String urlPath = extractPath(url);
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                url, requestResponse.request().method(), "endpoint", "");
 
         // PASSIVE GATE: Check response for ServiceNow indicators
         SNDetection detection = detectServiceNow(requestResponse);

@@ -25,10 +25,16 @@ public class CustomOobInteraction implements Interaction {
 
     public CustomOobInteraction(String payloadId, InetAddress clientAddress, int clientPort,
                                 String rawRequest, InteractionType type, String protocol) {
+        this(payloadId, clientAddress, clientPort, rawRequest, type, protocol, ZonedDateTime.now());
+    }
+
+    public CustomOobInteraction(String payloadId, InetAddress clientAddress, int clientPort,
+                                String rawRequest, InteractionType type, String protocol,
+                                ZonedDateTime timestamp) {
         this.interactionId  = new CustomInteractionId(payloadId);
         this.clientAddress  = clientAddress;
         this.clientPortNum  = clientPort;
-        this.timestamp      = ZonedDateTime.now();
+        this.timestamp      = timestamp != null ? timestamp : ZonedDateTime.now();
         this.rawRequest     = rawRequest;
         this.interactionType = type;
         this.protocol       = protocol;

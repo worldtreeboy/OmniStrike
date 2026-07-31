@@ -38,7 +38,7 @@ final class AiPrompts {
     static final String SMART_FUZZ_PROMPT = """
             You are an expert penetration tester. Analyze this HTTP request and generate targeted security test payloads.
 
-            For each injectable parameter (URL query params, POST body params, headers, cookies), generate the most effective payloads targeting:
+            For each injectable parameter (URL query params, form/JSON body params, headers, cookies), generate the most effective payloads targeting:
             - SQL Injection: error-based FIRST (single/double quote, comment), then UNION, then boolean blind, then time-based (SLEEP(5), WAITFOR DELAY, pg_sleep(5))
             - Cross-Site Scripting: reflected (script tags, event handlers, SVG), DOM-based
             - Server-Side Template Injection: ALWAYS use large unique math like {{133*991}} (=131803), ${7739*397} (=3072383). NEVER use 7*7 — '49' appears on normal pages
@@ -52,8 +52,11 @@ final class AiPrompts {
 
             Generate as many payloads as you think are necessary to thoroughly test every injectable parameter. Do not limit yourself — be exhaustive. When you have nothing more to try, return an empty list.
 
+            For JSON bodies use injection_point "json". Prefer the target's JSON Pointer (for example /user/name or /items/0/id) in parameter; a leaf name is acceptable only when unique.
+            For a complete XML replacement document use injection_point "xml".
+
             Respond ONLY with valid JSON:
-            {"payloads": [{"parameter": "param_name", "injection_point": "query|body|header|cookie", "payload": "the_actual_payload_string", "attack_type": "sqli|xss|ssti|cmdi|path_traversal|ssrf", "description": "brief explanation of why this payload"}]}
+            {"payloads": [{"parameter": "param_name_or_json_pointer", "injection_point": "query|body|json|header|cookie|xml", "payload": "the_actual_payload_string", "attack_type": "sqli|xss|ssti|cmdi|path_traversal|ssrf", "description": "brief explanation of why this payload"}]}
 
             HTTP Request:
             """;
@@ -100,7 +103,7 @@ final class AiPrompts {
             Generate as many payloads as needed for this round. When you believe all attack vectors have been exhausted, return an empty list to stop.
 
             Respond ONLY with valid JSON:
-            {"payloads": [{"parameter": "param_name", "injection_point": "query|body|header|cookie", "payload": "the_actual_payload_string", "attack_type": "sqli|xss|ssti|cmdi|path_traversal|ssrf", "description": "why this payload based on previous results"}]}
+            {"payloads": [{"parameter": "param_name_or_json_pointer", "injection_point": "query|body|json|header|cookie|xml", "payload": "the_actual_payload_string", "attack_type": "sqli|xss|ssti|cmdi|path_traversal|ssrf", "description": "why this payload based on previous results"}]}
             """;
 
     static final String BATCH_ANALYSIS_PROMPT = """
@@ -178,6 +181,6 @@ final class AiPrompts {
             When you believe exploitation is complete or no further progress is possible, return empty payloads.
 
             Respond ONLY with valid JSON:
-            {"payloads": [{"parameter": "param_name", "injection_point": "query|body|header|cookie", "payload": "the_exploitation_payload", "attack_type": "%s", "description": "what this payload extracts/does"}]}
+            {"payloads": [{"parameter": "param_name_or_json_pointer", "injection_point": "query|body|json|header|cookie|xml", "payload": "the_exploitation_payload", "attack_type": "%s", "description": "what this payload extracts/does"}]}
             """;
 }

@@ -86,7 +86,8 @@ public class HostHeaderScanner implements ScanModule {
     @Override
     public List<Finding> processHttpFlow(HttpRequestResponse requestResponse, MontoyaApi api) {
         HttpRequest request = requestResponse.request();
-        String urlPath = extractPath(request.url());
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                request.url(), request.method(), "endpoint", "");
 
         if (!dedup.markIfNew("host-header", urlPath, "Host")) return Collections.emptyList();
 
@@ -94,7 +95,9 @@ public class HostHeaderScanner implements ScanModule {
             String url = request.url();
 
             // Phase 1: Password reset poisoning (only on reset-like endpoints)
-            if (config.getBool("host.oob.enabled", true) && RESET_ENDPOINT_PATTERN.matcher(urlPath).find()) {
+            if (config.getBool("host.passwordReset.enabled", false)
+                    && config.getBool("host.oob.enabled", true)
+                    && RESET_ENDPOINT_PATTERN.matcher(urlPath).find()) {
                 testPasswordResetPoisoning(requestResponse, url);
             }
 

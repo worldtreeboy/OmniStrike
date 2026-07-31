@@ -330,6 +330,9 @@ public class AiModulePanel extends JPanel {
             mode = AiConnectionMode.NONE;
         }
         analyzer.setConnectionMode(mode);
+        if (mode != AiConnectionMode.API_KEY && apiKeyField != null) {
+            apiKeyField.setText("");
+        }
         modeCardLayout.show(modeCards, card);
     }
 
@@ -1153,7 +1156,13 @@ public class AiModulePanel extends JPanel {
             return false;
         }
 
-        String key = new String(apiKeyField.getPassword()).trim();
+        char[] keyChars = apiKeyField.getPassword();
+        String key;
+        try {
+            key = new String(keyChars).trim();
+        } finally {
+            java.util.Arrays.fill(keyChars, '\0');
+        }
         if (key.isEmpty()) {
             apiKeyTestStatusLabel.setText("API key cannot be empty");
             apiKeyTestStatusLabel.setForeground(NEON_RED);

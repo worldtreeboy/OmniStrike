@@ -126,7 +126,8 @@ public class FirebaseMisconfigScanner implements ScanModule {
         if (requestResponse.response() == null) return Collections.emptyList();
 
         String url = requestResponse.request().url();
-        String urlPath = extractPath(url);
+        String urlPath = com.omnistrike.framework.ScanTargetIdentity.build(
+                url, requestResponse.request().method(), "endpoint", "");
 
         // PASSIVE GATE: Check for Firebase indicators
         FirebaseDetection detection = detectFirebase(requestResponse);
@@ -223,7 +224,8 @@ public class FirebaseMisconfigScanner implements ScanModule {
         if (detection.serviceType == ServiceType.REALTIME_DB
                 || detection.serviceType == ServiceType.UNKNOWN) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            if (dedup.markIfNew(MODULE_ID, urlPath, "rtdb-write:" + project)) {
+            if (config.getBool("firebase.write.enabled", false)
+                    && dedup.markIfNew(MODULE_ID, urlPath, "rtdb-write:" + project)) {
                 testRealtimeDbWrite(original, project, url);
             }
         }
@@ -308,8 +310,11 @@ public class FirebaseMisconfigScanner implements ScanModule {
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
 
         String rtdbBase = "https://" + project + ".firebaseio.com";
-        String testPath = rtdbBase + "/omnistrike_test.json";
-        String testPayload = "{\"test\":true}";
+        // A unique child guarantees the scanner cannot overwrite a customer's
+        // existing /omnistrike_test node. The random token is also verified on readback.
+        String token = UUID.randomUUID().toString();
+        String testPath = rtdbBase + "/omnistrike_test_" + token.replace("-", "") + ".json";
+        String testPayload = "{\"omnistrike_token\":\"" + token + "\"}";
 
         // Send PUT to write test data
         HttpRequestResponse writeResult = sendPut(testPath, testPayload);
@@ -319,27 +324,23 @@ public class FirebaseMisconfigScanner implements ScanModule {
         int writeStatus = writeResult.response().statusCode();
         if (writeStatus != 200) { perHostDelay(); return; }
 
-        // FP Prevention: verify written data can be read back
-        perHostDelay();
-        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-
-        HttpRequestResponse readBack = sendGet(testPath);
         boolean confirmed = false;
-        if (readBack != null && readBack.response() != null) {
-            String readBody = readBack.response().bodyToString();
-            if (readBody != null && readBody.contains("\"test\"") && readBody.contains("true")) {
-                confirmed = true;
-            }
-        }
-
-        // Immediately DELETE the test node to clean up (always execute -- even during cancellation)
-        // Wrap delay in try/catch so InterruptedException doesn't skip cleanup
         try {
+            // FP Prevention: verify the exact random token can be read back.
             perHostDelay();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            if (!Thread.currentThread().isInterrupted() && !ScanState.isCancelled()) {
+                HttpRequestResponse readBack = sendGet(testPath);
+                if (readBack != null && readBack.response() != null) {
+                    String readBody = readBack.response().bodyToString();
+                    confirmed = readBody != null && readBody.contains(token);
+                }
+            }
+        } finally {
+            // Once PUT succeeds, cleanup is unconditional, including cancellation.
+            boolean interrupted = Thread.interrupted();
+            sendDelete(testPath);
+            if (interrupted) Thread.currentThread().interrupt();
         }
-        sendDelete(testPath);
 
         if (confirmed) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
@@ -347,8 +348,8 @@ public class FirebaseMisconfigScanner implements ScanModule {
                             Severity.CRITICAL, Confidence.CERTAIN)
                     .url(testPath)
                     .evidence("Unauthenticated PUT to " + testPath + " succeeded (HTTP 200). "
-                            + "Written data was verified by reading it back. "
-                            + "Test node was cleaned up via DELETE.")
+                            + "The unique token was verified by reading it back. "
+                            + "The unique test node was cleaned up via DELETE.")
                     .description("The Firebase Realtime Database at " + rtdbBase
                             + " allows unauthenticated write access. An attacker can "
                             + "modify, insert, or delete any data in the database without credentials.")

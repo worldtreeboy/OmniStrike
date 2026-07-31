@@ -12,6 +12,8 @@ import com.omnistrike.framework.DeduplicationStore;
 import com.omnistrike.framework.FindingsStore;
 import com.omnistrike.framework.PayloadEncoder;
 import com.omnistrike.framework.ResponseGuard;
+import com.omnistrike.framework.JsonScanSupport;
+import com.omnistrike.framework.ScanTargetIdentity;
 
 import com.omnistrike.model.*;
 
@@ -35,6 +37,7 @@ public class SsrfScanner implements ScanModule {
     private CollaboratorManager collaboratorManager;
     // Parameters confirmed exploitable via OOB — skip all remaining phases for these
     private final Set<String> oobConfirmedParams = ConcurrentHashMap.newKeySet();
+    private final Set<String> hostHeaderOobTested = ConcurrentHashMap.newKeySet();
 
     // Localhost bypass payloads
     private static final String[] LOCALHOST_BYPASSES = {
@@ -60,8 +63,6 @@ public class SsrfScanner implements ScanModule {
             "http://127.0.0.1:27017/",      // MongoDB
             "http://[0:0:0:0:0:0:0:1]/",   // Full IPv6 loopback
             "http://[::ffff:7f00:1]/",       // IPv6 mapped hex for 127.0.0.1
-            "http://localtest.me/",          // DNS wildcard → 127.0.0.1
-            "http://spoofed.burpcollaborator.net/", // DNS wildcard service
             "http://127.0.0.1:5432/",       // PostgreSQL
             "http://127.0.0.1:3306/",       // MySQL
             "http://0x7f.0x00.0x00.0x01/",  // Hex octets for 127.0.0.1
@@ -72,9 +73,6 @@ public class SsrfScanner implements ScanModule {
             // Rare IPv4 formats
             "http://0x7f.0.0.1/",                  // Partial hex
             "http://0177.0.0.01/",                 // Partial octal
-            "http://127.0.0.1.nip.io/",            // DNS wildcard service
-            "http://127.0.0.1.xip.io/",            // xip.io wildcard
-            "http://www.127.0.0.1.nip.io/",        // www subdomain
             "http://127.0.0.1:9090/",              // Prometheus
             "http://127.0.0.1:4040/",              // ngrok
             "http://127.0.0.1:15672/",             // RabbitMQ management
@@ -186,7 +184,7 @@ public class SsrfScanner implements ScanModule {
                                           List<SsrfTarget> targets, String urlPath) {
         for (SsrfTarget target : targets) {
             if (Thread.currentThread().isInterrupted() || com.omnistrike.framework.ScanState.isCancelled()) return Collections.emptyList();
-            if (!dedup.markIfNew("ssrf-scanner", urlPath, target.name)) continue;
+            if (!dedup.markIfNewRaw("ssrf-scanner:" + targetKey(requestResponse.request(), target))) continue;
 
             try {
                 testSsrf(requestResponse, target);
@@ -204,6 +202,7 @@ public class SsrfScanner implements ScanModule {
     private void testSsrf(HttpRequestResponse original, SsrfTarget target) throws InterruptedException {
         String url = original.request().url();
         boolean aggressiveMode = config.getBool("ssrf.aggressive", false);
+        String targetKey = targetKey(original.request(), target);
 
         // Phase 1: Collaborator OOB detection (most reliable)
         if (collaboratorManager != null && collaboratorManager.isAvailable()) {
@@ -211,13 +210,13 @@ public class SsrfScanner implements ScanModule {
         }
 
         // Phase 2: Localhost bypass techniques
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (oobConfirmedParams.contains(targetKey)) return;
         if (config.getBool("ssrf.localhost.enabled", true)) {
             testLocalhostBypasses(original, target, url);
         }
 
         // Phase 3: Protocol smuggling (aggressive only)
-        if (oobConfirmedParams.contains(target.name)) return;
+        if (oobConfirmedParams.contains(targetKey)) return;
         if (aggressiveMode && config.getBool("ssrf.protocol.enabled", true)) {
             testProtocolSmuggling(original, target, url);
         }
@@ -228,6 +227,7 @@ public class SsrfScanner implements ScanModule {
     private void testOobSsrf(HttpRequestResponse original, SsrfTarget target, String url) throws InterruptedException {
         // Standard HTTP callback
         AtomicReference<HttpRequestResponse> httpSentRequest = new AtomicReference<>();
+        AtomicReference<String> httpPayloadEvidence = new AtomicReference<>();
         String collabPayload = collaboratorManager.generatePayload(
                 "ssrf-scanner", url, target.name, "SSRF OOB HTTP",
                 interaction -> {
@@ -237,9 +237,11 @@ public class SsrfScanner implements ScanModule {
                     for (int _w = 0; _w < 10 && httpSentRequest.get() == null; _w++) {
                         try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
                     }
-                    reportOobFinding(interaction, url, target, "HTTP/DNS", httpSentRequest.get());  // may be null if callback fires before set() — finding is still reported
+                    reportOobFinding(interaction, url, target, "HTTP/DNS",
+                            original.request(), httpSentRequest.get(), httpPayloadEvidence.get());
                 });
         if (collabPayload == null) return;
+        httpPayloadEvidence.set("http://" + collabPayload + "/ssrf");
 
         // URL-encode the collaborator domain for double-encoding bypass
         String urlEncodedCollab = urlEncodeHost(collabPayload);
@@ -267,21 +269,35 @@ public class SsrfScanner implements ScanModule {
         }
 
         // DNS-only callback (for blind SSRF where HTTP is blocked)
-        AtomicReference<HttpRequestResponse> dnsSentRequest = new AtomicReference<>();
-        String dnsPayload = collaboratorManager.generatePayload(
-                "ssrf-scanner", url, target.name, "SSRF OOB DNS-only",
-                interaction -> {
-                    // Brief spin-wait to let the sending thread complete set()
-                    for (int _w = 0; _w < 10 && dnsSentRequest.get() == null; _w++) {
-                        try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
-                    }
-                    reportOobFinding(interaction, url, target, "DNS-only", dnsSentRequest.get());  // may be null if callback fires before set() — finding is still reported
-                });
-        if (dnsPayload != null) {
-            HttpRequestResponse dnsResult = sendPayload(original, target, dnsPayload); // Just the hostname, no scheme
-            dnsSentRequest.set(dnsResult);
-            perHostDelay();
+        // A custom IP:port HTTP listener is not a DNS name and cannot provide a
+        // DNS-only SSRF probe without a delegated domain. Do not send malformed values.
+        if (collaboratorManager.getMode() != CollaboratorManager.OobMode.CUSTOM_OOB) {
+            AtomicReference<HttpRequestResponse> dnsSentRequest = new AtomicReference<>();
+            AtomicReference<String> dnsPayloadEvidence = new AtomicReference<>();
+            String dnsPayload = collaboratorManager.generatePayload(
+                    "ssrf-scanner", url, target.name, "SSRF OOB DNS-only",
+                    interaction -> {
+                        for (int _w = 0; _w < 10 && dnsSentRequest.get() == null; _w++) {
+                            try { Thread.sleep(5); } catch (InterruptedException ignored) { break; }
+                        }
+                        reportOobFinding(interaction, url, target, "DNS-only",
+                                original.request(), dnsSentRequest.get(), dnsPayloadEvidence.get());
+                    });
+            if (dnsPayload != null) {
+                dnsPayloadEvidence.set(dnsPayload);
+                HttpRequestResponse dnsResult = sendPayload(original, target, dnsPayload);
+                dnsSentRequest.set(dnsResult);
+                perHostDelay();
+            }
         }
+
+        // Header injection is endpoint-scoped and must run once, not once for
+        // every query/body/header target discovered on the same request.
+        if (collaboratorManager.getMode() == CollaboratorManager.OobMode.CUSTOM_OOB) return;
+        String endpointKey = ScanTargetIdentity.build(original.request().url(),
+                original.request().method(), "header", "Host");
+        if (!com.omnistrike.framework.BoundedDeduplication.markIfNew(
+                hostHeaderOobTested, endpointKey)) return;
 
         // Header injection for Host-based SSRF
         AtomicReference<HttpRequestResponse> hostSentRequest = new AtomicReference<>();
@@ -294,7 +310,7 @@ public class SsrfScanner implements ScanModule {
                     }
                     // Only stop scanning on HTTP OOB, DNS continues scanning
                     if (interaction.type() == InteractionType.HTTP) {
-                        oobConfirmedParams.add(target.name);
+                        // Host-header confirmation is independent of the current parameter target.
                     }
                     findingsStore.addFinding(Finding.builder("ssrf-scanner",
                                     "SSRF via Host Header Injection",
@@ -327,10 +343,11 @@ public class SsrfScanner implements ScanModule {
     }
 
     private void reportOobFinding(Interaction interaction, String url, SsrfTarget target, String method,
-                                    HttpRequestResponse requestResponse) {
+                                  HttpRequest originalRequest, HttpRequestResponse requestResponse,
+                                  String sentPayload) {
         // Mark parameter as confirmed — skip all remaining phases (HTTP only, DNS continues scanning)
         if (interaction.type() == InteractionType.HTTP) {
-            oobConfirmedParams.add(target.name);
+            oobConfirmedParams.add(targetKey(originalRequest, target));
         }
         findingsStore.addFinding(Finding.builder("ssrf-scanner",
                         "SSRF Confirmed (Out-of-Band " + method + ")",
@@ -343,7 +360,7 @@ public class SsrfScanner implements ScanModule {
                         + interaction.type().name() + " request to the Collaborator server when "
                         + "parameter '" + target.name + "' was injected with a Collaborator URL.")
                 .requestResponse(requestResponse)
-                .payload(interaction.id().toString())
+                .payload(sentPayload)
                 .build());
         api.logging().logToOutput("[SSRF] Confirmed OOB interaction! " + url + " param=" + target.name);
     }
@@ -370,7 +387,8 @@ public class SsrfScanner implements ScanModule {
 
             // If response is significantly different from baseline and appears to contain server data
             if (status == 200 && Math.abs(body.length() - baselineLen) > 100) {
-                if (INTERNAL_RESPONSE_PATTERNS.matcher(body).find()) {
+                String newEvidence = findNewInternalEvidence(baselineBody, body);
+                if (newEvidence != null) {
                     findingsStore.addFinding(Finding.builder("ssrf-scanner",
                                     "SSRF: Localhost bypass successful",
                                     Severity.HIGH, Confidence.FIRM)
@@ -380,6 +398,7 @@ public class SsrfScanner implements ScanModule {
                             .description("Localhost access achieved via IP bypass technique.")
                             .requestResponse(result)
                             .payload(bypass)
+                            .responseEvidence(newEvidence)
                             .build());
                     return; // One confirmed bypass is enough
                 }
@@ -408,7 +427,8 @@ public class SsrfScanner implements ScanModule {
             int status = result.response().statusCode();
 
             if (status == 200 && !body.equals(baselineBody) && body.length() > 10) {
-                if (INTERNAL_RESPONSE_PATTERNS.matcher(body).find()) {
+                String newEvidence = findNewInternalEvidence(baselineBody, body);
+                if (newEvidence != null) {
                     String proto = payload.contains("://") ? payload.substring(0, payload.indexOf("://")) : "unknown";
                     findingsStore.addFinding(Finding.builder("ssrf-scanner",
                                     "SSRF: Protocol smuggling via " + proto + "://",
@@ -418,6 +438,7 @@ public class SsrfScanner implements ScanModule {
                             .description("Protocol smuggling successful. Server followed " + proto + " URI scheme.")
                             .requestResponse(result)
                             .payload(payload)
+                            .responseEvidence(newEvidence)
                             .build());
                 }
             }
@@ -439,6 +460,17 @@ public class SsrfScanner implements ScanModule {
         }
     }
 
+    static String findNewInternalEvidence(String baselineBody, String responseBody) {
+        if (responseBody == null || responseBody.isEmpty()) return null;
+        String baseline = baselineBody == null ? "" : baselineBody.toLowerCase(Locale.ROOT);
+        java.util.regex.Matcher matcher = INTERNAL_RESPONSE_PATTERNS.matcher(responseBody);
+        while (matcher.find()) {
+            String evidence = matcher.group();
+            if (!baseline.contains(evidence.toLowerCase(Locale.ROOT))) return evidence;
+        }
+        return null;
+    }
+
     private HttpRequest injectPayload(HttpRequest request, SsrfTarget target, String payload) {
         switch (target.type) {
             case QUERY:
@@ -450,7 +482,8 @@ public class SsrfScanner implements ScanModule {
             case COOKIE:
                 return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
-                return injectJsonPayload(request, target.name, payload);
+                return request.withBody(JsonScanSupport.replaceValue(
+                        request.bodyToString(), target.jsonPath, payload));
             case HEADER:
                 return request.withRemovedHeader(target.name)
                         .withAddedHeader(target.name, payload);
@@ -539,29 +572,35 @@ public class SsrfScanner implements ScanModule {
         for (var h : request.headers()) {
             if (h.name().equalsIgnoreCase("Content-Type")) { ct = h.value(); break; }
         }
-        if (ct.contains("application/json")) {
+        String lowerContentType = ct.toLowerCase(Locale.ROOT);
+        if (lowerContentType.contains("application/json") || lowerContentType.contains("+json")) {
             try {
                 String body = request.bodyToString();
                 if (body != null) {
-                    com.google.gson.JsonElement el = com.google.gson.JsonParser.parseString(body);
-                    if (el.isJsonObject()) {
-                        extractJsonSsrfTargets(el.getAsJsonObject(), "", targets);
+                    for (JsonScanSupport.Target jsonTarget : JsonScanSupport.extractTargets(body)) {
+                        String value = jsonTarget.value();
+                        if (URL_PARAM_PATTERN.matcher(jsonTarget.displayName()).find()
+                                || value.startsWith("http://") || value.startsWith("https://")
+                                || value.startsWith("//")) {
+                            targets.add(new SsrfTarget(jsonTarget.displayName(), value,
+                                    SsrfTargetType.JSON, jsonTarget.path()));
+                        }
                     }
                 }
             } catch (Exception ignored) {}
         }
 
-        // Extract ALL injectable request headers (skip non-injectable framework headers)
-        Set<String> skipHeaders = Set.of("host", "content-length", "connection", "accept-encoding",
-                "sec-fetch-mode", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user",
-                "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
-                "upgrade-insecure-requests", "if-modified-since", "if-none-match",
-                "cookie"); // individual cookies already extracted as COOKIE parameters
+        // Restrict header injection to fields that are commonly consumed as URLs
+        // or routing metadata. Mutating Authorization/User-Agent/etc. is noisy and
+        // can break the authenticated scan context without testing SSRF.
+        Set<String> relevantHeaders = Set.of("referer", "origin", "x-forwarded-for",
+                "x-forwarded-host", "x-forwarded-proto", "x-original-url", "x-rewrite-url",
+                "x-forwarded-url", "x-proxy-url", "destination", "callback", "webhook");
         Set<String> addedHeaders = new HashSet<>();
         for (var h : request.headers()) {
-            if (!skipHeaders.contains(h.name().toLowerCase())) {
+            if (relevantHeaders.contains(h.name().toLowerCase(Locale.ROOT))) {
                 targets.add(new SsrfTarget(h.name(), h.value(), SsrfTargetType.HEADER));
-                addedHeaders.add(h.name().toLowerCase());
+                addedHeaders.add(h.name().toLowerCase(Locale.ROOT));
             }
         }
         // Also inject known SSRF-relevant headers even if not present in the request
@@ -620,22 +659,50 @@ public class SsrfScanner implements ScanModule {
         if (delay > 0) Thread.sleep(delay);
     }
 
+    private static String targetKey(HttpRequest request, SsrfTarget target) {
+        if (request == null) return "unknown:" + target.type + ":" + target.name;
+        String name = target.type == SsrfTargetType.JSON && !target.jsonPath.isEmpty()
+                ? jsonPointer(target.jsonPath) : target.name;
+        return ScanTargetIdentity.build(request.url(), request.method(), target.type.name(), name);
+    }
+
+    private static String jsonPointer(List<Object> path) {
+        StringBuilder out = new StringBuilder();
+        for (Object part : path) {
+            out.append('/');
+            if (part instanceof String key) out.append(key.replace("~", "~0").replace("/", "~1"));
+            else out.append(part);
+        }
+        return out.toString();
+    }
+
     @Override
-    public void destroy() { }
+    public void destroy() {
+        oobConfirmedParams.clear();
+        hostHeaderOobTested.clear();
+    }
 
     private enum SsrfTargetType { QUERY, BODY, JSON, COOKIE, HEADER }
 
     private static class SsrfTarget {
         final String name, originalValue;
         final SsrfTargetType type;
-        SsrfTarget(String n, String v, SsrfTargetType t) { name = n; originalValue = v != null ? v : ""; type = t; }
+        final List<Object> jsonPath;
+        SsrfTarget(String n, String v, SsrfTargetType t) { this(n, v, t, List.of()); }
+        SsrfTarget(String n, String v, SsrfTargetType t, List<Object> path) {
+            name = n;
+            originalValue = v != null ? v : "";
+            type = t;
+            jsonPath = List.copyOf(path);
+        }
         @Override public boolean equals(Object o) {
             if (this == o) return true;
             if (!(o instanceof SsrfTarget)) return false;
             SsrfTarget t = (SsrfTarget) o;
-            return name.equals(t.name) && type == t.type && originalValue.equals(t.originalValue);
+            return name.equals(t.name) && type == t.type && originalValue.equals(t.originalValue)
+                    && jsonPath.equals(t.jsonPath);
         }
-        @Override public int hashCode() { return Objects.hash(name, type, originalValue); }
+        @Override public int hashCode() { return Objects.hash(name, type, originalValue, jsonPath); }
     }
 
 }
