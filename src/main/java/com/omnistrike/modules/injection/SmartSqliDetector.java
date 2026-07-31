@@ -1256,7 +1256,7 @@ public class SmartSqliDetector implements ScanModule {
                 } else {
                     String jsonPattern = "\"" + Pattern.quote(ip.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
                     String replacement = "\"" + ip.name + "\": \"" + escaped + "\"";
-                    String newBody = body.replaceFirst(jsonPattern, replacement);
+                    String newBody = body.replaceFirst(jsonPattern, Matcher.quoteReplacement(replacement));
                     return request.withBody(newBody);
                 }
             case XML:
@@ -1269,7 +1269,7 @@ public class SmartSqliDetector implements ScanModule {
                     String attrName = ip.name.substring(1);
                     newXml = xmlBody.replaceFirst(
                             Pattern.quote(attrName) + "\\s*=\\s*\"" + Pattern.quote(ip.originalValue) + "\"",
-                            attrName + "=\"" + xmlEscaped + "\"");
+                            Matcher.quoteReplacement(attrName + "=\"" + xmlEscaped + "\""));
                 } else {
                     // Element text injection — replace text between tags
                     newXml = xmlBody.replaceFirst(

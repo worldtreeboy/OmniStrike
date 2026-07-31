@@ -2308,18 +2308,52 @@ public class XxeScanner implements ScanModule {
                 return PayloadEncoder.injectCookie(request, target.name, payload);
             case JSON:
                 String body = request.bodyToString();
-                String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
-                // For dot-notation keys (nested JSON), use the leaf key name for matching
-                String matchKey = target.name.contains(".")
-                        ? target.name.substring(target.name.lastIndexOf('.') + 1) : target.name;
-                String jsonPattern = "\"" + java.util.regex.Pattern.quote(matchKey)
-                        + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
-                String replacement = "\"" + matchKey + "\": \"" + escaped + "\"";
-                return request.withBody(body.replaceFirst(jsonPattern, replacement));
+                if (target.name.contains(".")) {
+                    // Nested key — parse, replace, serialize (pass raw payload; Gson escapes internally)
+                    String newBody = replaceNestedJsonValue(body, target.name, payload);
+                    return request.withBody(newBody);
+                } else {
+                    String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
+                    String jsonPattern = "\"" + java.util.regex.Pattern.quote(target.name)
+                            + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
+                    String replacement = "\"" + target.name + "\": \"" + escaped + "\"";
+                    return request.withBody(body.replaceFirst(jsonPattern, Matcher.quoteReplacement(replacement)));
+                }
             case HEADER:
                 return request.withRemovedHeader(target.name).withAddedHeader(target.name, payload);
             default:
                 return request;
+        }
+    }
+
+    /**
+     * Replace a value at a dot-notation path in a JSON string.
+     * E.g., path "user.profile.name" replaces the value at obj.user.profile.name.
+     */
+    private String replaceNestedJsonValue(String jsonBody, String dotPath, String escapedValue) {
+        try {
+            com.google.gson.JsonElement root = com.google.gson.JsonParser.parseString(jsonBody);
+            if (!root.isJsonObject()) return jsonBody;
+
+            String[] parts = dotPath.split("\\.");
+            com.google.gson.JsonObject current = root.getAsJsonObject();
+
+            // Traverse to the parent of the target key
+            for (int i = 0; i < parts.length - 1; i++) {
+                com.google.gson.JsonElement child = current.get(parts[i]);
+                if (child == null || !child.isJsonObject()) return jsonBody;
+                current = child.getAsJsonObject();
+            }
+
+            // Replace the leaf value
+            String leafKey = parts[parts.length - 1];
+            if (current.has(leafKey)) {
+                current.addProperty(leafKey, escapedValue);
+            }
+
+            return new com.google.gson.Gson().toJson(root);
+        } catch (Exception e) {
+            return jsonBody;
         }
     }
 

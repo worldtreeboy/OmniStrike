@@ -1,321 +1,408 @@
 <div align="center">
 
-<img src="https://img.shields.io/badge/OmniStrike-v1.80-blueviolet?style=for-the-badge&labelColor=1a1a2e" alt="Version"/>
+# ⚡ OmniStrike
 
-# OmniStrike
+### Focused, state-aware security scanning for Burp Suite
 
-**One Burp extension. 12 active injection scanners. 11 auto-triggered technology scanners. 7 passive analyzers. AI-powered fuzzing. Session automation. Custom OOB server. One JAR.**
+Turn any request into a deliberate security test with parameter-level targeting,<br/>
+session automation, technology-aware probes, OOB detection, and optional AI analysis.
 
-[![Java](https://img.shields.io/badge/Java_17+-ED8B00?style=flat-square&logo=openjdk&logoColor=white)](https://adoptium.net/)
-[![Montoya API](https://img.shields.io/badge/Montoya_API-E8350E?style=flat-square)](https://portswigger.net/burp)
-[![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=flat-square&color=blue)](LICENSE)
-[![Downloads](https://img.shields.io/github/downloads/worldtreeboy/OmniStrike/total?style=flat-square&color=brightgreen)](https://github.com/worldtreeboy/OmniStrike/releases)
+[![Release](https://img.shields.io/badge/release-v1.80-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
+[![Java](https://img.shields.io/badge/Java-17%2B-f59e0b?style=for-the-badge&logo=openjdk&logoColor=white&labelColor=111827)](https://adoptium.net/)
+[![Burp Suite](https://img.shields.io/badge/Burp-Montoya_API-f97316?style=for-the-badge&labelColor=111827)](https://portswigger.net/burp)
+[![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge&color=22c55e&labelColor=111827)](LICENSE)
 
-[**Download JAR**](https://github.com/worldtreeboy/OmniStrike/releases/latest) · [Quick Start](#quick-start) · [Modules](#what-it-scans) · [Stepper](#stepper--session-automation) · [Build](#build-from-source)
+[**Download the JAR**](https://github.com/worldtreeboy/OmniStrike/releases/latest) ·
+[Quick start](#-quick-start) ·
+[Scanner catalog](#-scanner-catalog) ·
+[Stepper](#-stepper) ·
+[Build](#-build-from-source)
 
 </div>
 
 ---
 
-## Quick Start
+<table>
+  <tr>
+    <td align="center"><strong>13</strong><br/>active scanning engines</td>
+    <td align="center"><strong>10</strong><br/>technology-aware scanners</td>
+    <td align="center"><strong>7</strong><br/>passive analyzers</td>
+    <td align="center"><strong>5</strong><br/>framework tools</td>
+    <td align="center"><strong>1</strong><br/>self-contained JAR</td>
+  </tr>
+</table>
 
-```
-1.  Download omnistrike.jar from Releases (or build from source)
-2.  Burp Suite → Extensions → Add → Java → omnistrike.jar
-3.  Right-click any request → "Send to OmniStrike (All Modules)"
-4.  Tick parameters + modules → Scan
-```
+> [!IMPORTANT]
+> OmniStrike is explicit by design. Nothing scans proxy traffic automatically. Active scanners and passive analyzers run only when you send a request to OmniStrike from Burp's context menu.
 
-**Every scan is right-click driven.** Nothing runs automatically on proxy traffic — neither active nor passive. Both passive analyzers and active scanners only run on requests you explicitly send via the right-click menu. No auto-scan loop, no target-scope field, no background analysis.
+## ✨ Why OmniStrike
 
----
+- **Pick exactly what to test.** Select individual query, body, cookie, JSON, header, and path parameters, then choose the modules to run.
+- **Keep complex sessions alive.** Refresh login cookies or replay multi-step authentication flows before a probe leaves Burp.
+- **Go beyond generic payload lists.** Run focused scanners for modern injection classes, enterprise platforms, cloud products, and API technologies.
+- **Detect blind behavior.** Use Burp Collaborator or OmniStrike's custom HTTP/DNS OOB listener.
+- **Keep control of AI.** AI analysis is optional, disabled by default, and supports local CLI or API-key backends.
+- **Review findings in one place.** Findings appear in OmniStrike and are forwarded to Burp's Dashboard with request/response evidence.
 
-## What It Scans
+~~~mermaid
+flowchart LR
+    A["Request in Burp"] --> B["Send to OmniStrike"]
+    B --> C["Choose parameters"]
+    C --> D["Choose modules"]
+    D --> E["Refresh session / run Stepper"]
+    E --> F["Active + passive analysis"]
+    F --> G["Evidence-backed findings"]
+    G --> H["OmniStrike UI"]
+    G --> I["Burp Dashboard"]
+~~~
 
-### 12 Active Injection Scanners
+## 🚀 Quick start
 
-| Scanner | Summary |
-|:--------|:--------|
-| **SQL Injection** | UNION + time-blind + OOB across 6 DBMS groups, ~100 OOB payloads, REST path injection. |
-| **Command Injection** | Time + output + OOB, Unix & Windows, `$IFS`/backtick bypasses, Node.js SSJI with 5 context-breakers. |
-| **SSRF** | Collaborator OOB, DNS rebinding, 49 localhost bypasses, 31 protocol smuggling payloads. |
-| **SSTI** | 20 template engines, large-number canaries, payload-reflection guard. |
-| **XXE** | XML + XInclude + JSON-to-XML + Content-Type forcing, 14 OOB payloads. |
-| **Path Traversal** | 24 Unix + 9 Windows targets, 26 encoding bypasses, PHP wrappers, multi-marker confirmation. |
-| **GraphQL** | Introspection bypass, IDOR, DoS config, injection, error disclosure. |
-| **CORS** | Reflected origin, null trust, subdomain trust, scheme downgrade, wildcard+credentials. |
-| **Cache Poisoning** | Unkeyed headers + query params, canary confirmation. |
-| **Host Header** | Password reset poisoning, routing SSRF, duplicate Host, override headers. |
-| **HTTP Param Pollution** | Duplicate-param precedence, WAF splitting bypass. |
-| **Prototype Pollution** | `__proto__`/`constructor.prototype` with canary persistence. |
+### 1. Install
 
-**Deserialization** runs as an active scanner via right-click; its UI lives under *Framework Tools* as a payload generator (6 languages, 137+ gadget chains).
+Download [<code>omnistrike.jar</code>](https://github.com/worldtreeboy/OmniStrike/releases/latest), then open:
 
-### 11 Auto-Triggered Technology Scanners
+~~~text
+Burp Suite → Extensions → Installed → Add → Java
+~~~
 
-These ride along with **Send to OmniStrike ▸ All Modules** and only fire if the target technology is confirmed in the response. Zero noise on non-target systems.
+Select the JAR and open the new **OmniStrike** tab.
 
-Dynamics 365 FetchXML · SAP OData · Salesforce SOQL · Firebase Misconfig · SharePoint CAML · ServiceNow GlideRecord · Apache Solr · Odoo Domain Filter · Elasticsearch Query · Spring Boot Actuator · *(WordPress REST API — coming soon)*
+### 2. Send a request
 
-### 7 Passive Analyzers
+In Proxy, Repeater, or another Burp request editor:
 
-Run on right-click → Send to OmniStrike alongside the active scanners — read-only, send nothing:
+~~~text
+Right-click request → Send to OmniStrike (All Modules)
+~~~
 
-Client-Side (DOM XSS, prototype pollution, secrets) · Endpoint Finder · Subdomain Collector · Security Headers · Tech Fingerprinter · Sensitive Data (Luhn-validated CCs, SSNs, JWTs, ARNs, IBANs) · Error Disclosure (Java/Jackson/Spring/.NET/Python/Node.js/Go/Ruby + DB driver exceptions)
+### 3. Shape the scan
 
-### 5 Framework Tools
+Tick the parameters and modules you want, then start the scan. Static assets such as JavaScript, CSS, and images are skipped by active injection modules automatically.
 
-| Tool | What It Does |
-|:-----|:-------------|
-| **AI Vulnerability Analyzer** | LLM-powered fuzzing via Claude/Gemini/Codex/OpenCode/Kimi/Grok CLI. No API keys. Off by default. |
-| **Deserialization Generator** | 137+ gadget chains across 6 languages, copy-paste-ready. |
-| **File Payload Generator** | 39 file payloads (PDF/SVG/DOCX/XLSX XXE, web shells, polyglots, EICAR) + 31 inline payloads. |
-| **Wordlist Generator** | Passive word harvester for fuzzing/brute-forcing. |
-| **TLS Analyzer** | Per-protocol probe matrix (TLSv1.3 → SSLv3), cipher classification, cert chain inspection. |
+> [!TIP]
+> Manual scans bypass OmniStrike's scan deduplication, so sending the same request again performs a real rescan.
 
----
+## 🎯 Scanner catalog
 
-## Scanning Workflow
+### Active scanning engines
 
-Right-click any request → **Send to OmniStrike (All Modules)** opens a picker with tick-lists for every scannable parameter (query/body/cookie/JSON, embedded params in `Referer`/`Origin`, injectable headers, URL path segments) and every module. Each active scanner runs once per ticked parameter. Static resources (`.js`, `.css`, images) skip active injection automatically. Manual scans bypass the dedup cache so re-scanning actually re-runs.
+| Engine | Coverage highlights |
+|:--|:--|
+| **SQL injection** | Error, UNION, time-based, and OOB probes across major DBMS families; REST path support. |
+| **Command injection** | Output, timing, and OOB confirmation for Unix, Windows, and server-side JavaScript contexts. |
+| **SSRF** | Collaborator/OOB callbacks, localhost bypasses, DNS rebinding, and protocol-oriented payloads. |
+| **SSTI** | Fingerprints and probes for 20 template-engine families with reflection guards. |
+| **XXE** | XML, XInclude, JSON-to-XML, content-type forcing, and OOB entity resolution. |
+| **Path traversal / LFI** | Unix and Windows targets, encoding variants, PHP wrappers, and multi-marker confirmation. |
+| **GraphQL** | Introspection bypass, IDOR, injection, error disclosure, and configurable DoS checks. |
+| **CORS** | Reflected origins, null origin trust, subdomain trust, downgrade cases, and credential combinations. |
+| **Web cache poisoning** | Unkeyed headers and parameters with canary-based confirmation. |
+| **Host header injection** | Reset poisoning, routing SSRF, duplicate Host behavior, and override headers. |
+| **HTTP parameter pollution** | Duplicate-parameter precedence and parameter-splitting behavior. |
+| **Prototype pollution** | Server-side <code>__proto__</code> and <code>constructor.prototype</code> probes with persistence canaries. |
+| **Deserialization** | Format detection, active payloads, and language-specific gadget-chain workflows. |
 
-| Menu item | Action |
-|:----------|:-------|
-| **Send to OmniStrike (All Modules)** | Picker dialog (above). |
-| **Send to OmniStrike ▸** | Per-module submenu — single scanner (Normal or AI). |
-| **Set as Session Login Request** | Saves the request for Session Keep-Alive replay. |
-| **Send to Stepper** | Adds the request as a prerequisite step (when Stepper is enabled). |
+### Technology-aware scanners
 
-### Session Keep-Alive
+These scanners join **All Modules** only after the response indicates the relevant product or protocol:
 
-Right-click your login/refresh request → **Set as Session Login Request**, then tick **Session Keep-Alive** in the OmniStrike tab. OmniStrike periodically replays it, captures the fresh `Set-Cookie` values, and injects them — domain-scoped — into **all** outbound traffic (Burp's tools *and* OmniStrike's own scan modules).
+<p align="center">
+  <code>Dynamics 365 FetchXML</code>&nbsp;
+  <code>SAP OData</code>&nbsp;
+  <code>Salesforce SOQL</code>&nbsp;
+  <code>Firebase / Firestore</code>&nbsp;
+  <code>SharePoint CAML</code><br/>
+  <code>ServiceNow GlideRecord</code>&nbsp;
+  <code>Apache Solr</code>&nbsp;
+  <code>Odoo Domain Filters</code>&nbsp;
+  <code>Elasticsearch</code>&nbsp;
+  <code>Spring Boot Actuator</code>
+</p>
 
----
+This response-gated design avoids firing product-specific payloads at unrelated targets.
 
-## Stepper -- Session Automation
+### Passive analyzers
 
-Multi-step auth flows (login, CSRF token, session refresh) produce single-use tokens. Testing the final request requires replaying the entire chain first.
+Passive modules inspect the request and response you explicitly send; they do not create additional traffic.
 
-**Stepper automates this.** Add all requests in the chain (A → B → C → D → E). When any step is sent from Repeater, Intruder, or the active scanner, Stepper automatically identifies which step it is and replays only the required prerequisites — then patches the fresh cookies and tokens into the outgoing request.
+| Analyzer | Looks for |
+|:--|:--|
+| **Client-Side Analyzer** | DOM XSS flows, prototype-pollution sinks, and exposed secrets. |
+| **Hidden Endpoint Finder** | Routes and endpoints embedded in HTML and JavaScript. |
+| **Subdomain Collector** | Hostnames discovered in response content. |
+| **Security Header Analyzer** | Missing or risky browser security controls. |
+| **Technology Fingerprinter** | Frameworks, platforms, servers, and version disclosure. |
+| **Sensitive Data Exposure** | JWTs, cloud identifiers, payment data, SSNs, IBANs, and other secrets. |
+| **Error Disclosure Scanner** | Framework, runtime, database-driver, and stack-trace leakage. |
 
-| Feature | Detail |
-|:--------|:-------|
-| **Two-pass step matching** | **Exact pass** compares method + host + port + path + query + body, so multiple steps that differ only by query/body params (e.g. `postId=1` vs `=2` vs `=3`) are distinguishable. **Loose pass** falls back to method + path-without-query, returning the highest matching index (target = last step) so scanner-mutated probes still match. |
-| **No-match is a no-op** | If an outgoing request doesn't match any configured step, Stepper does nothing. Unrelated browser/extension traffic won't trigger the chain. |
-| **Per-Request Mode** | Optional toggle: every matched outgoing request gets its own fresh chain run on its own thread (no cache, no global lock). Required when prereqs produce single-use tokens (CSRF nonces) that the target burns per request. |
-| **Pause / Resume** | One-click "Pause Now" button halts new chains and aborts in-flight ones at the next step boundary. Auto-paused when OmniStrike's scan is stopped. |
-| **Works with OmniStrike's own scanner** | A `StepperHttp` wrapper is used by every OmniStrike scan module so their `sendRequest()` calls also trigger Stepper, not just Burp's native tools. |
-| **Automatic cookie jar** | Every `Set-Cookie` from each chain step is collected and forwarded to subsequent steps and the final request. Newest value wins. Pinned cookies survive chain re-runs. |
-| **Auto-extraction (rule-free)** | Write `{{name}}` anywhere — URL path, header, cookie, body — and Stepper auto-finds the value in earlier responses (header / Set-Cookie / JSON key / regex fallback). No extraction rule needed. |
-| **Pinned variables (manual override)** | Set or override any `{{name}}` from the UI. Pinned vars survive chain re-runs and win over auto-extracted values with the same name. |
-| **Edit Request dialog** | Edit any captured step's raw HTTP request after the fact — useful for inserting `{{varName}}` placeholders into the URL/headers/body where literal values were captured. |
-| **TTL cache** | Configurable cache window (default 10s, cached mode only) prevents re-running the chain for every scanner request. Invalidated automatically when the prerequisite set changes. |
-| **Stop on Failure** | Optional: abort the chain immediately if any step returns no response, preventing downstream steps from running with incomplete state. |
-| **Recursion-safe** | ThreadLocal guard prevents chain requests from re-triggering the chain. ReentrantLock serializes concurrent execution in cached mode. |
+## 🧰 Framework toolbox
 
-### Stepper Manual
+| Tool | Purpose |
+|:--|:--|
+| **AI Vulnerability Analyzer** | Optional LLM-guided analysis using Claude, Gemini, Codex, OpenCode, Kimi, Grok, or supported API providers. |
+| **Deserialization Generator** | Copy-ready payloads from 137+ gadget chains across six languages. |
+| **File Payload Generator** | PDF, SVG, DOCX, XLSX, XXE, web-shell, polyglot, EICAR, and inline test payloads. |
+| **Wordlist Generator** | Domain-scoped passive word harvesting for fuzzing and discovery. |
+| **TLS Analyzer** | Protocol probes, cipher classification, and certificate-chain inspection. |
 
-#### 1. Enable Stepper
+## 🧭 Scanning workflow
 
-Open the **Stepper** tab in OmniStrike → tick **Stepper Enabled** at the top. The "Send to Stepper" right-click menu becomes available everywhere in Burp.
+The primary context-menu entry opens a single parameter-and-module picker.
 
-#### 2. Add prerequisite steps
+| Context-menu action | Result |
+|:--|:--|
+| **Send to OmniStrike (All Modules)** | Opens the parameter and module picker. |
+| **Send to OmniStrike ▸** | Runs one selected module in Normal or AI mode. |
+| **Set as Session Login Request** | Keeps a login/refresh request in memory for Session Keep-Alive. |
+| **Send to Stepper** | Adds the request to a prerequisite chain. |
 
-Right-click any request in Proxy / HTTP history / Repeater → **Send to Stepper**. The request appears in the **Prerequisite Steps** table. Add as many steps as your auth flow needs, in order. Use the ▲ / ▼ buttons to reorder, **Toggle** to enable/disable a step, **Remove** to drop one.
+OmniStrike can target:
 
-#### 3. Reference values from earlier responses
+- Query, form, cookie, and JSON parameters
+- Embedded parameters in <code>Referer</code> and <code>Origin</code>
+- Security-relevant injectable headers
+- Individual URL path segments
 
-Anywhere in a later step or in your final outgoing request, write `{{name}}`. Stepper auto-finds the value from earlier responses in this order:
+Each active scanner runs once per selected parameter. Passive analyzers run alongside the chosen workflow without sending extra requests.
 
-1. Response **header** named `name`
-2. **Set-Cookie** with cookie name `name`
-3. **JSON key** named `name` (case-insensitive, walks nested objects + arrays)
-4. Regex fallback: `"name":"value"`, `"name":number`, or `name=value` in the body
+## 🔐 Session Keep-Alive
 
-Most-recent response wins. Resolution is cached, so subsequent requests don't re-search.
+Use Session Keep-Alive when a reusable session expires during testing:
 
-**Substitution works in:** URL path, query string, headers, cookies, request body.
+1. Right-click the login or refresh request.
+2. Select **Set as Session Login Request**.
+3. Enable **Session Keep-Alive** in the OmniStrike tab.
+4. Choose the refresh interval.
 
-##### Example — single value
+OmniStrike replays the request, captures fresh cookies, and injects a cookie only when its Domain, Path, and Secure scope matches the outbound request.
 
-| Step | Response excerpt | Outgoing target request |
-|:-----|:-----------------|:------------------------|
-| Step 1: `POST /login` | `{"id":"abcef"}` | `GET /api/{{id}}/xyz` → sent as `GET /api/abcef/xyz` |
+> [!NOTE]
+> The credential-bearing login request is memory-only and must be selected again after Burp restarts. OmniStrike persists the refresh interval, not the raw login request.
 
-##### Example — multi-step chain
+## 🔄 Stepper
 
-| Step | Response | What downstream steps reference |
-|:-----|:---------|:--------------------------------|
-| 1: `POST /login` | `{"token":"AAA"}` | header `Authorization: Bearer {{token}}` |
-| 2: `GET /me` (uses `{{token}}`) | `{"userId":"u-42"}` | path `/api/users/{{userId}}/items` |
-| 3: `GET /api/users/{{userId}}/items` | `{"itemId":"x99"}` | final request `DELETE /api/items/{{itemId}}` |
+Stepper prepares stateful requests by replaying their prerequisites. It is designed for login flows, CSRF tokens, session refreshes, chained API calls, and single-use values.
 
-The final outgoing `DELETE /api/items/{{itemId}}` becomes `DELETE /api/items/x99`. Zero rules configured.
+~~~mermaid
+sequenceDiagram
+    participant B as Burp / Scanner
+    participant S as Stepper
+    participant T as Target
+    B->>S: Final request with {{itemId}}
+    S->>T: POST /login
+    T-->>S: Set-Cookie + {{token}}
+    S->>T: GET /me using {{token}}
+    T-->>S: {{userId}}
+    S->>T: GET /users/{{userId}}/items
+    T-->>S: {{itemId}}
+    S->>T: Final request with fresh state
+    T-->>B: Response
+~~~
 
-#### 4. Cookies are fully automatic
+### What it handles
 
-Every `Set-Cookie` from any chain response is collected into the **Cookie Jar** (bottom-left panel) and merged into the `Cookie:` header of every later step and your final request. Existing cookies in the request are preserved; jar values overwrite same-named cookies.
+| Capability | Behavior |
+|:--|:--|
+| **Two-pass matching** | Exact matching distinguishes steps by method, service, path, query, and body; a looser pass still recognizes scanner-mutated target requests. |
+| **Automatic variables** | A placeholder such as <code>{{token}}</code> is resolved from earlier headers, cookies, nested JSON, or response bodies. |
+| **Scoped cookie jar** | Cookies follow host/domain, path, and Secure rules across steps and into the final request. |
+| **Pinned values** | Manually supplied variables and cookies survive chain runs and override extracted values. |
+| **Cached mode** | Reuses successful chain state for a configurable TTL. |
+| **Per-request mode** | Runs a fresh isolated chain for every request that consumes a single-use token. |
+| **Failure handling** | Failed or aborted chains do not mark stale state as fresh; optional Stop on Failure prevents incomplete downstream requests. |
+| **Pause / resume** | Stops new chains and halts active chains at the next step boundary. |
+| **Recursion protection** | Chain traffic cannot trigger another copy of the same chain. |
 
-- Click **+ Add** to manually pin a cookie that's not set by any chain response (e.g., a static API-key cookie). Pinned cookies survive chain re-runs.
-- Untick **Auto Cookie Jar** to disable.
+<details>
+<summary><strong>Open the Stepper setup guide</strong></summary>
 
-#### 5. Edit captured requests after the fact
+### 1. Enable Stepper
 
-Right-click → **Send to Stepper** captures the request **as-is** — with literal values, not placeholders. If you want a step's URL/header/body to reference a value extracted from an earlier step, click **Edit Request** in the steps toolbar:
+Open the **Stepper** tab and tick **Stepper Enabled**.
 
-1. Select the step in the table.
-2. Click **Edit Request**. A raw HTTP editor opens.
-3. Replace the literal value with `{{varName}}`. Example: `/api/abcde/check` → `/api/{{token}}/check`.
-4. Click **OK**. The step's request is updated; the original `HttpService` (host/port/scheme) is preserved.
+### 2. Capture prerequisite requests
 
-Save errors (malformed HTTP) are reported in a dialog and the step is left untouched.
+Right-click each request and choose **Send to Stepper**. Add them in execution order, then use the toolbar to reorder, disable, edit, or remove steps.
 
-#### 6. Pinned variables (manual override / seed)
+### 3. Add placeholders
 
-The **Current Variables** table at the bottom-right shows every variable Stepper currently has — both auto-extracted ones and manually pinned ones. The **Source** column tells them apart.
+Edit a later step or final request and replace changing values with placeholders:
 
-- **+ Add** opens a dialog to set `name` = `value`. Pinned vars survive every chain re-run, and **win over auto-extracted values with the same name**. Use this to test with a known-good token, or to seed a value the chain can't produce on its own.
-- **- Remove** unpins the selected variable. The next chain run will re-extract it if the response still has it.
-- **Clear Pinned** drops all pinned vars at once.
+~~~http
+Authorization: Bearer {{access_token}}
+GET /api/users/{{userId}}/items/{{itemId}}
+~~~
 
-#### 7. Per-Request Mode (single-use tokens / fresh chain per probe)
+Stepper searches the newest earlier responses in this order:
 
-Default ("cached") mode runs the chain once, then reuses the result for **Cache TTL** seconds. This is fast and right for *reusable* tokens (login session, persistent cookies).
+1. Header with the requested name
+2. <code>Set-Cookie</code> with the requested name
+3. Matching JSON key, including nested objects and arrays
+4. A body fallback for common JSON and <code>name=value</code> forms
 
-If your prereqs produce **single-use tokens** (a CSRF nonce the server burns per request, a one-time `_token` field, etc.), tick **Per-Request Mode** at the top of the panel. Every matched outgoing request then triggers its **own** fresh chain run on its own thread. Multiple Burp scanner threads run their A→B→C→D pipelines in parallel without clobbering each other's state.
+Use an explicit extraction rule when a response contains duplicate names, when the variable should have a different name, or when a value lives in unusual markup.
 
-| | Cached mode (default) | Per-Request Mode |
+### 4. Choose the execution mode
+
+| | Cached mode | Per-request mode |
 |:--|:--|:--|
-| Chain runs | Once per TTL window | Once per matched outgoing request |
-| Throughput | Full Burp scanner speed | Capped at `(scanner_threads) × (1 / chain_duration)` |
-| Auth-server load | Minimal | High — multiplied by scanner concurrency |
-| Required for | Reusable tokens | Single-use / per-request tokens |
+| **Chain runs** | Once per successful TTL window | Once for every matched outgoing request |
+| **Best for** | Reusable login sessions and cookies | Single-use CSRF tokens and one-time nonces |
+| **Throughput** | Higher | Limited by chain duration and concurrency |
+| **Auth-server load** | Lower | Higher |
 
-#### 8. Pause / Resume
+### 5. Verify
 
-- **Pause Now** halts new chains immediately and aborts in-flight chains at the next step boundary (the current step's HTTP send can't be cancelled mid-call, so you may see 1-2 stragglers per in-flight chain).
-- **Auto-paused** when OmniStrike's scan is stopped (`Stop Scan` button) — and auto-resumed when a new scan starts.
-- Use the button manually when pausing Burp's built-in scanner, since Burp doesn't notify extensions of pause/stop.
+Click **Run Chain** and inspect **Current Variables**, **Cookie Jar**, and **Activity Log**. Use **Invalidate Cache** to force the next request to prepare fresh state.
 
-#### 9. Run, verify, debug
+</details>
 
-- Click **Run Chain** to execute the configured prereqs manually (against the displayContext). The **Current Variables** table populates and the **Activity Log** prints `Auto-resolved {{name}} = ...` for each placeholder filled in.
-- **Cache TTL** (default 10s, cached mode only) is how long captured values are reused before the chain re-runs. Click **Invalidate Cache** to force one re-run. The field is disabled while Per-Request Mode is on.
-- Tick **Stop on Failure** to abort the chain if a step gets no response.
-- A placeholder that can't be resolved is left as literal `{{name}}` in the outgoing request — easy to spot in Logger, and the log shows nothing was found.
+## 📡 Out-of-band testing
 
-#### 10. (Optional) Explicit extraction rules
+OmniStrike exposes one callback abstraction with two backends:
 
-Auto-extraction is the default. Add an explicit rule only when:
+- **Burp Collaborator** when available
+- **Custom OOB** with built-in HTTP and DNS listeners
 
-| Situation | Rule type | Pattern example |
-|:----------|:----------|:----------------|
-| Same JSON key at multiple nesting levels — you want a specific one | `JSON_PATH` | `data.user.id` |
-| You want the variable named differently from the actual key (`access_token` → `{{auth}}`) | `JSON_PATH` / `BODY_REGEX` | `access_token` |
-| Value lives somewhere weird (meta tag, hidden input, JS variable) | `BODY_REGEX` | `name="csrf"\s+value="([^"]+)"` (capture group 1) |
-| You want the value of a specific named header | `HEADER` | `X-CSRF-Token` |
-| You want the value of a specific named cookie | `COOKIE` | `PHPSESSID` |
+The custom listener makes blind testing possible without Burp Professional, but it must be reachable from the target. Bind and expose listener ports only on networks you trust, and stop the listeners when the assessment ends.
 
-Select the step, click **+ Add Rule**, fill in name + type + pattern. The explicit rule wins over auto-extraction for that variable.
+## 🤖 AI analysis
 
----
+The AI Vulnerability Analyzer is disabled by default. It supports:
 
-## Custom OOB Server
+- Local CLI workflows for Claude, Gemini, Codex, OpenCode, Kimi, and Grok
+- API-key workflows for Anthropic, OpenAI, Google, xAI, Moonshot AI, DeepSeek, Mistral, Groq, OpenRouter, and Ollama
+- Editable model identifiers so newer compatible models can be used without waiting for a UI update
 
-No Burp Professional? No internet? OmniStrike includes a built-in OOB callback server with HTTP and DNS listeners. Switch between Burp Collaborator and Custom OOB with one click — same `CollaboratorManager` API behind both.
+> [!WARNING]
+> AI prompts can contain sensitive headers, cookies, bodies, and attacker-controlled response text. Understand where your chosen backend sends data. Auto-approved CLI modes may also act on prompt-injected instructions; use them only in an environment where that risk is acceptable.
 
----
-
-## Scan Tuning
+## 🎛️ Scan controls
 
 | Control | Description |
-|:--------|:------------|
-| **Threads** | Shared scan thread pool size (1-100), applied immediately. |
-| **Throttle Modes** | None / Auto (backs off on WAF/rate-limit) / Manual (fixed ms). |
-| **Time-Based Testing** | Off by default. Gates slow time-blind tests. |
-| **Static Resource Skip** | Auto-skip `.js`/`.css`/images for active injection. |
+|:--|:--|
+| **Threads** | Shared active-scan pool from 1 to 100 workers. |
+| **Throttle** | None, adaptive backoff, or a fixed delay. |
+| **Time-based testing** | Separately gates slower blind timing checks. |
+| **Static-resource skip** | Avoids active injection against common asset extensions. |
+| **Themes** | 29 UI themes, scoped to OmniStrike or optionally applied globally. |
 
-29 UI themes — scoped to OmniStrike only, or apply globally.
+## 🏗️ Build from source
 
----
+### Requirements
 
-## Build From Source
+- JDK 17 or newer
+- Git
 
-```bash
+### Build
+
+~~~bash
 git clone https://github.com/worldtreeboy/OmniStrike.git
 cd OmniStrike
-./gradlew shadowJar
-# Output: build/libs/omnistrike.jar
-```
+./gradlew test shadowJar
+~~~
 
-Requires **JDK 17+**. Dependencies: Montoya API 2026.2, Gson 2.11.0, gadget chain libraries (Commons Collections, Javassist, ROME, Groovy, C3P0, BeanShell).
+Windows users can run the wrapper from Git Bash or WSL.
 
-Contributing: fork → branch → `./gradlew shadowJar` must compile clean → test against DVWA / Juice Shop / PortSwigger Academy → open PR. [Issues](https://github.com/worldtreeboy/OmniStrike/issues) for bugs and feature requests.
+The ready-to-load extension is written to:
 
----
+~~~text
+build/libs/omnistrike.jar
+~~~
 
-## Changelog
+The shadow JAR:
 
-### v1.80
-- **API Key mode: 10 providers.** The AI Vulnerability Analyzer's API-key backend now covers Anthropic, OpenAI, Google Gemini, xAI (Grok), Moonshot AI (Kimi), DeepSeek, Mistral, Groq, OpenRouter, and Ollama (local, keyless). Providers are grouped by wire style (Anthropic Messages / OpenAI-compatible chat completions / Gemini generateContent), so new OpenAI-compatible providers are a one-line addition. Model lists refreshed (claude-opus-4-7, gpt-5.4, grok-4.5, kimi-k2.6, ...) and the model dropdown is now editable — type any newer model ID directly.
-- **Structured LLM output for Grok and Kimi CLIs.** Grok now runs with `--output-format json` and Kimi with `--output-format stream-json`; responses are parsed as JSON (assistant content extracted per message) instead of scraping transcript formatting. The Kimi `• `-prefix cleanup remains as a fallback for older CLI versions.
-- **GraphQL scanner fixes.** Manual scans of requests without a captured response (e.g. unsent Repeater items) no longer silently skip — the response-shape gate only applies when a response exists. Fixed a null-body NPE in the deep-nesting check that could abort the injection/IDOR/HTTP-level phases for an endpoint.
-- **Bundled findings report real severity/confidence.** Fixed inverted comparisons in FindingsBundler that made every consolidated "Security Hygiene" issue report INFORMATION severity and CERTAIN confidence; bundles now take the highest severity and lowest confidence of their findings.
+- Leaves the Montoya API out because Burp provides it at runtime
+- Relocates OmniStrike's Gson dependency to prevent extension classpath conflicts
+- Keeps gadget-chain package names intact so generated serialized payloads remain valid
 
-### v1.79
-- **Two new AI CLI backends: Kimi CLI and Grok CLI.** The AI Vulnerability Analyzer now supports six local CLIs (Claude, Gemini, Codex, OpenCode, Kimi, Grok). Kimi takes its prompt via `-p` argument (stdin is not read), so on Windows OmniStrike parses the npm wrapper and invokes the CLI's JS entry via `node` directly — no shell, so prompt content stays injection-safe. Grok uses `--prompt-file` with a temp file, which is both shell-safe and free of the Windows 32K argv limit. Kimi transcript formatting (`• ` prefixes, wrap indents, session-resume notices) is stripped so findings parsing works. Prompts over 30K chars on the argv-based Kimi path are rejected with a clear error instead of being silently truncated.
-- **Headless auto-approve for all CLI backends.** Claude gets `--dangerously-skip-permissions`, Gemini `--yolo`, Codex `--dangerously-bypass-approvals-and-sandbox`, Grok `--yolo` — unattended tool use no longer stalls on permission prompts. Kimi rejects `--yolo` in `-p` mode (auto permission is already the default) and `opencode run` is inherently non-interactive, so those need no flag. Note: auto-approve means the CLI executes LLM-decided actions without confirmation, and prompts contain attacker-controlled HTTP data — run Burp somewhere you accept that prompt-injection exposure.
+## 🤝 Contributing
 
-### v1.78
-- **SQLi: error-based detection now files a real finding.** The DBMS fingerprint phase already sent quote-breaking probes and matched responses against the DBMS error-pattern table — but only reported an INFO "DBMS Fingerprint" note. Now, when 2+ DBMS-specific error patterns absent from the baseline match, it also files **Error-Based SQL Injection — HIGH / FIRM**, with the matched error string as evidence and the probe's request/response attached. Zero extra requests; reuses the existing fingerprint probes. Single-hit detections stay INFO-only, so FP exposure is unchanged.
-- **SQLi: manual rescans actually re-run.** The module's private tested-param cache now honors the manual-scan dedup bypass every other module follows. Previously, right-click rescanning an already-scanned parameter silently fired zero SQLi probes until extension reload. Automatic flows still skip repeats as before.
-- Docs: dropped the unimplemented boolean-blind claim from the SQLi module's description.
+1. Fork the repository and create a focused branch.
+2. Add tests for behavioral changes where practical.
+3. Run <code>./gradlew test shadowJar</code>.
+4. Validate scanning changes only against systems you own or are authorized to test.
+5. Open a pull request with the problem, approach, and verification notes.
 
-### v1.77
-- **Stability fixes.** Guarded a latent subprocess deadlock in the AI CLI backend (stdout is now drained before the prompt is piped to stdin, so a large prompt can't fill the pipe buffer and hang); fixed two array-index edge cases that could throw mid-scan (the SQLi UNION builder's Oracle `FROM` guard now matches the delimiter it splits on, and the Dynamics 365 FetchXML alias parse tolerates a trailing `alias='`).
-- **Faster hot-path scanners.** Hoisted 27 regexes out of per-call method bodies into compile-once `static final` fields across Path Traversal, XXE, SSTI, Client-Side, Security Header, and Tech Fingerprinter — including five that were being recompiled twice per probe (response + baseline). No behavior change; less CPU/GC churn on large scans.
-- Removed a stale leftover source snapshot from the tree.
+Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/worldtreeboy/OmniStrike/issues).
 
-### v1.76
-- **Passive analyzers are now right-click only too.** Nothing runs automatically on proxy traffic. Both passive analyzers and active scanners only execute on requests you explicitly send via right-click → Send to OmniStrike. The previous auto-passive-on-in-scope behavior, the Burp Target → Scope fallback gate, and the dead OmniStrike include/exclude path checks are all gone. Findings list now contains exactly what you asked for, nothing else.
-- **SSTI engine identification — false-positive overhaul.** Rewrote the engine probe table to use unique fingerprints only an evaluated template can produce — Flask `<Config '`, Python class reprs (`<class 'subprocess.Popen'>`), Java `Process[pid=`, Twig `object(Twig\TwigFilter)`, unique math products (`131803`) — instead of common words (`function`, `Process`, `Runtime`, `20`, `[`, `test|list`, `3.|4.|5.`). Probes that couldn't be made unambiguous (`@DateTime.Now`, `{{#list}}test{{/list}}`, `{$smarty.version}`, ERB `Dir.entries`, the Mustache section probe) were dropped rather than tightened. Hardened the matching loop: empty baselines short-circuit; raw payload reflected in the body always rejects (the old keyword-based skip-list let RCE/version/config/class/globals probes through, the main FP source); the matched token must not be a substring of the payload itself.
-- **Path Traversal — baseline-marker fixes.** Marker-count detections (`UNIX_OSRELEASE`, `UNIX_ENVIRON`, `UNIX_APACHE`, `UNIX_SSHD`, `UNIX_REDIS`, `UNIX_OPENSSL`) now compare full marker counts between response and baseline; a baseline that happens to contain a different subset of markers no longer leaves the count check unguarded. `UNIX_OSRELEASE` uses line-anchored regex (was tripping on bare `ID=` in HTML/JSON). `UNIX_ENVIRON` adds a NUL-byte signal (the real `/proc/self/environ` format). Fixed an AND/OR logic bug in `WIN_BOOTINI` / `WIN_SYSTEMINI` / `WIN_PHPINI` / `WIN_WEBCONFIG` that passed whenever baseline lacked *either* marker.
-- **Dashboard findings: plain text.** Finding details no longer emit HTML (`<h3>`, `<p>`, `<b>`, `<pre>`, `<br>`). Plain-text labels with blank-line separators throughout `DashboardReporter` and `OmniStrikeScanCheck`.
+## 🗒️ Release notes
 
-### v1.75
-- **Every finding now reaches the Burp Dashboard** — findings with no underlying HTTP exchange (TLS Analyzer, async/Collaborator findings) get a minimal synthetic request built from the finding's URL.
-- **Passive analyzers run automatically again** on in-scope proxy traffic. Active scanning stays right-click only.
-- **Settings persistence** — thread count, throttle, theme, OOB config, Stepper chain (incl. rules/pinned vars/cookies), Session Keep-Alive login, and AI CLI backend choice all survive a Burp restart. API keys are never persisted.
-- **Leaner JAR** — Montoya API no longer bundled (Burp provides it); Gson relocated. Deserialization gadget libs intentionally un-relocated so payloads keep their real class names.
-- Removed dedup global lock; gated noisy per-request proxy logging behind a debug flag.
+<details open>
+<summary><strong>v1.80 — Provider expansion and scanner reliability</strong></summary>
 
-### v1.74
-- **Right-click-only scanning** — removed auto-scan / target-scope entirely. Nothing is sent to a target until you right-click → **Send to OmniStrike**.
-- **Parameter + module picker dialog** for **Send to OmniStrike (All Modules)** with tick-lists for every scannable param and module.
-- **Manual scans bypass dedup** so re-scanning actually re-runs.
-- **Session Keep-Alive** fresh cookies now inject into OmniStrike's own scan modules too (not just Burp's native tools).
-- Deserialization UI moved under Framework Tools.
+- Added API-key mode for ten providers: Anthropic, OpenAI, Google Gemini, xAI, Moonshot AI, DeepSeek, Mistral, Groq, OpenRouter, and Ollama.
+- Added structured CLI output handling for Grok and Kimi.
+- Fixed GraphQL scans without a captured response and guarded the deep-nesting check against null bodies.
+- Corrected bundled Dashboard severity and confidence aggregation.
 
-### v1.73
-- LDAP Injection scanner removed (net FP risk outweighed value).
-- Anti-reflection guard added to Command Injection and Path Traversal.
+</details>
 
----
+<details>
+<summary><strong>v1.79 — Kimi, Grok, and unattended CLI workflows</strong></summary>
 
-## Contributors
+- Added Kimi CLI and Grok CLI backends.
+- Added backend-specific structured-output and prompt-delivery handling.
+- Enabled headless approval modes for supported CLI backends.
+- Added clear handling for oversized Kimi argv prompts.
 
-- [worldtreeboy](https://github.com/worldtreeboy) — author & maintainer
-- **Claude** (Anthropic) — AI pair programmer
-- **Kimi** (Moonshot AI) — AI pair programmer
+</details>
 
----
+<details>
+<summary><strong>v1.78 — SQL injection reporting</strong></summary>
 
-## Legal
+- Promoted confirmed multi-marker error-based SQL injection to a real HIGH/FIRM finding.
+- Made manual SQLi rescans bypass the module's internal tested-parameter cache.
+- Removed an unimplemented boolean-blind claim from the module description.
 
-OmniStrike is for **authorized penetration testing** and **security research** only. Use exclusively on systems you have written permission to test. The authors are not responsible for misuse.
+</details>
+
+<details>
+<summary><strong>v1.77 — Stability and hot-path performance</strong></summary>
+
+- Prevented a latent AI CLI subprocess pipe deadlock.
+- Fixed SQLi UNION and Dynamics FetchXML array-index edge cases.
+- Hoisted frequently compiled scanner regular expressions into reusable constants.
+
+</details>
+
+<details>
+<summary><strong>v1.76 — Explicit scanning and false-positive reduction</strong></summary>
+
+- Made passive analyzers right-click-only.
+- Reworked SSTI fingerprints around evaluated, engine-specific evidence.
+- Hardened path-traversal baseline and marker logic.
+- Converted Dashboard finding details to plain text.
+
+</details>
+
+<details>
+<summary><strong>v1.75 and earlier</strong></summary>
+
+- Forwarded findings without native HTTP exchanges to Burp using synthetic requests.
+- Added persistence for non-secret settings while keeping API keys out of storage.
+- Reduced JAR conflicts by excluding Montoya and relocating Gson.
+- Added the parameter/module picker, manual dedup bypass, and Session Keep-Alive integration.
+- Moved deserialization tooling into Framework Tools and removed the noisy LDAP injection scanner.
+
+</details>
+
+## 🛡️ Responsible use
+
+OmniStrike is built for **authorized penetration testing and security research**. Use it only against systems you own or have explicit written permission to test. Active probes can change application state, trigger defenses, or affect availability.
+
+See the [MIT License](LICENSE) for the software license. The authors are not responsible for misuse.
 
 ---
 
 <div align="center">
-<sub>Built on the Montoya API. No legacy interfaces. No external servers. No API keys. Just one JAR.</sub>
+
+Built on Burp's Montoya API.<br/>
+**One request. The right probes. Fresh state. Clear evidence.**
+
+[Download](https://github.com/worldtreeboy/OmniStrike/releases/latest) ·
+[Report a bug](https://github.com/worldtreeboy/OmniStrike/issues) ·
+[Back to top](#-omnistrike)
+
 </div>

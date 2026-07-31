@@ -423,7 +423,7 @@ public class MainPanel extends JPanel {
         styleCheckBox(sessionCheckbox);
         sessionCheckbox.setSelected(false);
         sessionCheckbox.setToolTipText(
-                "Periodically replay a saved login request to keep session cookies fresh. "
+                "Periodically replay an in-memory login request to keep session cookies fresh. "
                 + "Right-click any request > 'Set as Session Login Request' to configure.");
         sessionRow.add(sessionCheckbox);
 

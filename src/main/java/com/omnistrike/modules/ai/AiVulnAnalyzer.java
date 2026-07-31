@@ -445,7 +445,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     t.setDaemon(true);
                     return t;
                 },
-                new ThreadPoolExecutor.DiscardPolicy());
+                new ThreadPoolExecutor.AbortPolicy());
 
         // Separate single-threaded executor for active fuzzing
         BlockingQueue<Runnable> fuzzQueue = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
@@ -456,7 +456,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     t.setDaemon(true);
                     return t;
                 },
-                new ThreadPoolExecutor.DiscardPolicy());
+                new ThreadPoolExecutor.AbortPolicy());
     }
 
     @Override
@@ -2457,7 +2457,9 @@ public class AiVulnAnalyzer implements ScanModule {
                         activeScansRunning.decrementAndGet();
                     }
                 });
-            } catch (RejectedExecutionException ignored) {}
+            } catch (RejectedExecutionException e) {
+                logError("AI fuzz: Queue full, request rejected for " + finalReqResp.request().url());
+            }
         }
     }
 

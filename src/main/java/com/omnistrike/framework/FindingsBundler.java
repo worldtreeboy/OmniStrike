@@ -67,15 +67,20 @@ public class FindingsBundler implements FindingsStore.FindingsListener {
             return;
         }
 
-        BundleBuffer buffer = buffers.computeIfAbsent(host, k -> new BundleBuffer());
-        buffer.findings.add(finding);
+        // Guard the computeIfAbsent/add/schedule sequence on the buffers map so a
+        // concurrent flush() cannot remove the buffer between lookup and add,
+        // which would orphan the finding (it would never be reported).
+        synchronized (buffers) {
+            BundleBuffer buffer = buffers.computeIfAbsent(host, k -> new BundleBuffer());
+            buffer.findings.add(finding);
 
-        // Cancel existing flush and reschedule (debounce)
-        ScheduledFuture<?> existing = buffer.flushTask;
-        if (existing != null) {
-            existing.cancel(false);
+            // Cancel existing flush and reschedule (debounce)
+            ScheduledFuture<?> existing = buffer.flushTask;
+            if (existing != null) {
+                existing.cancel(false);
+            }
+            buffer.flushTask = scheduler.schedule(() -> flush(host), FLUSH_DELAY_MS, TimeUnit.MILLISECONDS);
         }
-        buffer.flushTask = scheduler.schedule(() -> flush(host), FLUSH_DELAY_MS, TimeUnit.MILLISECONDS);
     }
 
     private boolean isBundleable(Finding finding) {
@@ -84,11 +89,13 @@ public class FindingsBundler implements FindingsStore.FindingsListener {
     }
 
     private void flush(String host) {
-        BundleBuffer buffer = buffers.remove(host);
-        if (buffer == null) return;
-
         List<Finding> findings;
-        synchronized (buffer.findings) {
+        // Remove and snapshot under the same monitor as onFindingAdded so the
+        // buffer cannot be re-populated while it is being detached from the map.
+        // Reporting happens outside the lock.
+        synchronized (buffers) {
+            BundleBuffer buffer = buffers.remove(host);
+            if (buffer == null) return;
             findings = new ArrayList<>(buffer.findings);
         }
 

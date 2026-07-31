@@ -20,7 +20,7 @@ public class FindingsStore {
     private static final int MAX_FINDINGS = 10000;
 
     private final CopyOnWriteArrayList<Finding> findings = new CopyOnWriteArrayList<>();
-    private final ConcurrentHashMap<String, Boolean> seenKeys = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> seenKeys = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<FindingsListener> listeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean fullWarningLogged = new AtomicBoolean(false);
     private volatile java.util.function.Consumer<String> errorLogger;
@@ -74,13 +74,7 @@ public class FindingsStore {
             String normalizedUrl = normalizeUrlForDedup(finding.getUrl());
             // Primary key: module + title + normalized URL (no query params) + parameter
             String key = finding.getModuleId() + "|" + finding.getTitle() + "|" + normalizedUrl + "|" + param;
-            if (seenKeys.putIfAbsent(key, Boolean.TRUE) != null) return; // duplicate
-
-            // Cross-module dedup
-            String crossModuleKey = normalizeFindingCategory(finding.getTitle()) + "|" + normalizedUrl + "|" + param;
-            if (!crossModuleKey.startsWith("|") && seenKeys.putIfAbsent("xmod:" + crossModuleKey, Boolean.TRUE) != null) {
-                return;
-            }
+            if (seenKeys.putIfAbsent(key, finding.getModuleId()) != null) return; // exact duplicate
 
             findings.add(finding);
             added = true;
@@ -146,24 +140,11 @@ public class FindingsStore {
     }
 
     /**
-     * Clears all findings for a specific module and rebuilds cross-module dedup keys.
-     * Synchronized to prevent race window between wipe and rebuild where concurrent
-     * addFinding() calls could bypass cross-module dedup.
+     * Clears all findings and exact-dedup keys for a specific module.
      */
     public synchronized void clearModule(String moduleId) {
         findings.removeIf(f -> f.getModuleId().equals(moduleId));
         seenKeys.entrySet().removeIf(e -> e.getKey().startsWith(moduleId + "|"));
-
-        // Rebuild cross-module dedup keys from surviving findings.
-        seenKeys.entrySet().removeIf(e -> e.getKey().startsWith("xmod:"));
-        for (Finding f : findings) {
-            String param = f.getParameter() != null ? f.getParameter() : "";
-            String normalizedUrl = normalizeUrlForDedup(f.getUrl());
-            String crossModuleKey = normalizeFindingCategory(f.getTitle()) + "|" + normalizedUrl + "|" + param;
-            if (!crossModuleKey.startsWith("|")) {
-                seenKeys.putIfAbsent("xmod:" + crossModuleKey, Boolean.TRUE);
-            }
-        }
     }
 
     /**
@@ -179,27 +160,4 @@ public class FindingsStore {
         return url.toLowerCase();
     }
 
-    /**
-     * Normalize finding title to a category for cross-module deduplication.
-     * Maps different module-specific titles to a common category when they
-     * describe the same underlying vulnerability.
-     */
-    private static String normalizeFindingCategory(String title) {
-        if (title == null || title.isEmpty()) return "";
-        String lower = title.toLowerCase();
-
-        // CORS issues from header-analyzer vs cors-scanner
-        if (lower.contains("cors")) return "cors-issue";
-        // Security header issues
-        if (lower.contains("missing security header") || lower.contains("missing hsts")
-                || lower.contains("missing x-frame") || lower.contains("missing csp")) return "";
-        // XSS from client-side-analyzer vs xss-scanner
-        if (lower.contains("dom xss")) return "dom-xss";
-        if (lower.contains("reflected xss") || lower.contains("xss:")) return "xss";
-        // Prototype pollution from client-side-analyzer vs prototype-pollution-scanner
-        if (lower.contains("prototype pollution")) return "prototype-pollution";
-
-        // Default: return empty to skip cross-module dedup (let module-specific dedup handle it)
-        return "";
-    }
 }

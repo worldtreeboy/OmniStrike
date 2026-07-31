@@ -741,7 +741,7 @@ public class SstiScanner implements ScanModule {
                 } else {
                     String jsonPattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
                     String replacement = "\"" + target.name + "\": \"" + escaped + "\"";
-                    String newBody = body.replaceFirst(jsonPattern, replacement);
+                    String newBody = body.replaceFirst(jsonPattern, java.util.regex.Matcher.quoteReplacement(replacement));
                     return request.withBody(newBody);
                 }
             case HEADER:

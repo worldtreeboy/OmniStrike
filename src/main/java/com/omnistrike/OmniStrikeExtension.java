@@ -263,7 +263,7 @@ public class OmniStrikeExtension implements BurpExtension {
 
         // ==================== SESSION KEEP-ALIVE ====================
         sessionKeepAlive = new SessionKeepAlive(api);
-        // Restore a previously-saved login request (but never auto-enable it).
+        // Restore only the refresh interval and erase any legacy plaintext login request.
         sessionKeepAlive.setPersistence(persistence);
         sessionKeepAlive.loadPersistedState();
         // uiLogger is wired below after MainPanel is created (it needs logPanel)

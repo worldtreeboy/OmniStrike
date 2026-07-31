@@ -1285,7 +1285,7 @@ public class CommandInjectionScanner implements ScanModule {
                 } else {
                     String pattern = "\"" + java.util.regex.Pattern.quote(target.name) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
                     String replacement = "\"" + target.name + "\": \"" + escaped + "\"";
-                    return request.withBody(body.replaceFirst(pattern, replacement));
+                    return request.withBody(body.replaceFirst(pattern, java.util.regex.Matcher.quoteReplacement(replacement)));
                 }
             case HEADER:
                 return request.withRemovedHeader(target.name).withAddedHeader(target.name, payload);

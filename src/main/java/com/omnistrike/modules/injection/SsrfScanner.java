@@ -475,7 +475,7 @@ public class SsrfScanner implements ScanModule {
                 // Top-level key — simple regex replacement
                 String pattern = "\"" + java.util.regex.Pattern.quote(dotKey) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
                 String replacement = "\"" + dotKey + "\": \"" + escaped + "\"";
-                return request.withBody(body.replaceFirst(pattern, replacement));
+                return request.withBody(body.replaceFirst(pattern, java.util.regex.Matcher.quoteReplacement(replacement)));
             }
 
             // Nested key — navigate to parent and replace
@@ -494,7 +494,7 @@ public class SsrfScanner implements ScanModule {
             String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
             String pattern = "\"" + java.util.regex.Pattern.quote(dotKey) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
             String replacement = "\"" + dotKey + "\": \"" + escaped + "\"";
-            return request.withBody(body.replaceFirst(pattern, replacement));
+            return request.withBody(body.replaceFirst(pattern, java.util.regex.Matcher.quoteReplacement(replacement)));
         }
     }
 

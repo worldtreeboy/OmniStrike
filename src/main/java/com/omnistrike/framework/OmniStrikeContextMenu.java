@@ -322,13 +322,13 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
         // ============ Session Keep-Alive ============
         items.add(new JSeparator());
 
-        // "Set as Session Login Request" — saves the selected request for periodic replay
+        // "Set as Session Login Request" — retains the selected request in memory for replay
         JMenuItem setLoginItem = new JMenuItem("Set as Session Login Request");
-        setLoginItem.setToolTipText("Save this request for periodic replay to keep session cookies fresh");
+        setLoginItem.setToolTipText("Keep this request in memory for periodic replay (cleared on restart)");
         setLoginItem.addActionListener(e -> {
             sessionKeepAlive.setLoginRequest(reqResp);
             showToast("Session Keep-Alive",
-                    "Login request saved:\n" + url
+                    "Login request kept in memory:\n" + url
                     + "\n\nEnable 'Session Keep-Alive' in the OmniStrike tab to start.");
         });
         items.add(setLoginItem);

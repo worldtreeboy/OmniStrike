@@ -2,7 +2,6 @@ package com.omnistrike.framework;
 import com.omnistrike.framework.stepper.StepperHttp;
 
 import burp.api.montoya.MontoyaApi;
-import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -10,6 +9,7 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.net.URI;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.function.BiConsumer;
@@ -17,12 +17,13 @@ import java.util.function.Consumer;
 
 /**
  * Session Keep-Alive: periodically replays a saved login request and captures
- * Set-Cookie headers. Fresh cookies are injected into ALL outgoing requests
- * (Proxy, Repeater, Scanner, Intruder, Extensions) via the HttpHandler hook
- * in TrafficInterceptor.
+ * Set-Cookie headers. Matching cookies can be injected into outgoing requests
+ * (Proxy, Repeater, Scanner, Intruder, Extensions) via the HttpHandler hook in
+ * TrafficInterceptor; Domain/host-only, Path, and Secure scope is enforced.
  *
- * <p>Handles 302/301/303 redirects — follows up to 5 redirects, collecting
- * Set-Cookie headers from every response in the chain.
+ * <p>Handles 301/302/303/307/308 redirects — follows up to 5 redirects, collecting
+ * Set-Cookie headers from same-origin hops in the chain. Redirects to a
+ * different origin (scheme/host/port) are followed without credentials.
  *
  * <p>Entirely optional — does nothing unless the user explicitly enables it
  * AND sets a login request via the right-click context menu.
@@ -38,11 +39,28 @@ public class SessionKeepAlive {
     private volatile boolean enabled = false;
     private volatile int intervalMinutes = 5;
 
-    // Fresh cookies collected from the login replay — injected into outgoing requests for the SAME DOMAIN
-    private final ConcurrentHashMap<String, String> freshCookies = new ConcurrentHashMap<>();
+    /** RFC 6265 identity for a cookie. */
+    private record CookieKey(String name, String domain, String path) {}
 
-    // The domain of the login request — cookies are ONLY injected into requests to this domain
+    /** A cookie captured from a same-origin login response. */
+    private record SessionCookie(String name, String value, String domain,
+                                 boolean hostOnly, String path, boolean secure,
+                                 long creationOrder, boolean delete) {}
+
+    // Key by name + effective domain + path so same-named cookies with different
+    // scopes do not overwrite one another.
+    private final ConcurrentHashMap<CookieKey, SessionCookie> freshCookies = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong cookieCreationSequence =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong loginGeneration =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    // Host of the login request, used for status and replay-level safety checks.
     private volatile String loginDomain = "";
+
+    // Whether the login request used HTTPS — cookies captured over HTTPS are
+    // never injected into plaintext HTTP requests to the same domain.
+    private volatile boolean loginSecure = false;
 
     // State
     private volatile boolean errorState = false;
@@ -70,9 +88,9 @@ public class SessionKeepAlive {
     private volatile BiConsumer<String, String> uiLogger;
     private volatile Consumer<String> statusCallback;
 
-    // Persists the saved login request + interval across restarts (never the
-    // enabled flag — keep-alive must be re-armed explicitly so it can't start
-    // replaying / sending requests on its own after a restart).
+    // Only the non-sensitive refresh interval is persisted. Login requests are
+    // deliberately memory-only because they can contain passwords, bearer
+    // tokens, cookies, and CSRF secrets.
     private volatile PersistenceManager persistence;
     private static final String K_HOST = "session.loginHost";
     private static final String K_PORT = "session.loginPort";
@@ -89,9 +107,9 @@ public class SessionKeepAlive {
     }
 
     /**
-     * Restores a previously-saved login request and interval. Does NOT re-enable
-     * keep-alive — the user must tick the box again so nothing is replayed
-     * automatically on startup. Call once at extension init.
+     * Restores the non-sensitive refresh interval and erases any raw login
+     * request left by older OmniStrike versions. Login requests are deliberately
+     * memory-only and must be selected again after a restart.
      */
     public void loadPersistedState() {
         PersistenceManager pm = persistence;
@@ -100,45 +118,35 @@ public class SessionKeepAlive {
             int interval = pm.getInt(K_INTERVAL, 0);
             if (interval > 0) this.intervalMinutes = Math.max(1, interval);
 
-            String host = pm.getString(K_HOST, null);
             String reqB64 = pm.getString(K_REQ, null);
-            if (host == null || reqB64 == null || reqB64.isBlank()) return;
-            int port = pm.getInt(K_PORT, 0);
-            boolean secure = pm.getBoolean(K_SECURE, true);
-            byte[] raw = Base64.getDecoder().decode(reqB64);
-            HttpService svc = HttpService.httpService(host, port, secure);
-            HttpRequest req = HttpRequest.httpRequest(svc, ByteArray.byteArray(raw));
-            // Wrap with an empty response — only the request is ever used for replay.
-            this.loginRequest = HttpRequestResponse.httpRequestResponse(req, HttpResponse.httpResponse());
-            this.loginDomain = host.toLowerCase();
-            updateStatus();
-            log("SessionKeepAlive", "Restored saved login request: " + req.url()
-                    + " (enable keep-alive to use it)");
+            if (reqB64 != null && !reqB64.isBlank()) {
+                log("SessionKeepAlive", "Removed a legacy plaintext saved login request. "
+                        + "Login requests are now memory-only and must be selected again.");
+            }
+            clearPersistedLoginRequest(pm);
         } catch (Exception e) {
-            log("SessionKeepAlive", "Could not restore saved login request: " + e.getMessage());
+            log("SessionKeepAlive", "Could not restore session settings: " + e.getMessage());
         }
     }
 
-    /** Writes the current login request + interval to the preferences store. */
+    /** Writes only non-sensitive configuration and erases legacy credential fields. */
     private void persist() {
         PersistenceManager pm = persistence;
         if (pm == null) return;
         try {
             pm.setInt(K_INTERVAL, intervalMinutes);
-            HttpRequestResponse rr = loginRequest;
-            if (rr == null) {
-                pm.setString(K_REQ, "");
-                return;
-            }
-            HttpRequest req = rr.request();
-            HttpService svc = req.httpService();
-            pm.setString(K_HOST, svc.host());
-            pm.setInt(K_PORT, svc.port());
-            pm.setBoolean(K_SECURE, svc.secure());
-            pm.setString(K_REQ, Base64.getEncoder().encodeToString(req.toByteArray().getBytes()));
+            clearPersistedLoginRequest(pm);
         } catch (Exception e) {
-            log("SessionKeepAlive", "Could not persist login request: " + e.getMessage());
+            log("SessionKeepAlive", "Could not persist session settings: " + e.getMessage());
         }
+    }
+
+    /** Overwrite credential-bearing fields written by older releases. */
+    private static void clearPersistedLoginRequest(PersistenceManager pm) {
+        pm.setString(K_REQ, "");
+        pm.setString(K_HOST, "");
+        pm.setInt(K_PORT, 0);
+        pm.setBoolean(K_SECURE, false);
     }
 
     /** Set a callback to log events to the UI Activity Log. Args: (module, message) */
@@ -153,31 +161,34 @@ public class SessionKeepAlive {
 
     // ==================== COOKIE ACCESS (for TrafficInterceptor) ====================
 
+    /** Backwards-compatible root-path lookup used by status/UI callers. */
+    public Map<String, String> getFreshCookiesForHost(String requestHost, boolean requestSecure) {
+        return getFreshCookiesForRequest(requestHost, "/", requestSecure);
+    }
+
     /**
-     * Returns the fresh cookies if the given host matches the login request's domain.
-     * Cookies are ONLY injected into requests for the same domain — never cross-domain.
-     *
-     * @param requestHost the host of the outgoing request (e.g., "example.com")
-     * @return unmodifiable map of cookie name -> value, or empty map if domain doesn't match
+     * Returns cookies whose Domain/host-only, Path, and Secure scope matches the
+     * outgoing request. When multiple matching paths use the same name, the
+     * longest-path cookie wins in this map view; actual request injection keeps
+     * all matching scoped cookies in browser order.
      */
-    public Map<String, String> getFreshCookiesForHost(String requestHost) {
-        if (!enabled || freshCookies.isEmpty() || loginDomain.isEmpty()) return Collections.emptyMap();
-        if (requestHost == null) return Collections.emptyMap();
-
-        // Domain match: exact match or subdomain match (request is sub.example.com, login is example.com)
-        String host = requestHost.toLowerCase();
-        if (!host.equals(loginDomain) && !host.endsWith("." + loginDomain)) {
-            return Collections.emptyMap();
+    public Map<String, String> getFreshCookiesForRequest(
+            String requestHost, String requestPath, boolean requestSecure) {
+        List<SessionCookie> matches = matchingCookies(requestHost, requestPath, requestSecure,
+                freshCookies.values());
+        if (matches.isEmpty()) return Collections.emptyMap();
+        Map<String, String> result = new LinkedHashMap<>();
+        for (SessionCookie cookie : matches) {
+            result.putIfAbsent(cookie.name(), cookie.value());
         }
-
-        return Collections.unmodifiableMap(new HashMap<>(freshCookies));
+        return Collections.unmodifiableMap(result);
     }
 
     /**
      * Returns true if session keep-alive is enabled and has fresh cookies for the given host.
      */
-    public boolean hasFreshCookiesForHost(String requestHost) {
-        return !getFreshCookiesForHost(requestHost).isEmpty();
+    public boolean hasFreshCookiesForHost(String requestHost, boolean requestSecure) {
+        return !getFreshCookiesForHost(requestHost, requestSecure).isEmpty();
     }
 
     /**
@@ -199,7 +210,9 @@ public class SessionKeepAlive {
     public HttpRequest applyFreshCookies(HttpRequest request) {
         if (request == null || replaying.get()) return request;
         try {
-            Map<String, String> fresh = getFreshCookiesForHost(request.httpService().host());
+            HttpService service = request.httpService();
+            List<SessionCookie> fresh = matchingCookies(service.host(),
+                    request.pathWithoutQuery(), service.secure(), freshCookies.values());
             if (fresh.isEmpty()) return request;
             return injectCookiesIntoRequest(request, fresh);
         } catch (Exception e) {
@@ -223,17 +236,24 @@ public class SessionKeepAlive {
      * "Set as Session Login Request".
      */
     public void setLoginRequest(HttpRequestResponse reqResp) {
+        // Never carry session material from a previously-selected target into
+        // the new login domain while its first refresh is still pending.
+        loginGeneration.incrementAndGet();
+        freshCookies.clear();
         this.loginRequest = reqResp;
         this.errorState = false;
         try {
-            this.loginDomain = reqResp.request().httpService().host().toLowerCase();
+            HttpService svc = reqResp.request().httpService();
+            this.loginDomain = svc.host().toLowerCase();
+            this.loginSecure = svc.secure();
         } catch (Exception e) {
             this.loginDomain = "";
+            this.loginSecure = false;
         }
         updateStatus();
         persist();
         log("SessionKeepAlive", "Login request saved: " + reqResp.request().url()
-                + " (domain: " + loginDomain + ")");
+                + " (domain: " + loginDomain + ", memory-only)");
 
         // If already enabled, start/restart the scheduler immediately
         if (enabled) {
@@ -245,10 +265,12 @@ public class SessionKeepAlive {
      * Clears the saved login request and stops the scheduler.
      */
     public void clearLoginRequest() {
+        loginGeneration.incrementAndGet();
         this.loginRequest = null;
         this.errorState = false;
         this.lastRefreshTime = "";
         this.loginDomain = "";
+        this.loginSecure = false;
         freshCookies.clear();
         stopScheduler();
         updateStatus();
@@ -415,18 +437,26 @@ public class SessionKeepAlive {
      * Core replay logic:
      * 1. Send the saved login request
      * 2. Collect Set-Cookie headers from the response
-     * 3. Follow 301/302/303 redirects (up to MAX_REDIRECTS), collecting cookies from each hop
+     * 3. Follow 301/302/303/307/308 redirects (up to MAX_REDIRECTS), collecting cookies from
+     *    each hop that stays on the login origin; origin-changed hops are followed
+     *    without credentials and their Set-Cookie headers are ignored
      * 4. Store all collected cookies in freshCookies map
      * 5. On failure: log warning, set error state, schedule a retry in 30s
      * 6. On success: update last refresh time, clear error state
      */
     private void replayLoginRequest() {
         HttpRequestResponse savedReq = this.loginRequest;
+        long replayGeneration = loginGeneration.get();
         if (savedReq == null || !enabled) return;
 
-        Map<String, String> collectedCookies = new LinkedHashMap<>();
+        Map<CookieKey, SessionCookie> collectedCookies = new LinkedHashMap<>();
         HttpRequest currentRequest = savedReq.request();
         int redirectCount = 0;
+
+        // ORIGIN = scheme + host + effective port of the saved login request.
+        HttpService loginService = savedReq.request().httpService();
+        String loginOrigin = origin(loginService.secure() ? "https" : "http",
+                loginService.host(), loginService.port());
 
         while (redirectCount <= MAX_REDIRECTS) {
             HttpResponse response;
@@ -438,8 +468,15 @@ public class SessionKeepAlive {
                 return;
             }
 
-            // Collect Set-Cookie headers from this response
-            collectSetCookies(response, collectedCookies);
+            // Collect Set-Cookie headers from this response — only from hops on the
+            // login origin. Set-Cookie from an origin-changed hop must never be
+            // merged into freshCookies (session fixation).
+            HttpService currentService = currentRequest.httpService();
+            String currentOrigin = origin(currentService.secure() ? "https" : "http",
+                    currentService.host(), currentService.port());
+            if (currentOrigin.equals(loginOrigin)) {
+                collectSetCookies(response, currentRequest, collectedCookies);
+            }
 
             int status = response.statusCode();
 
@@ -461,22 +498,48 @@ public class SessionKeepAlive {
                 // Build redirect URL (handle relative and absolute)
                 String redirectUrl = resolveRedirectUrl(currentRequest, location);
 
-                log("SessionKeepAlive", "Following redirect (" + status + ") → " + truncate(redirectUrl, 80));
-
                 // Build GET request to the redirect URL, carrying cookies from the chain
                 try {
-                    HttpRequest redirectRequest = HttpRequest.httpRequestFromUrl(redirectUrl);
-                    // Copy auth headers from original
-                    for (var h : savedReq.request().headers()) {
-                        String name = h.name().toLowerCase();
-                        if (name.equals("cookie") || name.equals("authorization")) {
-                            redirectRequest = redirectRequest.withRemovedHeader(h.name())
-                                    .withAddedHeader(h.name(), h.value());
-                        }
+                    // ORIGIN = scheme + host + effective port. On ANY origin change the
+                    // redirect is still followed, but credentials are stripped: no
+                    // Authorization/Cookie headers are copied and no collected cookies
+                    // are injected — an open redirect must not leak session credentials.
+                    URI uri = new URI(redirectUrl);
+                    String redirectHost = uri.getHost();
+                    String redirectOrigin = redirectHost != null
+                            ? origin(uri.getScheme() != null ? uri.getScheme() : "http",
+                                    redirectHost, uri.getPort())
+                            : null;
+                    boolean credentialsAllowed = maySendCredentials(loginOrigin, redirectOrigin);
+
+                    if (!credentialsAllowed) {
+                        log("SessionKeepAlive", "Following redirect (" + status + ") outside login origin "
+                                + (redirectOrigin != null ? redirectOrigin : truncate(redirectUrl, 80))
+                                + " — credentials stripped");
+                    } else {
+                        log("SessionKeepAlive", "Following redirect (" + status + ") → " + truncate(redirectUrl, 80));
                     }
-                    // Inject collected cookies so far into the redirect request
-                    if (!collectedCookies.isEmpty()) {
-                        redirectRequest = injectCookiesIntoRequest(redirectRequest, collectedCookies);
+
+                    HttpRequest redirectRequest = HttpRequest.httpRequestFromUrl(redirectUrl);
+                    if (credentialsAllowed) {
+                        // Copy auth headers from original
+                        for (var h : savedReq.request().headers()) {
+                            String name = h.name().toLowerCase();
+                            if (name.equals("cookie") || name.equals("authorization")) {
+                                redirectRequest = redirectRequest.withRemovedHeader(h.name())
+                                        .withAddedHeader(h.name(), h.value());
+                            }
+                        }
+                        // Inject collected cookies so far into the redirect request
+                        if (!collectedCookies.isEmpty()) {
+                            HttpService redirectService = redirectRequest.httpService();
+                            List<SessionCookie> redirectCookies = matchingCookies(
+                                    redirectService.host(), redirectRequest.pathWithoutQuery(),
+                                    redirectService.secure(), collectedCookies.values());
+                            if (!redirectCookies.isEmpty()) {
+                                redirectRequest = injectCookiesIntoRequest(redirectRequest, redirectCookies);
+                            }
+                        }
                     }
                     currentRequest = redirectRequest;
                 } catch (Exception e) {
@@ -503,11 +566,28 @@ public class SessionKeepAlive {
             return;
         }
 
+        // If the user selected/cleared a login request while this replay was in
+        // flight, discard its result rather than contaminating the new target.
+        if (replayGeneration != loginGeneration.get() || savedReq != this.loginRequest) {
+            log("SessionKeepAlive", "Discarded stale refresh result after login target changed");
+            return;
+        }
+
         // Store collected cookies for injection into all outgoing requests
         if (!collectedCookies.isEmpty()) {
-            freshCookies.putAll(collectedCookies);
+            for (Map.Entry<CookieKey, SessionCookie> entry : collectedCookies.entrySet()) {
+                if (entry.getValue().delete()) {
+                    freshCookies.remove(entry.getKey());
+                } else {
+                    freshCookies.put(entry.getKey(), entry.getValue());
+                }
+            }
+            Set<String> capturedNames = new LinkedHashSet<>();
+            for (SessionCookie cookie : collectedCookies.values()) {
+                capturedNames.add(cookie.name());
+            }
             log("SessionKeepAlive", "Refresh OK — " + collectedCookies.size()
-                    + " cookie(s) captured: " + String.join(", ", collectedCookies.keySet()));
+                    + " cookie(s) captured: " + String.join(", ", capturedNames));
         } else {
             log("SessionKeepAlive", "Refresh OK but no Set-Cookie headers — session may already be valid");
         }
@@ -539,11 +619,14 @@ public class SessionKeepAlive {
 
     // ==================== COOKIE HELPERS ====================
 
-    /**
-     * Extracts all Set-Cookie headers from a response and adds them to the map.
-     * Later cookies with the same name overwrite earlier ones (newest wins).
-     */
-    private void collectSetCookies(HttpResponse response, Map<String, String> cookies) {
+    /** Extract and validate Set-Cookie values using the setting request's scope. */
+    private void collectSetCookies(HttpResponse response, HttpRequest setterRequest,
+                                   Map<CookieKey, SessionCookie> cookies) {
+        HttpService setterService = setterRequest.httpService();
+        String setterHost = normalizeHost(setterService.host());
+        boolean setterSecure = setterService.secure();
+        String defaultPath = defaultCookiePath(setterRequest.pathWithoutQuery());
+
         for (var header : response.headers()) {
             if ("Set-Cookie".equalsIgnoreCase(header.name())) {
                 String val = header.value();
@@ -554,7 +637,50 @@ public class SessionKeepAlive {
                         String name = parts[0].substring(0, eq).trim();
                         String value = parts[0].substring(eq + 1).trim();
                         if (!name.isEmpty()) {
-                            cookies.put(name, value);
+                            String domainAttribute = null;
+                            String path = defaultPath;
+                            boolean secure = false;
+                            boolean delete = false;
+
+                            for (int i = 1; i < parts.length; i++) {
+                                String attribute = parts[i].trim();
+                                int attrEq = attribute.indexOf('=');
+                                String attrName = (attrEq >= 0
+                                        ? attribute.substring(0, attrEq) : attribute).trim();
+                                String attrValue = attrEq >= 0
+                                        ? attribute.substring(attrEq + 1).trim() : "";
+                                if ("domain".equalsIgnoreCase(attrName) && !attrValue.isEmpty()) {
+                                    domainAttribute = normalizeCookieDomain(attrValue);
+                                } else if ("path".equalsIgnoreCase(attrName)
+                                        && attrValue.startsWith("/")) {
+                                    path = attrValue;
+                                } else if ("secure".equalsIgnoreCase(attrName)) {
+                                    secure = true;
+                                } else if ("max-age".equalsIgnoreCase(attrName)) {
+                                    try {
+                                        delete = Long.parseLong(attrValue) <= 0;
+                                    } catch (NumberFormatException ignored) {}
+                                }
+                            }
+
+                            if (secure && !setterSecure) {
+                                log("SessionKeepAlive", "Ignored Secure cookie '" + name
+                                        + "' received over plaintext HTTP");
+                                continue;
+                            }
+                            if (domainAttribute != null
+                                    && !domainMatches(setterHost, domainAttribute)) {
+                                log("SessionKeepAlive", "Ignored cookie '" + name
+                                        + "' with invalid Domain=" + domainAttribute);
+                                continue;
+                            }
+
+                            boolean hostOnly = domainAttribute == null;
+                            String effectiveDomain = hostOnly ? setterHost : domainAttribute;
+                            CookieKey key = new CookieKey(name, effectiveDomain, path);
+                            cookies.put(key, new SessionCookie(name, value, effectiveDomain,
+                                    hostOnly, path, secure,
+                                    cookieCreationSequence.incrementAndGet(), delete));
                         }
                     }
                 }
@@ -562,37 +688,137 @@ public class SessionKeepAlive {
         }
     }
 
-    /**
-     * Injects cookies into a request's Cookie header.
-     * Merges with existing cookies (new values overwrite old for same-name cookies).
-     */
-    private HttpRequest injectCookiesIntoRequest(HttpRequest request, Map<String, String> cookies) {
-        Map<String, String> merged = new LinkedHashMap<>();
+    /** True if a Set-Cookie header value carries the Secure attribute. */
+    static boolean hasSecureAttribute(String setCookieValue) {
+        String[] parts = setCookieValue.split(";");
+        for (int i = 1; i < parts.length; i++) {
+            if ("secure".equalsIgnoreCase(parts[i].trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
 
-        // Parse existing Cookie header
+    /** Credentials may only be sent to the original saved login origin. */
+    static boolean maySendCredentials(String loginOrigin, String targetOrigin) {
+        return loginOrigin != null && loginOrigin.equals(targetOrigin);
+    }
+
+    static boolean domainMatches(String requestHost, String cookieDomain) {
+        if (requestHost == null || cookieDomain == null) return false;
+        String host = normalizeHost(requestHost);
+        String domain = normalizeCookieDomain(cookieDomain);
+        return host.equals(domain) || host.endsWith("." + domain);
+    }
+
+    static boolean pathMatches(String requestPath, String cookiePath) {
+        String request = requestPath == null || requestPath.isEmpty() ? "/" : requestPath;
+        String cookie = cookiePath == null || cookiePath.isEmpty() ? "/" : cookiePath;
+        if (request.equals(cookie)) return true;
+        if (!request.startsWith(cookie)) return false;
+        return cookie.endsWith("/")
+                || (request.length() > cookie.length() && request.charAt(cookie.length()) == '/');
+    }
+
+    static boolean cookieMatches(String requestHost, String requestPath, boolean requestSecure,
+                                 String cookieDomain, boolean hostOnly,
+                                 String cookiePath, boolean cookieSecure) {
+        if (requestHost == null || cookieDomain == null) return false;
+        String host = normalizeHost(requestHost);
+        boolean hostMatches = hostOnly
+                ? host.equals(normalizeCookieDomain(cookieDomain))
+                : domainMatches(host, cookieDomain);
+        return hostMatches && (!cookieSecure || requestSecure)
+                && pathMatches(requestPath, cookiePath);
+    }
+
+    private static String defaultCookiePath(String requestPath) {
+        if (requestPath == null || !requestPath.startsWith("/")) return "/";
+        int lastSlash = requestPath.lastIndexOf('/');
+        return lastSlash <= 0 ? "/" : requestPath.substring(0, lastSlash);
+    }
+
+    private static String normalizeHost(String host) {
+        String normalized = host == null ? "" : host.trim().toLowerCase(Locale.ROOT);
+        while (normalized.endsWith(".")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private static String normalizeCookieDomain(String domain) {
+        String normalized = normalizeHost(domain);
+        while (normalized.startsWith(".")) {
+            normalized = normalized.substring(1);
+        }
+        return normalized;
+    }
+
+    private List<SessionCookie> matchingCookies(String requestHost, String requestPath,
+                                                boolean requestSecure,
+                                                Collection<SessionCookie> candidates) {
+        if (!enabled || candidates.isEmpty() || loginDomain.isEmpty() || requestHost == null) {
+            return Collections.emptyList();
+        }
+        // Preserve the original safety guarantee: no cookie captured by an
+        // HTTPS login workflow is ever downgraded to plaintext HTTP.
+        if (loginSecure && !requestSecure) return Collections.emptyList();
+
+        String host = normalizeHost(requestHost);
+        String loginHost = normalizeHost(loginDomain);
+        if (!host.equals(loginHost) && !host.endsWith("." + loginHost)) {
+            return Collections.emptyList();
+        }
+        List<SessionCookie> result = new ArrayList<>();
+        for (SessionCookie cookie : candidates) {
+            if (cookie.delete()) continue;
+            if (!cookieMatches(host, requestPath, requestSecure, cookie.domain(),
+                    cookie.hostOnly(), cookie.path(), cookie.secure())) {
+                continue;
+            }
+            result.add(cookie);
+        }
+        result.sort(Comparator
+                .comparingInt((SessionCookie c) -> c.path().length()).reversed()
+                .thenComparingLong(SessionCookie::creationOrder));
+        return result;
+    }
+
+    /** Effective port for origin comparison: explicit port, or the scheme default. */
+    private static int effectivePort(String scheme, int port) {
+        if (port > 0) return port;
+        return "https".equalsIgnoreCase(scheme) ? 443 : 80;
+    }
+
+    /** Normalized origin string: scheme://host:port (lowercased, effective port). */
+    private static String origin(String scheme, String host, int port) {
+        return scheme.toLowerCase(Locale.ROOT) + "://" + host.toLowerCase(Locale.ROOT)
+                + ":" + effectivePort(scheme, port);
+    }
+
+    /** Inject matching cookies, preserving separate same-name path/domain values. */
+    private HttpRequest injectCookiesIntoRequest(HttpRequest request, List<SessionCookie> cookies) {
+        Set<String> replacedNames = new HashSet<>();
+        for (SessionCookie cookie : cookies) replacedNames.add(cookie.name());
+
+        List<String> pairs = new ArrayList<>();
         String existing = request.headerValue("Cookie");
         if (existing != null && !existing.isEmpty()) {
             for (String pair : existing.split(";")) {
                 String trimmed = pair.trim();
                 int eq = trimmed.indexOf('=');
-                if (eq > 0) {
-                    merged.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
+                String name = eq > 0 ? trimmed.substring(0, eq).trim() : trimmed;
+                if (!name.isEmpty() && !replacedNames.contains(name)) {
+                    pairs.add(trimmed);
                 }
             }
         }
-
-        // Overlay fresh cookies (new wins)
-        merged.putAll(cookies);
-
-        // Build Cookie header
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, String> entry : merged.entrySet()) {
-            if (sb.length() > 0) sb.append("; ");
-            sb.append(entry.getKey()).append("=").append(entry.getValue());
+        for (SessionCookie cookie : cookies) {
+            pairs.add(cookie.name() + "=" + cookie.value());
         }
 
         return request.withRemovedHeader("Cookie")
-                .withAddedHeader("Cookie", sb.toString());
+                .withAddedHeader("Cookie", String.join("; ", pairs));
     }
 
     /**

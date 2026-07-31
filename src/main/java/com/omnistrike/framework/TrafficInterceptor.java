@@ -144,15 +144,11 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
         HttpRequest current = request;
 
         // SessionKeepAlive: inject fresh cookies from the periodic login replay.
-        // Domain-scoped — only injects into requests matching the login request's domain.
+        // RFC-scoped — Domain/host-only, Path, and Secure attributes are enforced.
         try {
             SessionKeepAlive keepAlive = sessionKeepAlive;
             if (keepAlive != null && keepAlive.isEnabled()) {
-                String host = request.httpService().host();
-                java.util.Map<String, String> freshCookies = keepAlive.getFreshCookiesForHost(host);
-                if (!freshCookies.isEmpty()) {
-                    current = injectCookies(current, freshCookies);
-                }
+                current = keepAlive.applyFreshCookies(current);
             }
         } catch (Exception e) {
             // Never break the proxy pipeline
@@ -174,39 +170,6 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
             uiLog("Stepper", "ERROR in request hook: " + e.getMessage());
         }
         return RequestToBeSentAction.continueWith(current);
-    }
-
-    /**
-     * Merges cookies into a request's Cookie header.
-     * Preserves existing cookies; new values overwrite same-name cookies.
-     */
-    private HttpRequest injectCookies(HttpRequest request, java.util.Map<String, String> cookies) {
-        java.util.LinkedHashMap<String, String> merged = new java.util.LinkedHashMap<>();
-
-        // Parse existing Cookie header
-        String existing = request.headerValue("Cookie");
-        if (existing != null && !existing.isEmpty()) {
-            for (String pair : existing.split(";")) {
-                String trimmed = pair.trim();
-                int eq = trimmed.indexOf('=');
-                if (eq > 0) {
-                    merged.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
-                }
-            }
-        }
-
-        // Overlay fresh cookies (new wins on conflicts)
-        merged.putAll(cookies);
-
-        // Build Cookie header
-        StringBuilder sb = new StringBuilder();
-        for (java.util.Map.Entry<String, String> entry : merged.entrySet()) {
-            if (sb.length() > 0) sb.append("; ");
-            sb.append(entry.getKey()).append("=").append(entry.getValue());
-        }
-
-        return request.withRemovedHeader("Cookie")
-                .withAddedHeader("Cookie", sb.toString());
     }
 
     @Override

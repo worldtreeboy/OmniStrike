@@ -18,10 +18,14 @@ import com.google.gson.JsonParser;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BiConsumer;
 import java.util.regex.Matcher;
@@ -65,6 +69,7 @@ public class StepperEngine {
 
     /** Manually-added cookies that persist across chain re-runs. Shared across modes. */
     private final ConcurrentHashMap<String, String> pinnedCookies = new ConcurrentHashMap<>();
+    private final AtomicLong cookieCreationSequence = new AtomicLong();
 
     /**
      * Manually-added/overridden variables that persist across chain re-runs.
@@ -285,6 +290,7 @@ public class StepperEngine {
         if (name != null) {
             pinnedCookies.remove(name);
             displayContext.cookieJar.remove(name);
+            displayContext.scopedCookies.entrySet().removeIf(e -> e.getValue().name.equals(name));
             persist();
         }
     }
@@ -292,6 +298,7 @@ public class StepperEngine {
     public void clearCookieJar() {
         pinnedCookies.clear();
         displayContext.cookieJar.clear();
+        displayContext.scopedCookies.clear();
         persist();
     }
 
@@ -489,6 +496,8 @@ public class StepperEngine {
         }
         displayContext.cookieJar.clear();
         displayContext.cookieJar.putAll(src.cookieJar);
+        displayContext.scopedCookies.clear();
+        displayContext.scopedCookies.putAll(src.scopedCookies);
         synchronized (displayContext.stepResponses) {
             displayContext.stepResponses.clear();
             synchronized (src.stepResponses) {
@@ -574,8 +583,7 @@ public class StepperEngine {
 
         chainLock.lock();
         try {
-            executeChain(currentSteps, displayContext);
-            return true;
+            return executeChain(currentSteps, displayContext);
         } catch (Exception e) {
             uiLog("Stepper", "Manual chain run failed: " + e.getMessage());
             return false;
@@ -586,10 +594,15 @@ public class StepperEngine {
 
     // ── Chain Execution ──────────────────────────────────────────────────────
 
-    private void executeChain(List<StepperStep> currentSteps, ChainContext ctx) {
+    private boolean executeChain(List<StepperStep> currentSteps, ChainContext ctx) {
         EXECUTING_CHAIN.set(true);
+        boolean successful = false;
         try {
             ctx.reset();
+            // Invalidate any previous success before mutating its variables and
+            // cookies. A failed manual refresh must not leave an apparently-valid TTL.
+            ctx.lastChainRunTime = 0;
+            ctx.lastChainPrereqCount = -1;
             ctx.cookieJar.putAll(pinnedCookies);
             // Re-apply pinned variables so manual overrides survive the reset.
             for (Map.Entry<String, String> e : pinnedVariables.entrySet()) {
@@ -597,10 +610,16 @@ public class StepperEngine {
             }
             uiLog("Stepper", "Running chain (" + currentSteps.size() + " steps)...");
 
+            // Stamp the TTL only when every enabled prerequisite succeeds and
+            // every configured extraction produces a value.
+            boolean completed = true;
+            boolean allStepsSucceeded = true;
+            boolean anyStepSucceeded = false;
             for (int i = 0; i < currentSteps.size(); i++) {
-                if (Thread.currentThread().isInterrupted()) break;
+                if (Thread.currentThread().isInterrupted()) { completed = false; break; }
                 if (paused) {
                     uiLog("Stepper", "  Chain aborted at step " + (i + 1) + " (paused).");
+                    completed = false;
                     break;
                 }
                 StepperStep step = currentSteps.get(i);
@@ -620,10 +639,12 @@ public class StepperEngine {
                     HttpResponse response = result.response();
 
                     if (response == null) {
+                        allStepsSucceeded = false;
                         uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName()
                                 + "] — No response (connection failed?)");
                         if (stopOnFailure) {
                             uiLog("Stepper", "  Chain aborted at step " + (i + 1) + " (stop-on-failure).");
+                            completed = false;
                             break;
                         }
                         continue;
@@ -632,10 +653,16 @@ public class StepperEngine {
                     uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName()
                             + "] — " + response.statusCode() + " " + step.getUrlSummary());
 
+                    boolean stepSucceeded = response.statusCode() < 400;
+                    if (!stepSucceeded) {
+                        uiLog("Stepper", "    WARN: HTTP " + response.statusCode()
+                                + " marks this prerequisite as failed");
+                    }
                     ctx.stepResponses.add(response);
 
                     if (cookieJarEnabled) {
-                        collectCookies(response, i + 1, step.getName(), ctx);
+                        collectCookies(response, i + 1, step.getName(),
+                                templated.httpService(), templated.pathWithoutQuery(), ctx);
                     }
 
                     for (ExtractionRule rule : step.getExtractionRules()) {
@@ -645,15 +672,29 @@ public class StepperEngine {
                             uiLog("Stepper", "    Extracted {{" + rule.getVariableName()
                                     + "}} = " + truncate(value, 50));
                         } else {
+                            stepSucceeded = false;
                             uiLog("Stepper", "    WARN: No value extracted for {{"
                                     + rule.getVariableName() + "}} (" + rule.getType() + ": " + rule.getPattern() + ")");
                         }
                     }
+                    if (stepSucceeded) {
+                        anyStepSucceeded = true;
+                    } else {
+                        allStepsSucceeded = false;
+                        if (stopOnFailure) {
+                            uiLog("Stepper", "  Chain aborted at step " + (i + 1)
+                                    + " (stop-on-failure).");
+                            completed = false;
+                            break;
+                        }
+                    }
                 } catch (Exception e) {
+                    allStepsSucceeded = false;
                     uiLog("Stepper", "  Step " + (i + 1) + " [" + step.getName()
                             + "] — ERROR: " + e.getMessage());
                     if (stopOnFailure) {
                         uiLog("Stepper", "  Chain aborted at step " + (i + 1) + " (stop-on-failure).");
+                        completed = false;
                         break;
                     }
                 }
@@ -665,15 +706,30 @@ public class StepperEngine {
                 ctx.variableStore.set(e.getKey(), e.getValue());
             }
 
-            ctx.lastChainRunTime = System.currentTimeMillis();
-            ctx.lastChainPrereqCount = currentSteps.size();
             int varCount = ctx.variableStore.getAll().size();
             int cookieCount = ctx.cookieJar.size();
-            uiLog("Stepper", "Chain complete. " + varCount + " variable(s), "
-                    + cookieCount + " cookie(s) collected.");
+            if (shouldStampCache(completed, allStepsSucceeded, anyStepSucceeded)) {
+                ctx.lastChainRunTime = System.currentTimeMillis();
+                ctx.lastChainPrereqCount = currentSteps.size();
+                successful = true;
+                uiLog("Stepper", "Chain complete. " + varCount + " variable(s), "
+                        + cookieCount + " cookie(s) collected.");
+            } else if (!completed) {
+                uiLog("Stepper", "Chain aborted — cache not stamped, chain will re-run on next request. "
+                        + varCount + " variable(s), " + cookieCount + " cookie(s) collected so far.");
+            } else {
+                uiLog("Stepper", "Chain finished with failed or skipped prerequisites — cache not stamped, "
+                        + "chain will re-run on next request.");
+            }
         } finally {
             EXECUTING_CHAIN.set(false);
         }
+        return successful;
+    }
+
+    static boolean shouldStampCache(boolean completed, boolean allStepsSucceeded,
+                                    boolean anyStepSucceeded) {
+        return completed && allStepsSucceeded && anyStepSucceeded;
     }
 
     // ── Variable Substitution ────────────────────────────────────────────────
@@ -906,7 +962,18 @@ public class StepperEngine {
 
     // ── Cookie Jar Helpers ─────────────────────────────────────────────────
 
-    private void collectCookies(HttpResponse response, int stepNum, String stepName, ChainContext ctx) {
+    private void collectCookies(HttpResponse response, int stepNum, String stepName,
+                                HttpService service, String requestPath, ChainContext ctx) {
+        // Record each cookie's RFC 6265 scope (setter host, Domain, Secure, Path)
+        // so it is only re-injected into requests that fall inside that scope.
+        // Pinned cookies get no origin entry and stay global.
+        String setterHost = null;
+        boolean setterSecure = false;
+        if (service != null && service.host() != null) {
+            setterHost = normalizeHost(service.host());
+            setterSecure = service.secure();
+        }
+        String defaultPath = defaultCookiePath(requestPath);
         for (var header : response.headers()) {
             if ("Set-Cookie".equalsIgnoreCase(header.name())) {
                 String val = header.value();
@@ -917,6 +984,55 @@ public class StepperEngine {
                     if (eq > 0) {
                         String name = nameValue.substring(0, eq).trim();
                         String value = nameValue.substring(eq + 1).trim();
+                        if (name.isEmpty()) continue;
+
+                        String domain = null;       // null = host-only (no Domain attribute)
+                        boolean secureAttr = false;
+                        boolean delete = false;
+                        String path = defaultPath;
+                        for (int p = 1; p < parts.length; p++) {
+                            String attr = parts[p].trim();
+                            int aeq = attr.indexOf('=');
+                            String attrName = (aeq >= 0 ? attr.substring(0, aeq) : attr).trim();
+                            String attrValue = aeq >= 0 ? attr.substring(aeq + 1).trim() : "";
+                            if ("domain".equalsIgnoreCase(attrName) && !attrValue.isEmpty()) {
+                                domain = normalizeCookieDomain(attrValue);
+                            } else if ("secure".equalsIgnoreCase(attrName)) {
+                                secureAttr = true;
+                            } else if ("path".equalsIgnoreCase(attrName) && attrValue.startsWith("/")) {
+                                path = attrValue;
+                            } else if ("max-age".equalsIgnoreCase(attrName)) {
+                                try {
+                                    delete = Long.parseLong(attrValue) <= 0;
+                                } catch (NumberFormatException ignored) {}
+                            }
+                        }
+
+                        if (setterHost == null) continue;
+                        if (secureAttr && !setterSecure) {
+                            uiLog("Stepper", "    Ignored Secure cookie " + name
+                                    + " received over plaintext HTTP");
+                            continue;
+                        }
+                        if (domain != null && !domainMatches(setterHost, domain)) {
+                            uiLog("Stepper", "    Ignored cookie " + name
+                                    + " with invalid Domain=" + domain);
+                            continue;
+                        }
+
+                        String effectiveDomain = domain == null ? setterHost : domain;
+                        ChainContext.CookieKey key =
+                                new ChainContext.CookieKey(name, effectiveDomain, path);
+                        if (delete) {
+                            ctx.scopedCookies.remove(key);
+                            refreshCookieJarProjection(ctx, name);
+                            continue;
+                        }
+
+                        ChainContext.CookieOrigin origin = new ChainContext.CookieOrigin(
+                                setterHost, domain, secureAttr, path);
+                        ctx.scopedCookies.put(key, new ChainContext.ScopedCookie(
+                                name, value, origin, cookieCreationSequence.incrementAndGet()));
                         ctx.cookieJar.put(name, value);
                         uiLog("Stepper", "    Cookie: " + name + "=" + truncate(value, 40));
                     }
@@ -925,29 +1041,127 @@ public class StepperEngine {
         }
     }
 
+    /** RFC 6265 §5.1.4 default-path: everything up to the last '/', else '/'. */
+    private static String defaultCookiePath(String requestPath) {
+        if (requestPath == null || !requestPath.startsWith("/")) return "/";
+        int lastSlash = requestPath.lastIndexOf('/');
+        return lastSlash <= 0 ? "/" : requestPath.substring(0, lastSlash);
+    }
+
+    private void refreshCookieJarProjection(ChainContext ctx, String name) {
+        String pinned = pinnedCookies.get(name);
+        if (pinned != null) {
+            ctx.cookieJar.put(name, pinned);
+            return;
+        }
+        ChainContext.ScopedCookie newest = null;
+        for (ChainContext.ScopedCookie cookie : ctx.scopedCookies.values()) {
+            if (!cookie.name.equals(name)) continue;
+            if (newest == null || cookie.creationOrder > newest.creationOrder) newest = cookie;
+        }
+        if (newest == null) ctx.cookieJar.remove(name);
+        else ctx.cookieJar.put(name, newest.value);
+    }
+
+    static boolean domainMatches(String requestHost, String cookieDomain) {
+        if (requestHost == null || cookieDomain == null) return false;
+        String host = normalizeHost(requestHost);
+        String domain = normalizeCookieDomain(cookieDomain);
+        return host.equals(domain) || host.endsWith("." + domain);
+    }
+
+    static boolean pathMatches(String requestPath, String cookiePath) {
+        String request = requestPath == null || requestPath.isEmpty() ? "/" : requestPath;
+        String cookie = cookiePath == null || cookiePath.isEmpty() ? "/" : cookiePath;
+        if (request.equals(cookie)) return true;
+        if (!request.startsWith(cookie)) return false;
+        return cookie.endsWith("/")
+                || (request.length() > cookie.length() && request.charAt(cookie.length()) == '/');
+    }
+
+    private static String normalizeHost(String host) {
+        String normalized = host == null ? "" : host.trim().toLowerCase(java.util.Locale.ROOT);
+        while (normalized.endsWith(".")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private static String normalizeCookieDomain(String domain) {
+        String normalized = normalizeHost(domain);
+        while (normalized.startsWith(".")) {
+            normalized = normalized.substring(1);
+        }
+        return normalized;
+    }
+
+    /**
+     * Decides whether a chain-collected cookie may ride on an outgoing request.
+     * Package-private and static so it is unit-testable. A null origin means a
+     * pinned/manually-added cookie — user-intentional, always sent.
+     */
+    static boolean cookieMatches(String requestHost, String requestPath, boolean requestSecure,
+                                 ChainContext.CookieOrigin origin) {
+        if (origin == null) return true;
+        if (requestHost == null) return false;
+        String host = normalizeHost(requestHost);
+        boolean hostMatches = origin.domain != null
+                ? domainMatches(host, origin.domain)
+                : host.equals(normalizeHost(origin.host));
+        if (!hostMatches) return false;
+        if (origin.secure && !requestSecure) return false;
+        return pathMatches(requestPath, origin.path);
+    }
+
     private HttpRequest injectCookies(HttpRequest request, ChainContext ctx) {
-        Map<String, String> merged = new LinkedHashMap<>();
+        String reqHost = null;
+        String reqPath = "/";
+        boolean reqSecure = false;
+        try {
+            HttpService svc = request.httpService();
+            if (svc != null && svc.host() != null) {
+                reqHost = normalizeHost(svc.host());
+                reqSecure = svc.secure();
+            }
+            String p = request.pathWithoutQuery();
+            if (p != null && !p.isEmpty()) reqPath = p;
+        } catch (Exception ignored) {}
+
+        List<ChainContext.ScopedCookie> matchingScoped = new ArrayList<>();
+        if (reqHost != null) {
+            for (ChainContext.ScopedCookie cookie : ctx.scopedCookies.values()) {
+                if (!pinnedCookies.containsKey(cookie.name)
+                        && cookieMatches(reqHost, reqPath, reqSecure, cookie.origin)) {
+                    matchingScoped.add(cookie);
+                }
+            }
+        }
+        matchingScoped.sort(Comparator
+                .comparingInt((ChainContext.ScopedCookie c) -> c.origin.path.length()).reversed()
+                .thenComparingLong(c -> c.creationOrder));
+
+        Set<String> replacedNames = new HashSet<>(pinnedCookies.keySet());
+        for (ChainContext.ScopedCookie cookie : matchingScoped) replacedNames.add(cookie.name);
+
+        List<String> pairs = new ArrayList<>();
         String existingCookie = request.headerValue("Cookie");
         if (existingCookie != null && !existingCookie.isEmpty()) {
             for (String pair : existingCookie.split(";")) {
                 String trimmed = pair.trim();
                 int eq = trimmed.indexOf('=');
-                if (eq > 0) {
-                    merged.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
-                }
+                String name = eq > 0 ? trimmed.substring(0, eq).trim() : trimmed;
+                if (!name.isEmpty() && !replacedNames.contains(name)) pairs.add(trimmed);
             }
         }
-
-        merged.putAll(ctx.cookieJar);
-
-        StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, String> entry : merged.entrySet()) {
-            if (sb.length() > 0) sb.append("; ");
-            sb.append(entry.getKey()).append("=").append(entry.getValue());
+        for (Map.Entry<String, String> entry : pinnedCookies.entrySet()) {
+            pairs.add(entry.getKey() + "=" + entry.getValue());
+        }
+        for (ChainContext.ScopedCookie cookie : matchingScoped) {
+            pairs.add(cookie.name + "=" + cookie.value);
         }
 
         return request.withRemovedHeader("Cookie")
-                .withAddedHeader("Cookie", sb.toString());
+                .withAddedHeader("Cookie", String.join("; ", pairs));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

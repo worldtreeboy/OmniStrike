@@ -547,6 +547,9 @@ public class OobListener {
             baos.write(0x00); baos.write(0x00); // NSCOUNT = 0
             baos.write(0x00); baos.write(0x00); // ARCOUNT = 0
 
+            // queryData is a shared, reused receive buffer (see startDns): bytes past
+            // queryLen are residue from previous queries, so every read must be
+            // strictly bounds-checked against queryLen or we leak other clients' data.
             int offset = 12;
             while (offset < queryLen) {
                 int labelLen = queryData[offset] & 0xFF;
@@ -555,14 +558,18 @@ public class OobListener {
                     offset++;
                     break;
                 }
+                // Compression pointers are unsupported in the question section here
+                if ((labelLen & 0xC0) != 0) return null;
+                if (labelLen > 63) return null;
+                if (offset + 1 + labelLen > queryLen) return null;
                 baos.write(queryData, offset, 1 + labelLen);
                 offset += 1 + labelLen;
             }
             if (offset + 4 <= queryLen) {
                 baos.write(queryData, offset, 4);
             } else {
-                baos.write(0x00); baos.write(0x01);
-                baos.write(0x00); baos.write(0x01);
+                // Truncated question (missing QTYPE/QCLASS) — drop the query
+                return null;
             }
 
             baos.write(0xC0); baos.write(0x0C);

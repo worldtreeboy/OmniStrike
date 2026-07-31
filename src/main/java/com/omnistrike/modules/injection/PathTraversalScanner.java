@@ -1280,7 +1280,7 @@ public class PathTraversalScanner implements ScanModule {
                 String escaped = payload.replace("\\", "\\\\").replace("\"", "\\\"");
                 String pattern = "\"" + java.util.regex.Pattern.quote(dotKey) + "\"\\s*:\\s*(?:\"[^\"]*\"|\\d+(?:\\.\\d+)?|true|false|null)";
                 String replacement = "\"" + dotKey + "\": \"" + escaped + "\"";
-                return request.withBody(body.replaceFirst(pattern, replacement));
+                return request.withBody(body.replaceFirst(pattern, java.util.regex.Matcher.quoteReplacement(replacement)));
             }
 
             com.google.gson.JsonObject current = root.getAsJsonObject();
