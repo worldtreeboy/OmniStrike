@@ -1,6 +1,10 @@
 package com.omnistrike.modules.injection;
 import com.omnistrike.framework.stepper.StepperHttp;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
@@ -175,6 +179,13 @@ public class Dynamics365Scanner implements ScanModule {
             api.logging().logToOutput("[D365] Dynamics 365 detected: " + url + " | " + detection.evidence);
         }
 
+        // Dataverse FetchXML queries are GET requests. Avoid replaying a
+        // state-changing method when a D365 exception is the only gate signal.
+        if (!requestResponse.request().method().equalsIgnoreCase("GET")) {
+            api.logging().logToOutput("[D365] Detection only: skipping active payloads on non-GET request");
+            return Collections.emptyList();
+        }
+
         // ACTIVE ATTACK: Inject FetchXML payloads
         try {
             testFetchXmlInjection(requestResponse, detection, url, urlPath);
@@ -283,6 +294,8 @@ public class Dynamics365Scanner implements ScanModule {
             // Check: response significantly larger (new columns returned)
             if (resultBody.length() > baselineLen + 200
                     && result.response().statusCode() == 200
+                    && hasNonEmptyValueArray(resultBody)
+                    && !resultBody.toLowerCase(Locale.ROOT).contains("\"error\"")
                     && !resultBody.equals(baselineBody)) {
 
                 // Verify new fields actually appeared
@@ -390,6 +403,7 @@ public class Dynamics365Scanner implements ScanModule {
 
             if (resultBody.contains("\"" + alias + ".")
                     && !baselineBody.contains("\"" + alias + ".")
+                    && hasNonEmptyValueArray(resultBody)
                     && result.response().statusCode() == 200) {
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "D365 FetchXML Cross-Entity Data Access — " + technique,
@@ -449,13 +463,10 @@ public class Dynamics365Scanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) body = "";
 
-            // Require OData marker AND non-empty "value" array AND no error phrases
+            // Require OData marker and an actually populated result array.
             boolean hasODataMarker = body.contains("@odata");
-            boolean hasValueArray = body.contains("\"value\"");
-            // Reject empty value arrays — D365 returns "value":[] for access-denied or no-data
-            boolean hasEmptyValue = body.contains("\"value\":[]") || body.contains("\"value\": []");
             if (status == 200 && body.length() > 50
-                    && hasODataMarker && hasValueArray && !hasEmptyValue
+                    && hasODataMarker && hasNonEmptyValueArray(body)
                     && !body.toLowerCase().contains("does not exist")
                     && !body.toLowerCase().contains("entity does not contain")
                     && !body.toLowerCase().contains("not found")) {
@@ -515,15 +526,15 @@ public class Dynamics365Scanner implements ScanModule {
 
     private Encoding detectEncoding(String value) {
         if (value == null) return Encoding.RAW;
+        String lower = value.toLowerCase(Locale.ROOT);
 
         // Double URL-encoded: contains %25xx
-        if (value.contains("%253C") || value.contains("%2526")) {
+        if (lower.contains("%253c") || lower.contains("%2526")) {
             return Encoding.DOUBLE_URL_ENCODED;
         }
 
         // URL-encoded: contains %3C (%xx patterns)
-        if (value.contains("%3C") || value.contains("%3c") || value.contains("%26")
-                || value.contains("%3E") || value.contains("%3e")) {
+        if (lower.contains("%3c") || lower.contains("%26") || lower.contains("%3e")) {
             return Encoding.URL_ENCODED;
         }
 
@@ -741,6 +752,19 @@ public class Dynamics365Scanner implements ScanModule {
     private void perHostDelay() throws InterruptedException {
         int delay = config.getInt("d365.perHostDelay", 500);
         if (delay > 0) Thread.sleep(delay);
+    }
+
+    static boolean hasNonEmptyValueArray(String body) {
+        if (body == null) return false;
+        try {
+            JsonElement parsed = JsonParser.parseString(body);
+            if (!parsed.isJsonObject()) return false;
+            JsonObject root = parsed.getAsJsonObject();
+            JsonElement value = root.get("value");
+            return value != null && value.isJsonArray() && !value.getAsJsonArray().isEmpty();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private String extractPath(String url) {

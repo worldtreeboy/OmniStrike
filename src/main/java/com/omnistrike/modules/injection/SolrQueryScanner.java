@@ -63,8 +63,7 @@ public class SolrQueryScanner implements ScanModule {
     // ── Solr query parameter names ────────────────────────────────────────
 
     private static final Set<String> SOLR_PARAM_NAMES = Set.of(
-            "q", "fq", "sort", "fl", "facet.query", "facet.field",
-            "bf", "bq", "qf", "pf", "mm", "q.op", "deftype");
+            "q", "fq", "facet.query", "bf", "bq");
 
     // Solr query syntax indicators in parameter values
     private static final Pattern SOLR_SYNTAX_PATTERN = Pattern.compile(
@@ -165,10 +164,12 @@ public class SolrQueryScanner implements ScanModule {
     private void testSolrInjection(HttpRequestResponse original, SolrDetection detection,
                                     String url, String urlPath) throws InterruptedException {
         HttpRequest request = original.request();
+        String lowerUrl = url.toLowerCase(Locale.ROOT);
+        boolean searchEndpoint = lowerUrl.matches(".*\\/(?:select|query)(?:[/?].*)?$");
 
         // Find the injectable parameter(s) — prioritize Solr query parameters
-        List<InjectableParam> targets = identifyTargets(request);
-        if (targets.isEmpty()) return;
+        List<InjectableParam> targets = searchEndpoint
+                ? identifyTargets(request) : Collections.emptyList();
 
         for (InjectableParam target : targets) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
@@ -179,17 +180,18 @@ public class SolrQueryScanner implements ScanModule {
             // Phase 1: Query Injection (match-all, tautology)
             testQueryInjection(original, target, url);
 
-            // Phase 2: Field Enumeration
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testFieldEnumeration(original, target, url);
+        }
 
-            // Phase 3: Core/Collection Enumeration
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testCoreEnumeration(original, url, urlPath);
-
-            // Phase 4: Function Query / Remote Code Risk
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testFunctionQuery(original, target, url);
+        // Resource-level probes are independent of query parameters.
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (searchEndpoint && dedup.markIfNew(MODULE_ID, urlPath, "field-enum")) {
+            testFieldEnumeration(original, url);
+        }
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        testCoreEnumeration(original, url, urlPath);
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (searchEndpoint && dedup.markIfNew(MODULE_ID, urlPath, "function-query")) {
+            testFunctionQuery(original, url);
         }
     }
 
@@ -306,7 +308,7 @@ public class SolrQueryScanner implements ScanModule {
 
     // ── Phase 2: Field Enumeration ──────────────────────────────────────────
 
-    private void testFieldEnumeration(HttpRequestResponse original, InjectableParam target,
+    private void testFieldEnumeration(HttpRequestResponse original,
                                        String url) throws InterruptedException {
         String baselineBody = original.response().bodyToString();
         if (baselineBody == null) baselineBody = "";
@@ -322,7 +324,10 @@ public class SolrQueryScanner implements ScanModule {
                     if (resultBody == null) resultBody = "";
 
                     int newFieldCount = countNewJsonKeys(baselineBody, resultBody);
-                    if (newFieldCount >= 3 && result.response().statusCode() == 200) {
+                    if (newFieldCount >= 3 && result.response().statusCode() == 200
+                            && extractNumFound(resultBody) >= 0
+                            && resultBody.contains("\"response\"")
+                            && resultBody.contains("\"docs\"")) {
                         findingsStore.addFinding(Finding.builder(MODULE_ID,
                                         "Solr Field Enumeration — fl=* exposed " + newFieldCount + " extra fields",
                                         Severity.MEDIUM, Confidence.FIRM)
@@ -351,7 +356,10 @@ public class SolrQueryScanner implements ScanModule {
                     if (resultBody == null) resultBody = "";
 
                     int newFieldCount = countNewJsonKeys(baselineBody, resultBody);
-                    if (newFieldCount >= 3 && result.response().statusCode() == 200) {
+                    if (newFieldCount >= 3 && result.response().statusCode() == 200
+                            && extractNumFound(resultBody) >= 0
+                            && resultBody.contains("\"response\"")
+                            && resultBody.contains("\"docs\"")) {
                         findingsStore.addFinding(Finding.builder(MODULE_ID,
                                         "Solr Field Enumeration — fl=*,score,[explain] exposed " + newFieldCount + " extra fields",
                                         Severity.MEDIUM, Confidence.FIRM)
@@ -496,7 +504,7 @@ public class SolrQueryScanner implements ScanModule {
 
     // ── Phase 4: Function Query / Remote Code Risk ──────────────────────────
 
-    private void testFunctionQuery(HttpRequestResponse original, InjectableParam target,
+    private void testFunctionQuery(HttpRequestResponse original,
                                     String url) throws InterruptedException {
         String baselineBody = original.response().bodyToString();
         if (baselineBody == null) baselineBody = "";
@@ -515,6 +523,9 @@ public class SolrQueryScanner implements ScanModule {
                     // Check if our dereferenced value appeared in the response
                     if (resultBody.contains("omnistrike_deref_test")
                             && !baselineBody.contains("omnistrike_deref_test")
+                            && extractNumFound(resultBody) >= 0
+                            && resultBody.contains("\"response\"")
+                            && resultBody.contains("\"docs\"")
                             && result.response().statusCode() == 200) {
                         findingsStore.addFinding(Finding.builder(MODULE_ID,
                                         "Solr Parameter Dereferencing — Variable Substitution",
@@ -685,7 +696,7 @@ public class SolrQueryScanner implements ScanModule {
         if (ScanState.isCancelled()) return null;
 
         try {
-            HttpRequest modified = original.request().withAddedParameters(
+            HttpRequest modified = original.request().withUpdatedParameters(
                     HttpParameter.urlParameter(paramName, paramValue));
 
             HttpRequestResponse result = StepperHttp.sendRequest(modified);
@@ -710,7 +721,7 @@ public class SolrQueryScanner implements ScanModule {
                 extraParams.add(HttpParameter.urlParameter(params[i], params[i + 1]));
             }
 
-            HttpRequest modified = original.request().withAddedParameters(
+            HttpRequest modified = original.request().withUpdatedParameters(
                     extraParams.toArray(new HttpParameter[0]));
 
             HttpRequestResponse result = StepperHttp.sendRequest(modified);
@@ -802,13 +813,21 @@ public class SolrQueryScanner implements ScanModule {
      * Extract the base URL (scheme + host + port) from a full URL.
      * E.g., "http://example.com:8983/solr/core/select?q=test" -> "http://example.com:8983"
      */
-    private String extractBaseUrl(String url) {
+    static String extractBaseUrl(String url) {
         try {
             int schemeEnd = url.indexOf("://");
             if (schemeEnd < 0) return url;
             int pathStart = url.indexOf('/', schemeEnd + 3);
             if (pathStart < 0) return url;
-            return url.substring(0, pathStart);
+            String lower = url.toLowerCase(Locale.ROOT);
+            int solrStart = lower.indexOf("/solr", pathStart);
+            while (solrStart >= 0) {
+                int end = solrStart + "/solr".length();
+                if (end == lower.length() || lower.charAt(end) == '/'
+                        || lower.charAt(end) == '?') break;
+                solrStart = lower.indexOf("/solr", end);
+            }
+            return solrStart >= 0 ? url.substring(0, solrStart) : url.substring(0, pathStart);
         } catch (Exception e) {
             return url;
         }

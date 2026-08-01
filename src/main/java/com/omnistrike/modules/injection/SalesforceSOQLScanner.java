@@ -1,6 +1,10 @@
 package com.omnistrike.modules.injection;
 import com.omnistrike.framework.stepper.StepperHttp;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
@@ -73,7 +77,7 @@ public class SalesforceSOQLScanner implements ScanModule {
     // ── SOQL parameter name hints ────────────────────────────────────────────
 
     private static final Set<String> SOQL_PARAM_NAMES = Set.of(
-            "q", "query", "soql", "search", "where", "filter", "sobject");
+            "q", "query", "soql", "search", "filter");
 
     // ── SOQL keyword detection in parameter values ───────────────────────────
 
@@ -151,6 +155,14 @@ public class SalesforceSOQLScanner implements ScanModule {
                     .requestResponse(requestResponse)
                     .build());
             api.logging().logToOutput("[SOQL] Salesforce detected: " + url + " | " + detection.evidence);
+        }
+
+        // Salesforce REST SOQL/SOSL query resources are GET endpoints. Do not
+        // replay POST/PATCH/DELETE requests merely because their response leaks
+        // a Salesforce error: that could repeat a state-changing operation.
+        if (!requestResponse.request().method().equalsIgnoreCase("GET")) {
+            api.logging().logToOutput("[SOQL] Detection only: skipping active payloads on non-GET request");
+            return Collections.emptyList();
         }
 
         // ACTIVE ATTACK: Inject SOQL payloads
@@ -259,6 +271,7 @@ public class SalesforceSOQLScanner implements ScanModule {
 
             if (resultRows > baselineRows + 2
                     && result.response().statusCode() == 200
+                    && hasNonEmptyArray(resultBody, "records")
                     && !resultBody.equals(baselineBody)) {
 
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
@@ -318,10 +331,8 @@ public class SalesforceSOQLScanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) body = "";
 
-            // Require Salesforce API response markers
-            boolean hasRecords = body.contains("\"records\"") || body.contains("\"totalSize\"");
             if (status == 200 && body.length() > 50
-                    && hasRecords
+                    && hasNonEmptyArray(body, "records")
                     && !body.toLowerCase().contains("invalid_type")
                     && !body.toLowerCase().contains("doesn't exist")
                     && !body.toLowerCase().contains("not found")) {
@@ -367,7 +378,8 @@ public class SalesforceSOQLScanner implements ScanModule {
 
         // Check: significantly more JSON keys than baseline (expanded field set)
         int newFieldCount = countNewJsonKeys(baselineBody, resultBody);
-        if (newFieldCount >= 3 && result.response().statusCode() == 200) {
+        if (newFieldCount >= 3 && result.response().statusCode() == 200
+                && hasNonEmptyArray(resultBody, "records")) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
                             "Salesforce SOQL Field Enumeration — " + newFieldCount + " extra fields",
                             Severity.HIGH, Confidence.FIRM)
@@ -404,8 +416,8 @@ public class SalesforceSOQLScanner implements ScanModule {
         String resultBody = result.response().bodyToString();
         if (resultBody == null) resultBody = "";
 
-        // Check for SOSL response markers
-        if (resultBody.contains("\"searchRecords\"")
+        // Require returned records, not merely the normal empty response shape.
+        if (hasNonEmptyArray(resultBody, "searchRecords")
                 && result.response().statusCode() == 200) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
                             "Salesforce SOSL Search Injection — Cross-Object Data Access",
@@ -645,6 +657,19 @@ public class SalesforceSOQLScanner implements ScanModule {
         int count = 0, idx = 0;
         while ((idx = text.indexOf(search, idx)) >= 0) { count++; idx += search.length(); }
         return count;
+    }
+
+    static boolean hasNonEmptyArray(String body, String key) {
+        if (body == null || key == null) return false;
+        try {
+            JsonElement parsed = JsonParser.parseString(body);
+            if (!parsed.isJsonObject()) return false;
+            JsonObject root = parsed.getAsJsonObject();
+            JsonElement value = root.get(key);
+            return value != null && value.isJsonArray() && !value.getAsJsonArray().isEmpty();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private void perHostDelay() throws InterruptedException {

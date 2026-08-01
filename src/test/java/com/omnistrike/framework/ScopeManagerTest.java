@@ -12,6 +12,25 @@ import static org.junit.jupiter.api.Assertions.*;
 class ScopeManagerTest {
 
     @Test
+    void explicitScanAllowsUserActionWhenNoDomainScopeConfigured() {
+        ScopeManager scope = new ScopeManager();
+        assertTrue(scope.isExplicitScanAllowed("https://example.com/api", "example.com"));
+    }
+
+    @Test
+    void explicitScanEnforcesConfiguredDomainAndPathFilters() {
+        ScopeManager scope = new ScopeManager();
+        scope.setTargetDomains("example.com");
+        scope.setIncludedPaths("/api/");
+        scope.setExcludedPaths("/api/logout");
+
+        assertTrue(scope.isExplicitScanAllowed("https://api.example.com/api/users", "api.example.com"));
+        assertFalse(scope.isExplicitScanAllowed("https://evil.test/api/users", "evil.test"));
+        assertFalse(scope.isExplicitScanAllowed("https://api.example.com/public", "api.example.com"));
+        assertFalse(scope.isExplicitScanAllowed("https://api.example.com/api/logout", "api.example.com"));
+    }
+
+    @Test
     void emptyScopeMatchesNothing() {
         ScopeManager s = new ScopeManager();
         assertFalse(s.hasScope());

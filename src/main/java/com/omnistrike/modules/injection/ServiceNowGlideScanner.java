@@ -6,6 +6,9 @@ import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.omnistrike.framework.*;
 import com.omnistrike.model.*;
 
@@ -66,14 +69,16 @@ public class ServiceNowGlideScanner implements ScanModule {
     // -- Encoded query operators (used for target identification) ---------------
 
     // GlideRecord encoded query operators
-    private static final Set<String> ENCODED_QUERY_OPERATORS = Set.of(
-            "LIKE", "STARTSWITH", "ENDSWITH", "IN", "NOTIN",
-            "ISEMPTY", "ISNOTEMPTY", "ORDERBY");
+    private static final Pattern ENCODED_QUERY_PATTERN = Pattern.compile(
+            "(?:^|\\^)(?:OR|NQ)?(?:"
+                    + "ORDERBY(?:DESC)?[A-Za-z_][\\w.]*|"
+                    + "[A-Za-z_][\\w.]*?(?:ISNOTEMPTY|ISEMPTY)(?=\\^|$)|"
+                    + "[A-Za-z_][\\w.]*?(?:STARTSWITH|ENDSWITH|NOTIN|LIKE|IN)[^\\^]+|"
+                    + "[A-Za-z_][\\w.]*?(?:!=|>=|<=|=)[^\\^]+)");
 
     // Parameter names that carry encoded queries
     private static final Set<String> QUERY_PARAM_NAMES = Set.of(
-            "sysparm_query", "sysparm_fields", "sysparm_display_value",
-            "sysparm_limit", "query", "filter", "encoded_query");
+            "sysparm_query", "query", "filter", "encoded_query");
 
     // -- Phase 2: Sensitive tables to probe ------------------------------------
 
@@ -198,9 +203,12 @@ public class ServiceNowGlideScanner implements ScanModule {
                                      String url, String urlPath) throws InterruptedException {
         HttpRequest request = original.request();
 
+        // Never replay create/update/delete Table API operations while probing
+        // alternate tables or fields.
+        if (!request.method().equalsIgnoreCase("GET")) return;
+
         // Find injectable parameter(s) -- prioritize encoded query parameters
         List<InjectableParam> targets = identifyTargets(request);
-        if (targets.isEmpty()) return;
 
         for (InjectableParam target : targets) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
@@ -212,17 +220,22 @@ public class ServiceNowGlideScanner implements ScanModule {
             // Phase 1: Encoded Query Injection (tautology / wildcard)
             testEncodedQueryInjection(original, target, url);
 
-            // Phase 2: Table Enumeration
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testTableEnumeration(original, target, detection.tableName, url);
+        }
 
-            // Phase 3: Field Exposure
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testFieldExposure(original, target, url);
-
-            // Phase 4: ACL Bypass via Dot-Walking
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testDotWalkingBypass(original, target, url);
+        // Table/field probes operate on the REST resource and do not require a
+        // sysparm_query parameter to be present.
+        if (!url.toLowerCase(Locale.ROOT).contains("/api/now/table/")) return;
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (dedup.markIfNew(MODULE_ID, urlPath, "table-enum")) {
+            testTableEnumeration(original, url);
+        }
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (dedup.markIfNew(MODULE_ID, urlPath, "field-exposure")) {
+            testFieldExposure(original, url);
+        }
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (dedup.markIfNew(MODULE_ID, urlPath, "dot-walking")) {
+            testDotWalkingBypass(original, url);
         }
     }
 
@@ -300,15 +313,15 @@ public class ServiceNowGlideScanner implements ScanModule {
 
     // -- Phase 2: Table Enumeration --------------------------------------------
 
-    private void testTableEnumeration(HttpRequestResponse original, InjectableParam target,
-                                       String originalTable, String url) throws InterruptedException {
+    private void testTableEnumeration(HttpRequestResponse original,
+                                       String url) throws InterruptedException {
         // Differential probe: two different tables must produce different responses
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
 
         String urlStr = original.request().url();
 
         // Only works if URL contains /api/now/table/ pattern
-        if (!urlStr.contains("/api/now/table/")) return;
+        if (!urlStr.toLowerCase(Locale.ROOT).contains("/api/now/table/")) return;
 
         HttpRequestResponse resultA = sendWithTableSwap(original, "sys_user");
         perHostDelay();
@@ -345,7 +358,7 @@ public class ServiceNowGlideScanner implements ScanModule {
             if (body == null) body = "";
 
             // Require "result" array in response (SN REST format)
-            boolean hasResultArray = body.contains("\"result\"");
+            boolean hasResultArray = hasNonEmptyResultArray(body);
             if (status == 200 && body.length() > 50
                     && hasResultArray
                     && !body.toLowerCase().contains("table not found")
@@ -368,7 +381,7 @@ public class ServiceNowGlideScanner implements ScanModule {
 
     // -- Phase 3: Field Exposure -----------------------------------------------
 
-    private void testFieldExposure(HttpRequestResponse original, InjectableParam target,
+    private void testFieldExposure(HttpRequestResponse original,
                                     String url) throws InterruptedException {
         // Baseline: original response
         String baselineBody = original.response().bodyToString();
@@ -412,18 +425,21 @@ public class ServiceNowGlideScanner implements ScanModule {
         }
 
         if (newSensitiveKeys.size() >= 2 && result.response().statusCode() == 200) {
-            // Only CRITICAL if password field exposed with non-empty, non-redacted value
-            boolean hasPassword = newSensitiveKeys.contains("user_password")
-                    && resultBody.contains("\"user_password\"")
-                    && Pattern.compile("\"user_password\"\\s*:\\s*\"(?!\\s*\"|\\*+\")").matcher(resultBody).find();
+            Set<String> exposedWithData = new HashSet<>();
+            for (String key : newSensitiveKeys) {
+                if (hasNonTrivialFieldValue(resultBody, key)) exposedWithData.add(key);
+            }
+            if (exposedWithData.isEmpty()) { perHostDelay(); return; }
+
+            // Only CRITICAL if a password field contains actual, non-redacted data.
+            boolean hasPassword = exposedWithData.contains("user_password");
             Severity sev = hasPassword ? Severity.CRITICAL : Severity.HIGH;
             findingsStore.addFinding(Finding.builder(MODULE_ID,
-                            "ServiceNow Field Exposure -- " + newSensitiveKeys.size() + " Sensitive Fields",
+                            "ServiceNow Field Exposure -- " + exposedWithData.size() + " Sensitive Fields",
                             sev, Confidence.FIRM)
                     .url(url).parameter("sysparm_fields")
-                    .evidence("Injected sysparm_fields with sensitive field names returned "
-                            + newSensitiveKeys.size() + " new sensitive fields not in baseline response: "
-                            + newSensitiveKeys)
+                    .evidence("Injected sysparm_fields returned actual non-empty data for "
+                            + exposedWithData.size() + " new sensitive fields: " + exposedWithData)
                     .payload(injectedFields)
                     .requestResponse(result)
                     .build());
@@ -433,7 +449,7 @@ public class ServiceNowGlideScanner implements ScanModule {
 
     // -- Phase 4: ACL Bypass via Dot-Walking -----------------------------------
 
-    private void testDotWalkingBypass(HttpRequestResponse original, InjectableParam target,
+    private void testDotWalkingBypass(HttpRequestResponse original,
                                        String url) throws InterruptedException {
         // Baseline: original response
         String baselineBody = original.response().bodyToString();
@@ -483,28 +499,24 @@ public class ServiceNowGlideScanner implements ScanModule {
             }
         }
 
-        // Require 2+ new dot-walked keys to confirm ACL bypass (not just 1)
+        // Require actual values for 2+ dot-walked keys, not merely keys whose
+        // values were suppressed by an ACL.
         if (newDotKeys.size() >= 2 && result.response().statusCode() == 200) {
-            // CRITICAL only if password fields exposed with non-empty/non-redacted value
-            boolean hasPasswordField = false;
+            Set<String> exposedWithData = new HashSet<>();
             for (String key : newDotKeys) {
-                if (key.toLowerCase().contains("password")) {
-                    // Verify value is not empty or redacted (********)
-                    String valueCheck = "\"" + key + "\"\\s*:\\s*\"(?!\\s*\"|\\*+\")";
-                    if (Pattern.compile(valueCheck).matcher(resultBody).find()) {
-                        hasPasswordField = true;
-                        break;
-                    }
-                }
+                if (hasNonTrivialFieldValue(resultBody, key)) exposedWithData.add(key);
             }
+            if (exposedWithData.size() < 2) { perHostDelay(); return; }
+            boolean hasPasswordField = exposedWithData.stream()
+                    .anyMatch(key -> key.toLowerCase(Locale.ROOT).contains("password"));
             Severity sev = hasPasswordField ? Severity.CRITICAL : Severity.HIGH;
             findingsStore.addFinding(Finding.builder(MODULE_ID,
-                            "ServiceNow ACL Bypass via Dot-Walking -- " + newDotKeys.size() + " Related Fields",
+                            "ServiceNow ACL Bypass via Dot-Walking -- " + exposedWithData.size() + " Related Fields",
                             sev, Confidence.FIRM)
                     .url(url).parameter("sysparm_fields")
-                    .evidence("Injected dot-walked field references returned "
-                            + newDotKeys.size() + " new dot-walked keys not in baseline: "
-                            + newDotKeys + ". Related table data was exposed through ACL bypass.")
+                    .evidence("Injected dot-walked field references returned actual non-empty data for "
+                            + exposedWithData.size() + " new related fields: " + exposedWithData
+                            + ". Related table data was exposed through ACL bypass.")
                     .payload(injectedFields)
                     .requestResponse(result)
                     .build());
@@ -546,16 +558,55 @@ public class ServiceNowGlideScanner implements ScanModule {
      * Checks if a decoded parameter value contains GlideRecord encoded query syntax.
      * Looks for operators like ^, =, LIKE, STARTSWITH, ENDSWITH, IN, NOTIN, etc.
      */
-    private boolean containsEncodedQueryOperator(String decoded) {
-        if (decoded == null) return false;
-        // Encoded queries use ^ as AND separator -- strong indicator
-        if (decoded.contains("^") && decoded.contains("=")) return true;
-        // Check for named operators
-        String upper = decoded.toUpperCase();
-        for (String op : ENCODED_QUERY_OPERATORS) {
-            if (upper.contains(op)) return true;
+    static boolean containsEncodedQueryOperator(String decoded) {
+        return decoded != null && ENCODED_QUERY_PATTERN.matcher(decoded).find();
+    }
+
+    static boolean hasNonEmptyResultArray(String body) {
+        try {
+            JsonObject root = JsonParser.parseString(body).getAsJsonObject();
+            JsonElement result = root.get("result");
+            return result != null && result.isJsonArray() && result.getAsJsonArray().size() > 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    static boolean hasNonTrivialFieldValue(String body, String fieldName) {
+        if (body == null || fieldName == null) return false;
+        try {
+            return findNonTrivialFieldValue(JsonParser.parseString(body), fieldName);
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static boolean findNonTrivialFieldValue(JsonElement element, String fieldName) {
+        if (element == null || element.isJsonNull()) return false;
+        if (element.isJsonArray()) {
+            for (JsonElement item : element.getAsJsonArray()) {
+                if (findNonTrivialFieldValue(item, fieldName)) return true;
+            }
+            return false;
+        }
+        if (!element.isJsonObject()) return false;
+        JsonObject object = element.getAsJsonObject();
+        if (object.has(fieldName) && isNonTrivialValue(object.get(fieldName))) return true;
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            if (findNonTrivialFieldValue(entry.getValue(), fieldName)) return true;
         }
         return false;
+    }
+
+    private static boolean isNonTrivialValue(JsonElement value) {
+        if (value == null || value.isJsonNull()) return false;
+        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()) {
+            String text = value.getAsString().trim();
+            return !text.isEmpty() && !text.matches("\\*+");
+        }
+        if (value.isJsonArray()) return !value.getAsJsonArray().isEmpty();
+        if (value.isJsonObject()) return !value.getAsJsonObject().entrySet().isEmpty();
+        return true;
     }
 
     // -- HTTP Request Helpers --------------------------------------------------

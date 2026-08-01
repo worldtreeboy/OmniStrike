@@ -199,6 +199,16 @@ public class ScopeManager {
     }
 
     /**
+     * Scope policy for an explicit right-click scan. An empty domain scope keeps
+     * the historical behaviour (the user's explicit action is allowed), while a
+     * configured scope is enforced together with its include/exclude paths.
+     */
+    public boolean isExplicitScanAllowed(String url, String host) {
+        if (isExcludedPath(url) || !isIncludedPath(url)) return false;
+        return !hasScope() || isInScope(host);
+    }
+
+    /**
      * Match a single include/exclude entry against a URL.
      * Query params are already stripped from entries at set-time, so matching
      * is always path-focused regardless of what parameters the URL has.

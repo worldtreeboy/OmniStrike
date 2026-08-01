@@ -1,12 +1,17 @@
 package com.omnistrike.modules.injection;
 import com.omnistrike.framework.stepper.StepperHttp;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import com.omnistrike.framework.*;
 import com.omnistrike.model.*;
 
+import java.net.URI;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -35,6 +40,7 @@ public class FirebaseMisconfigScanner implements ScanModule {
     private ModuleConfig config;
     private DeduplicationStore dedup;
     private FindingsStore findingsStore;
+    private ScopeManager scopeManager;
 
     // -- Firebase detection patterns (passive gate) ----------------------------
 
@@ -54,6 +60,7 @@ public class FirebaseMisconfigScanner implements ScanModule {
             "\\.firebaseio\\.com"
                     + "|firestore\\.googleapis\\.com"
                     + "|\\.firebaseapp\\.com"
+                    + "|\\.firebasedatabase\\.app"
                     + "|identitytoolkit\\.googleapis\\.com"
                     + "|securetoken\\.googleapis\\.com",
             Pattern.CASE_INSENSITIVE);
@@ -117,6 +124,10 @@ public class FirebaseMisconfigScanner implements ScanModule {
         // collaboratorManager not used -- no OOB needed for Firebase misconfig
     }
 
+    public void setScopeManager(ScopeManager scopeManager) {
+        this.scopeManager = scopeManager;
+    }
+
     @Override public void destroy() {}
 
     // -- Main entry point -----------------------------------------------------
@@ -174,7 +185,8 @@ public class FirebaseMisconfigScanner implements ScanModule {
                     "Firebase URL pattern: " + url,
                     extractProjectFromUrl(url),
                     detectServiceType(url),
-                    apiKey);
+                    apiKey,
+                    extractRealtimeDbBaseUrl(url, body));
         }
 
         // Check 2: Error pattern in response body
@@ -183,7 +195,8 @@ public class FirebaseMisconfigScanner implements ScanModule {
                     "Firebase error pattern in response body",
                     extractProjectFromBody(body),
                     detectServiceTypeFromBody(body, url),
-                    extractApiKeyFromBody(body));
+                    extractApiKeyFromBody(body),
+                    extractRealtimeDbBaseUrl(url, body));
         }
 
         // Check 3: Firebase config co-occurrence in response body (all three must be present)
@@ -192,7 +205,8 @@ public class FirebaseMisconfigScanner implements ScanModule {
                     "Firebase configuration pattern in response body",
                     extractProjectFromBody(body),
                     ServiceType.UNKNOWN,
-                    extractApiKeyFromBody(body));
+                    extractApiKeyFromBody(body),
+                    extractRealtimeDbBaseUrl(url, body));
         }
 
         return null; // No Firebase detected -- module stays dormant
@@ -206,17 +220,18 @@ public class FirebaseMisconfigScanner implements ScanModule {
             throws InterruptedException {
 
         String project = detection.projectId;
-        if (project == null || project.isEmpty()) {
-            api.logging().logToOutput("[Firebase] Could not extract project ID from: " + url);
-            return;
+        String rtdbBase = detection.realtimeDbBaseUrl;
+        if ((rtdbBase == null || rtdbBase.isEmpty()) && project != null && !project.isEmpty()) {
+            rtdbBase = "https://" + project + ".firebaseio.com";
         }
 
         // Phase 1: Unauthenticated Read (Realtime DB)
         if (detection.serviceType == ServiceType.REALTIME_DB
                 || detection.serviceType == ServiceType.UNKNOWN) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            if (dedup.markIfNew(MODULE_ID, urlPath, "rtdb-read:" + project)) {
-                testRealtimeDbRead(original, project, url);
+            if (rtdbBase != null && isProbeTargetAuthorized(url, rtdbBase)
+                    && dedup.markIfNew(MODULE_ID, urlPath, "rtdb-read:" + rtdbBase)) {
+                testRealtimeDbRead(original, rtdbBase, url);
             }
         }
 
@@ -224,9 +239,10 @@ public class FirebaseMisconfigScanner implements ScanModule {
         if (detection.serviceType == ServiceType.REALTIME_DB
                 || detection.serviceType == ServiceType.UNKNOWN) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            if (config.getBool("firebase.write.enabled", false)
-                    && dedup.markIfNew(MODULE_ID, urlPath, "rtdb-write:" + project)) {
-                testRealtimeDbWrite(original, project, url);
+            if (rtdbBase != null && isProbeTargetAuthorized(url, rtdbBase)
+                    && config.getBool("firebase.write.enabled", false)
+                    && dedup.markIfNew(MODULE_ID, urlPath, "rtdb-write:" + rtdbBase)) {
+                testRealtimeDbWrite(original, rtdbBase, url);
             }
         }
 
@@ -234,7 +250,10 @@ public class FirebaseMisconfigScanner implements ScanModule {
         if (detection.serviceType == ServiceType.FIRESTORE
                 || detection.serviceType == ServiceType.UNKNOWN) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            if (dedup.markIfNew(MODULE_ID, urlPath, "firestore-enum:" + project)) {
+            String firestoreBase = project == null ? null
+                    : "https://firestore.googleapis.com/v1/projects/" + project;
+            if (project != null && isProbeTargetAuthorized(url, firestoreBase)
+                    && dedup.markIfNew(MODULE_ID, urlPath, "firestore-enum:" + project)) {
                 testFirestoreEnumeration(original, project, url);
             }
         }
@@ -247,7 +266,8 @@ public class FirebaseMisconfigScanner implements ScanModule {
             if (apiKey == null || apiKey.isEmpty()) {
                 apiKey = extractApiKeyFromBody(original.response().bodyToString());
             }
-            if (apiKey != null && !apiKey.isEmpty()) {
+            String authBase = "https://identitytoolkit.googleapis.com";
+            if (apiKey != null && !apiKey.isEmpty() && isProbeTargetAuthorized(url, authBase)) {
                 if (dedup.markIfNew(MODULE_ID, urlPath, "auth-enum:" + project)) {
                     testFirebaseAuthEnumeration(original, apiKey, url);
                 }
@@ -257,10 +277,8 @@ public class FirebaseMisconfigScanner implements ScanModule {
 
     // -- Phase 1: Unauthenticated Read (Realtime DB) --------------------------
 
-    private void testRealtimeDbRead(HttpRequestResponse original, String project, String url)
+    private void testRealtimeDbRead(HttpRequestResponse original, String rtdbBase, String url)
             throws InterruptedException {
-        String rtdbBase = "https://" + project + ".firebaseio.com";
-
         for (String path : RTDB_READ_PATHS) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
 
@@ -305,11 +323,10 @@ public class FirebaseMisconfigScanner implements ScanModule {
 
     // -- Phase 2: Unauthenticated Write Test (Realtime DB) --------------------
 
-    private void testRealtimeDbWrite(HttpRequestResponse original, String project, String url)
+    private void testRealtimeDbWrite(HttpRequestResponse original, String rtdbBase, String url)
             throws InterruptedException {
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
 
-        String rtdbBase = "https://" + project + ".firebaseio.com";
         // A unique child guarantees the scanner cannot overwrite a customer's
         // existing /omnistrike_test node. The random token is also verified on readback.
         String token = UUID.randomUUID().toString();
@@ -408,9 +425,10 @@ public class FirebaseMisconfigScanner implements ScanModule {
             String body = result.response().bodyToString();
             if (body == null) body = "";
 
-            // FP Prevention: require "documents" array in response
+            // FP Prevention: require at least one returned document. Firestore
+            // uses the same 200 response shape for an empty collection.
             if (status == 200
-                    && body.contains("\"documents\"")
+                    && hasNonEmptyDocumentsArray(body)
                     && !body.toLowerCase().contains("permission_denied")
                     && !body.toLowerCase().contains("missing or insufficient permissions")) {
 
@@ -443,55 +461,43 @@ public class FirebaseMisconfigScanner implements ScanModule {
 
         String authBase = "https://identitytoolkit.googleapis.com/v1";
 
-        // Test 1: signInWithPassword with known-bad creds to check error differentiation
-        String signInUrl = authBase + "/accounts:signInWithPassword?key=" + apiKey;
-        String nonexistentPayload = "{\"email\":\"omnistrike_nonexistent_probe@test.invalid\","
-                + "\"password\":\"OmniStrikeProbe!123\",\"returnSecureToken\":true}";
-        String badPasswordPayload = "{\"email\":\"admin@test.invalid\","
-                + "\"password\":\"OmniStrikeProbe!123\",\"returnSecureToken\":true}";
+        // signInWithPassword only proves enumeration when the tester supplies a
+        // known registered account. Guessing an "admin" address caused false positives.
+        String knownEmail = config.getString("firebase.auth.knownEmail", "").trim();
+        if (!knownEmail.isEmpty()) {
+            String signInUrl = authBase + "/accounts:signInWithPassword?key=" + apiKey;
+            String nonexistentPayload = "{\"email\":\"omnistrike_nonexistent_probe@test.invalid\","
+                    + "\"password\":\"OmniStrikeProbe!123\",\"returnSecureToken\":true}";
+            String badPasswordPayload = "{\"email\":\"" + jsonEscape(knownEmail) + "\","
+                    + "\"password\":\"OmniStrikeProbe!123\",\"returnSecureToken\":true}";
 
-        HttpRequestResponse resultNonexistent = sendPost(signInUrl, nonexistentPayload);
-        perHostDelay();
-        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-        HttpRequestResponse resultBadPassword = sendPost(signInUrl, badPasswordPayload);
-        perHostDelay();
+            HttpRequestResponse resultNonexistent = sendPost(signInUrl, nonexistentPayload);
+            perHostDelay();
+            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+            HttpRequestResponse resultBadPassword = sendPost(signInUrl, badPasswordPayload);
+            perHostDelay();
 
-        if (resultNonexistent != null && resultNonexistent.response() != null
-                && resultBadPassword != null && resultBadPassword.response() != null) {
+            if (resultNonexistent != null && resultNonexistent.response() != null
+                    && resultBadPassword != null && resultBadPassword.response() != null) {
+                String bodyNonexistent = resultNonexistent.response().bodyToString();
+                String bodyBadPassword = resultBadPassword.response().bodyToString();
 
-            String bodyNonexistent = resultNonexistent.response().bodyToString();
-            String bodyBadPassword = resultBadPassword.response().bodyToString();
-            if (bodyNonexistent == null) bodyNonexistent = "";
-            if (bodyBadPassword == null) bodyBadPassword = "";
-
-            // FP Prevention: require specific Firebase error code differentiation
-            // EMAIL_NOT_FOUND vs INVALID_PASSWORD or INVALID_LOGIN_CREDENTIALS
-            boolean hasEmailNotFound = bodyNonexistent.contains("EMAIL_NOT_FOUND");
-            boolean hasInvalidPassword = bodyBadPassword.contains("INVALID_PASSWORD");
-            boolean hasDifferentCodes = !bodyNonexistent.equals(bodyBadPassword)
-                    && extractFirebaseErrorCode(bodyNonexistent) != null
-                    && extractFirebaseErrorCode(bodyBadPassword) != null
-                    && !extractFirebaseErrorCode(bodyNonexistent)
-                    .equals(extractFirebaseErrorCode(bodyBadPassword));
-
-            if (hasEmailNotFound || hasDifferentCodes) {
-                findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "Firebase Auth User Enumeration via signInWithPassword",
-                                Severity.MEDIUM, Confidence.FIRM)
-                        .url(signInUrl)
-                        .evidence("signInWithPassword endpoint returns different error codes "
-                                + "for nonexistent vs existing users. "
-                                + "Nonexistent user error: " + extractFirebaseErrorCode(bodyNonexistent) + ". "
-                                + "Bad password error: " + extractFirebaseErrorCode(bodyBadPassword) + ". "
-                                + "This allows user enumeration.")
-                        .description("The Firebase Authentication endpoint exposes user enumeration "
-                                + "via different error messages for nonexistent accounts vs wrong passwords. "
-                                + "An attacker can determine which email addresses have registered accounts.")
-                        .remediation("Enable email enumeration protection in Firebase Console: "
-                                + "Authentication > Settings > User Actions > Email Enumeration Protection.")
-                        .payload(nonexistentPayload)
-                        .requestResponse(resultNonexistent)
-                        .build());
+                if (demonstratesSignInEnumeration(bodyNonexistent, bodyBadPassword)) {
+                    findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                    "Firebase Auth User Enumeration via signInWithPassword",
+                                    Severity.MEDIUM, Confidence.FIRM)
+                            .url(signInUrl)
+                            .evidence("signInWithPassword returned EMAIL_NOT_FOUND for a random address "
+                                    + "and INVALID_PASSWORD for the configured known account.")
+                            .description("The Firebase Authentication endpoint exposes user enumeration "
+                                    + "via different error messages for nonexistent accounts vs wrong passwords. "
+                                    + "An attacker can determine which email addresses have registered accounts.")
+                            .remediation("Enable email enumeration protection in Firebase Console: "
+                                    + "Authentication > Settings > User Actions > Email Enumeration Protection.")
+                            .payload(nonexistentPayload)
+                            .requestResponse(resultNonexistent)
+                            .build());
+                }
             }
         }
 
@@ -609,6 +615,12 @@ public class FirebaseMisconfigScanner implements ScanModule {
         Matcher appMatcher = appPattern.matcher(url);
         if (appMatcher.find()) return appMatcher.group(1);
 
+        Pattern modernRtdbPattern = Pattern.compile(
+                "https?://([a-zA-Z0-9_-]+?)(?:-default-rtdb)?(?:\\.[a-z0-9-]+)?\\.firebasedatabase\\.app",
+                Pattern.CASE_INSENSITIVE);
+        Matcher modernMatcher = modernRtdbPattern.matcher(url);
+        if (modernMatcher.find()) return modernMatcher.group(1);
+
         return null;
     }
 
@@ -657,12 +669,47 @@ public class FirebaseMisconfigScanner implements ScanModule {
     }
 
     private String extractFirebaseErrorCode(String body) {
+        return extractFirebaseErrorCodeStatic(body);
+    }
+
+    static boolean demonstratesSignInEnumeration(String nonexistentBody, String knownUserBody) {
+        String missing = extractFirebaseErrorCodeStatic(nonexistentBody);
+        String known = extractFirebaseErrorCodeStatic(knownUserBody);
+        return "EMAIL_NOT_FOUND".equals(missing) && "INVALID_PASSWORD".equals(known);
+    }
+
+    private static String extractFirebaseErrorCodeStatic(String body) {
         if (body == null) return null;
-        // Firebase error format: "message": "EMAIL_NOT_FOUND" or "message": "INVALID_PASSWORD"
-        Pattern errorPattern = Pattern.compile("\"message\"\\s*:\\s*\"([A-Z_]+)\"");
-        Matcher m = errorPattern.matcher(body);
-        if (m.find()) return m.group(1);
-        return null;
+        Matcher matcher = Pattern.compile("\"message\"\\s*:\\s*\"([A-Z_]+)\"").matcher(body);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    static String extractRealtimeDbBaseUrl(String url, String body) {
+        String joined = ((url == null ? "" : url) + " " + (body == null ? "" : body))
+                .replace("\\/", "/");
+        Matcher matcher = Pattern.compile(
+                "https?://[a-zA-Z0-9._-]+(?:\\.firebaseio\\.com|\\.firebasedatabase\\.app)",
+                Pattern.CASE_INSENSITIVE).matcher(joined);
+        return matcher.find() ? matcher.group() : null;
+    }
+
+    private boolean isProbeTargetAuthorized(String originalUrl, String targetUrl) {
+        try {
+            String originalHost = URI.create(originalUrl).getHost();
+            String targetHost = URI.create(targetUrl).getHost();
+            boolean allowed = targetHost != null && (targetHost.equalsIgnoreCase(originalHost)
+                    || (scopeManager != null && scopeManager.isInScope(targetHost)));
+            if (!allowed) {
+                api.logging().logToOutput("[Firebase] Skipping derived out-of-scope target: " + targetUrl);
+            }
+            return allowed;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String jsonEscape(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     // -- Service Type Detection -----------------------------------------------
@@ -674,7 +721,9 @@ public class FirebaseMisconfigScanner implements ScanModule {
     private ServiceType detectServiceType(String url) {
         if (url == null) return ServiceType.UNKNOWN;
         String lower = url.toLowerCase();
-        if (lower.contains(".firebaseio.com")) return ServiceType.REALTIME_DB;
+        if (lower.contains(".firebaseio.com") || lower.contains(".firebasedatabase.app")) {
+            return ServiceType.REALTIME_DB;
+        }
         if (lower.contains("firestore.googleapis.com")) return ServiceType.FIRESTORE;
         if (lower.contains("identitytoolkit.googleapis.com")
                 || lower.contains("securetoken.googleapis.com")) return ServiceType.AUTH;
@@ -686,7 +735,9 @@ public class FirebaseMisconfigScanner implements ScanModule {
         if (fromUrl != ServiceType.UNKNOWN) return fromUrl;
         if (body == null) return ServiceType.UNKNOWN;
         String lower = body.toLowerCase();
-        if (lower.contains("firebaseio.com")) return ServiceType.REALTIME_DB;
+        if (lower.contains("firebaseio.com") || lower.contains("firebasedatabase.app")) {
+            return ServiceType.REALTIME_DB;
+        }
         if (lower.contains("firestore")) return ServiceType.FIRESTORE;
         if (lower.contains("firebase-auth") || lower.contains("identitytoolkit")) return ServiceType.AUTH;
         return ServiceType.UNKNOWN;
@@ -699,6 +750,20 @@ public class FirebaseMisconfigScanner implements ScanModule {
         String trimmed = text.trim();
         return (trimmed.startsWith("{") && trimmed.endsWith("}"))
                 || (trimmed.startsWith("[") && trimmed.endsWith("]"));
+    }
+
+    static boolean hasNonEmptyDocumentsArray(String body) {
+        if (body == null) return false;
+        try {
+            JsonElement parsed = JsonParser.parseString(body);
+            if (!parsed.isJsonObject()) return false;
+            JsonObject root = parsed.getAsJsonObject();
+            JsonElement documents = root.get("documents");
+            return documents != null && documents.isJsonArray()
+                    && !documents.getAsJsonArray().isEmpty();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private String truncate(String text, int maxLen) {
@@ -730,16 +795,23 @@ public class FirebaseMisconfigScanner implements ScanModule {
         final String projectId;
         final ServiceType serviceType;
         final String apiKey; // nullable, extracted from identitytoolkit URLs
+        final String realtimeDbBaseUrl;
 
         FirebaseDetection(String evidence, String projectId, ServiceType serviceType) {
-            this(evidence, projectId, serviceType, null);
+            this(evidence, projectId, serviceType, null, null);
         }
 
         FirebaseDetection(String evidence, String projectId, ServiceType serviceType, String apiKey) {
+            this(evidence, projectId, serviceType, apiKey, null);
+        }
+
+        FirebaseDetection(String evidence, String projectId, ServiceType serviceType,
+                          String apiKey, String realtimeDbBaseUrl) {
             this.evidence = evidence;
             this.projectId = projectId;
             this.serviceType = serviceType;
             this.apiKey = apiKey;
+            this.realtimeDbBaseUrl = realtimeDbBaseUrl;
         }
     }
 }

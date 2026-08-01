@@ -114,12 +114,17 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             List<ScanModule> activeMods = new ArrayList<>();
             List<ScanModule> passiveMods = new ArrayList<>();
             collectScannableModules(activeMods, passiveMods);
+            List<String> responseGatedIds = collectResponseGatedModuleIds();
 
             // Static resource (JS, CSS, images): active injection is pointless —
             // run passive analyzers directly over the whole response, no dialog.
             if (staticResource) {
                 List<String> passiveIds = new ArrayList<>();
                 for (ScanModule m : passiveMods) passiveIds.add(m.getId());
+                // Response-gated modules receive the exchange too. They remain
+                // dormant unless the response fingerprints their technology;
+                // this is especially useful for Firebase config in JavaScript.
+                passiveIds.addAll(responseGatedIds);
                 if (passiveIds.isEmpty()) {
                     showToast("OmniStrike", "No passive analyzers enabled.");
                     return;
@@ -138,6 +143,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 List<String> ids = new ArrayList<>();
                 for (ScanModule m : activeMods) ids.add(m.getId());
                 for (ScanModule m : passiveMods) ids.add(m.getId());
+                ids.addAll(responseGatedIds);
                 if (ids.isEmpty()) { showToast("OmniStrike", "No modules enabled."); return; }
                 interceptor.scanRequest(reqResp, ids);
                 showToast("Sent to OmniStrike",
@@ -154,8 +160,11 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             if (!dialog.isConfirmed()) return;
 
             List<String> selParams = dialog.getSelectedParameters();
-            List<String> selActive = dialog.getSelectedActiveModuleIds();
+            List<String> selActive = new ArrayList<>(dialog.getSelectedActiveModuleIds());
             List<String> selPassive = dialog.getSelectedPassiveModuleIds();
+            for (String moduleId : responseGatedIds) {
+                if (!selActive.contains(moduleId)) selActive.add(moduleId);
+            }
 
             if (selActive.isEmpty() && selPassive.isEmpty()) {
                 showToast("OmniStrike", "No modules selected — nothing scanned.");
@@ -488,6 +497,19 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
             if (m.isPassive()) passiveOut.add(m);
             else activeOut.add(m);
         }
+    }
+
+    /**
+     * Modules hidden from individual scan choices but always included in the
+     * All Modules workflow. Each performs its own response fingerprint gate
+     * before sending any active request.
+     */
+    private List<String> collectResponseGatedModuleIds() {
+        List<String> ids = new ArrayList<>();
+        for (ScanModule module : registry.getEnabledAutoTriggeredModules()) {
+            ids.add(module.getId());
+        }
+        return ids;
     }
 
     /**

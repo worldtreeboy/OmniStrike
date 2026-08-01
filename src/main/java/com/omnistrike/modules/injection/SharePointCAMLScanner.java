@@ -119,7 +119,7 @@ public class SharePointCAMLScanner implements ScanModule {
     // CAML parameter name hints
     private static final Set<String> CAML_PARAM_NAMES = Set.of(
             "query", "caml", "viewxml", "querytext", "camlquery",
-            "querystring", "$filter", "listid");
+            "querystring");
 
     // CAML XML content markers in decoded parameter values
     private static final Pattern CAML_CONTENT_PATTERN = Pattern.compile(
@@ -225,7 +225,6 @@ public class SharePointCAMLScanner implements ScanModule {
 
         // Find the injectable parameter(s) -- prioritize CAML-like parameters
         List<InjectableParam> targets = identifyTargets(request);
-        if (targets.isEmpty()) return;
 
         for (InjectableParam target : targets) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
@@ -241,14 +240,14 @@ public class SharePointCAMLScanner implements ScanModule {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
             testViewFieldsExpansion(original, target, url);
 
-            // Phase 3: List Enumeration
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testListEnumeration(original, url, urlPath);
-
             // Phase 4: Cross-List Data Access
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
             testCrossListAccess(original, target, url);
         }
+
+        // REST list enumeration does not depend on a CAML-carrying parameter.
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        testListEnumeration(original, url, urlPath);
     }
 
     // -- Phase 1: CAML Filter Injection ---------------------------------------
@@ -374,8 +373,9 @@ public class SharePointCAMLScanner implements ScanModule {
 
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
 
-        // Extract base URL (scheme + host)
-        String baseUrl = extractBaseUrl(url);
+        // Preserve the site-collection prefix (e.g. /sites/team). Probing the
+        // tenant root would query the wrong SharePoint site.
+        String baseUrl = extractSharePointSiteBase(url);
         if (baseUrl == null) { perHostDelay(); return; }
 
         HttpRequestResponse resultA = sendProbeRequest(original, baseUrl + PHASE3_ENUMERATION_ENDPOINTS[0][0]);
@@ -556,15 +556,15 @@ public class SharePointCAMLScanner implements ScanModule {
 
     private Encoding detectEncoding(String value) {
         if (value == null) return Encoding.RAW;
+        String lower = value.toLowerCase(Locale.ROOT);
 
         // Double URL-encoded: contains %25xx
-        if (value.contains("%253C") || value.contains("%2526")) {
+        if (lower.contains("%253c") || lower.contains("%2526")) {
             return Encoding.DOUBLE_URL_ENCODED;
         }
 
         // URL-encoded: contains %3C (%xx patterns)
-        if (value.contains("%3C") || value.contains("%3c") || value.contains("%26")
-                || value.contains("%3E") || value.contains("%3e")) {
+        if (lower.contains("%3c") || lower.contains("%26") || lower.contains("%3e")) {
             return Encoding.URL_ENCODED;
         }
 
@@ -702,7 +702,7 @@ public class SharePointCAMLScanner implements ScanModule {
         }
 
         // If the value contains a <View> element, inject <Query> inside it
-        int viewClose = decodedValue.indexOf("</View>");
+        int viewClose = indexOfIgnoreCase(decodedValue, "</View>");
         if (viewClose >= 0) {
             return decodedValue.substring(0, viewClose)
                     + "<Query>" + filterPayload + "</Query>"
@@ -720,15 +720,16 @@ public class SharePointCAMLScanner implements ScanModule {
     /**
      * Inject ViewFields expansion into an existing CAML value.
      */
-    private String injectViewFields(String decodedValue, String viewFieldsPayload) {
+    static String injectViewFields(String decodedValue, String viewFieldsPayload) {
         if (decodedValue == null) return null;
 
         // If the value contains a <View> element, inject before </View>
-        int viewClose = decodedValue.indexOf("</View>");
+        int viewClose = indexOfIgnoreCase(decodedValue, "</View>");
         if (viewClose >= 0) {
             // Remove existing <ViewFields> if present
-            String cleaned = decodedValue.replaceAll("<ViewFields>.*?</ViewFields>", "");
-            viewClose = cleaned.indexOf("</View>");
+            String cleaned = decodedValue.replaceAll(
+                    "(?is)<ViewFields\\b[^>]*>.*?</ViewFields\\s*>", "");
+            viewClose = indexOfIgnoreCase(cleaned, "</View>");
             if (viewClose >= 0) {
                 return cleaned.substring(0, viewClose)
                         + viewFieldsPayload
@@ -871,15 +872,24 @@ public class SharePointCAMLScanner implements ScanModule {
      * Extract the base URL (scheme + host + port) from a full URL.
      * E.g., "https://sharepoint.example.com/sites/team/_api/web/lists" -> "https://sharepoint.example.com"
      */
-    private String extractBaseUrl(String url) {
+    static String extractSharePointSiteBase(String url) {
         try {
             int schemeEnd = url.indexOf("://");
             if (schemeEnd < 0) return null;
             int pathStart = url.indexOf('/', schemeEnd + 3);
             if (pathStart < 0) return url;
-            return url.substring(0, pathStart);
+            String lower = url.toLowerCase(Locale.ROOT);
+            int apiStart = lower.indexOf("/_api/", pathStart);
+            if (apiStart < 0 && lower.endsWith("/_api")) {
+                apiStart = lower.length() - "/_api".length();
+            }
+            return apiStart >= 0 ? url.substring(0, apiStart) : url.substring(0, pathStart);
         } catch (Exception ignored) {}
         return null;
+    }
+
+    private static int indexOfIgnoreCase(String text, String search) {
+        return text.toLowerCase(Locale.ROOT).indexOf(search.toLowerCase(Locale.ROOT));
     }
 
     // -- Inner classes --------------------------------------------------------

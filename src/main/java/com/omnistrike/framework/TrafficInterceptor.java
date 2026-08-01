@@ -223,6 +223,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
      */
     public void scanRequest(HttpRequestResponse reqResp, List<String> moduleIds, String targetParameter) {
         if (reqResp == null) return;
+        if (!isManualRequestAllowed(reqResp)) return;
 
         // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
@@ -260,6 +261,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
      */
     public void scanRequestAllModules(HttpRequestResponse reqResp) {
         if (reqResp == null) return;
+        if (!isManualRequestAllowed(reqResp)) return;
 
         // Reset cancellation flags — new scan is starting
         manualScansCancelled = false;
@@ -296,6 +298,7 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                                       List<String> passiveModuleIds,
                                       List<String> parameters) {
         if (reqResp == null) return;
+        if (!isManualRequestAllowed(reqResp)) return;
 
         String reqUrl = reqResp.request().url();
         // Reset cancellation flags — new scan is starting
@@ -398,6 +401,21 @@ public class TrafficInterceptor implements HttpHandler, ProxyResponseHandler {
                 });
                 if (f != null) manualScanFutures.add(f);
             }
+        }
+    }
+
+    private boolean isManualRequestAllowed(HttpRequestResponse reqResp) {
+        try {
+            String url = reqResp.request().url();
+            String host = reqResp.request().httpService().host();
+            if (scopeManager.isExplicitScanAllowed(url, host)) return true;
+            uiLog("Scope", "Skipped out-of-scope manual scan: "
+                    + PrivacyManager.maskForDisplay(url));
+            return false;
+        } catch (Exception e) {
+            uiLog("Scope", "Skipped manual scan because its target could not be validated: "
+                    + e.getMessage());
+            return false;
         }
     }
 

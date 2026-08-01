@@ -73,8 +73,6 @@ public class OdooDomainScanner implements ScanModule {
             "password", "password_crypt", "oauth_access_token", "totp_secret"
     };
 
-    private static final Set<String> SENSITIVE_FIELD_SET = Set.of(SENSITIVE_FIELDS);
-
     // -- Gson instance ---------------------------------------------------------
 
     private static final Gson GSON = new Gson();
@@ -244,18 +242,18 @@ public class OdooDomainScanner implements ScanModule {
         // In Odoo Polish notation: top-level expressions = leaves - binary operators.
         // We need that many "|" operators to OR the tautology with all top-level expressions.
         int leafCount = 0;
-        int operatorCount = 0;
+        int binaryOperatorCount = 0;
         for (JsonElement elem : originalDomain) {
             if (elem.isJsonArray()) {
                 leafCount++;
             } else if (elem.isJsonPrimitive()) {
                 String val = elem.getAsString();
-                if ("|".equals(val) || "&".equals(val) || "!".equals(val)) {
-                    operatorCount++;
+                if ("|".equals(val) || "&".equals(val)) {
+                    binaryOperatorCount++;
                 }
             }
         }
-        int topLevelExpressions = Math.max(1, leafCount - operatorCount);
+        int topLevelExpressions = Math.max(1, leafCount - binaryOperatorCount);
         // Add one "|" for each top-level expression in the original domain
         for (int i = 0; i < topLevelExpressions; i++) {
             injectedDomain.add("|");
@@ -351,14 +349,8 @@ public class OdooDomainScanner implements ScanModule {
             // Odoo returns "result": [] or "result": false for access-denied — must reject those
             if (status == 200 && body.length() > 50
                     && body.contains("\"jsonrpc\"")
-                    && body.contains("\"result\"")
                     && !body.contains("\"error\"")
-                    && !body.contains("\"result\": []")
-                    && !body.contains("\"result\":[]")
-                    && !body.contains("\"result\": false")
-                    && !body.contains("\"result\":false")
-                    && !body.contains("\"result\": null")
-                    && !body.contains("\"result\":null")) {
+                    && hasNonEmptyJsonRpcResultArray(body)) {
 
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
                                 "Odoo Sensitive Model Accessible -- " + model,
@@ -381,101 +373,36 @@ public class OdooDomainScanner implements ScanModule {
                                     String urlPath) throws InterruptedException {
         if (!dedup.markIfNew(MODULE_ID, urlPath, "field-exposure")) return;
 
-        // Baseline: search_read on res.users with minimal fields
-        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        // Probe separately. Odoo rejects an entire search_read request when any
+        // requested field is absent, and field names vary across versions/modules.
+        for (String field : SENSITIVE_FIELDS) {
+            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
 
-        HttpRequestResponse baselineResult = sendSearchRead(original.request(), "res.users",
-                new String[]{"id", "name"}, 5);
-        perHostDelay();
-        if (baselineResult == null || baselineResult.response() == null) return;
+            HttpRequestResponse result = sendSearchRead(original.request(), "res.users",
+                    new String[]{"id", field}, 5);
+            if (result == null || result.response() == null) { perHostDelay(); continue; }
+            if (result.response().statusCode() != 200
+                    || !ResponseGuard.isUsableResponse(result)) { perHostDelay(); continue; }
 
-        String baselineBody = baselineResult.response().bodyToString();
-        if (baselineBody == null) baselineBody = "";
-        Set<String> baselineKeys = extractJsonKeys(baselineBody);
-
-        // Expand fields to include sensitive fields
-        String[] expandedFields = new String[]{
-                "id", "name", "password", "password_crypt",
-                "oauth_access_token", "totp_secret"
-        };
-
-        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-
-        HttpRequestResponse result = sendSearchRead(original.request(), "res.users",
-                expandedFields, 5);
-        if (result == null || result.response() == null) { perHostDelay(); return; }
-        if (result.response().statusCode() >= 400 && result.response().statusCode() < 500) { perHostDelay(); return; }
-        if (!ResponseGuard.isUsableResponse(result)) { perHostDelay(); return; }
-
-        String resultBody = result.response().bodyToString();
-        if (resultBody == null) resultBody = "";
-
-        // Check: new JSON keys appeared that match our SENSITIVE_FIELDS list
-        Set<String> resultKeys = extractJsonKeys(resultBody);
-        Set<String> newKeys = new HashSet<>(resultKeys);
-        newKeys.removeAll(baselineKeys);
-
-        // Filter to only count keys that match the sensitive fields we requested
-        Set<String> newSensitiveKeys = new HashSet<>();
-        for (String key : newKeys) {
-            if (SENSITIVE_FIELD_SET.contains(key)) {
-                newSensitiveKeys.add(key);
-            }
-        }
-
-        if (newSensitiveKeys.size() >= 2 && result.response().statusCode() == 200) {
-            // Filter out fields whose values are false/null/empty/"***" -- Odoo's ORM
-            // returns these placeholders when field-level ACLs block the real value.
-            // Only fields with actual leaked data count as true exposure.
-            Set<String> exposedWithData = new HashSet<>();
-            for (String field : newSensitiveKeys) {
-                if (hasNonTrivialValue(resultBody, field)) {
-                    exposedWithData.add(field);
-                }
-            }
-
-            if (exposedWithData.isEmpty()) {
-                // All sensitive field values were false/null/empty -- no real data leaked.
-                // Report as INFO since the server acknowledged the fields exist but
-                // correctly blocked the values. This is schema-level metadata only,
-                // similar to what fields_get reveals (Phase 4).
+            String resultBody = result.response().bodyToString();
+            if (resultBody == null) resultBody = "";
+            if (!resultBody.contains("\"error\"")
+                    && hasNonEmptyJsonRpcResultArray(resultBody)
+                    && hasNonTrivialValue(resultBody, field)) {
+                boolean passwordField = field.equals("password") || field.equals("password_crypt");
                 findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "Odoo Sensitive Fields Returned as Empty/False -- res.users",
-                                Severity.INFO, Confidence.TENTATIVE)
-                        .url(url).parameter("fields (JSON-RPC body)")
-                        .evidence("search_read with sensitive field names returned "
-                                + newSensitiveKeys.size() + " sensitive keys in the response: "
-                                + newSensitiveKeys + ", but all values were false/null/empty. "
-                                + "The ORM blocked the actual values (field-level ACLs working). "
-                                + "No real data was exposed.")
-                        .payload("fields: " + Arrays.toString(expandedFields))
-                        .requestResponse(result)
-                        .build());
-            } else {
-                // At least some fields have real data -- true exposure
-                boolean hasPassword = false;
-                for (String pwField : new String[]{"password", "password_crypt"}) {
-                    if (exposedWithData.contains(pwField)) {
-                        hasPassword = true;
-                        break;
-                    }
-                }
-                Severity sev = hasPassword ? Severity.CRITICAL : Severity.HIGH;
-                findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                "Odoo Field Exposure -- " + exposedWithData.size() + " Sensitive Fields",
-                                sev, Confidence.FIRM)
-                        .url(url).parameter("fields (JSON-RPC body)")
-                        .evidence("Injected search_read with sensitive field names returned "
-                                + exposedWithData.size() + " sensitive fields with actual data "
-                                + "(not false/null/empty): " + exposedWithData
-                                + ". Fields blocked by ACLs: "
-                                + difference(newSensitiveKeys, exposedWithData))
-                        .payload("fields: " + Arrays.toString(expandedFields))
+                                "Odoo Sensitive Field Exposure -- " + field,
+                                passwordField ? Severity.CRITICAL : Severity.HIGH,
+                                Confidence.FIRM)
+                        .url(url).parameter("fields." + field)
+                        .evidence("search_read on res.users returned actual non-empty, "
+                                + "non-redacted data for sensitive field '" + field + "'.")
+                        .payload("fields: [id, " + field + "]")
                         .requestResponse(result)
                         .build());
             }
+            perHostDelay();
         }
-        perHostDelay();
     }
 
     // -- Phase 4: Method Call Probing (fields_get) -----------------------------
@@ -593,7 +520,8 @@ public class OdooDomainScanner implements ScanModule {
         rpcBody.add("params", params);
 
         String jsonBody = GSON.toJson(rpcBody);
-        return sendJsonRpcFromScratch(originalRequest, "/web/dataset/call_kw", jsonBody);
+        return sendJsonRpcFromScratch(originalRequest,
+                deriveOdooCallKwPath(originalRequest.url()), jsonBody);
     }
 
     /**
@@ -622,7 +550,8 @@ public class OdooDomainScanner implements ScanModule {
         rpcBody.add("params", params);
 
         String jsonBody = GSON.toJson(rpcBody);
-        return sendJsonRpcFromScratch(originalRequest, "/web/dataset/call_kw", jsonBody);
+        return sendJsonRpcFromScratch(originalRequest,
+                deriveOdooCallKwPath(originalRequest.url()), jsonBody);
     }
 
     /**
@@ -799,63 +728,65 @@ public class OdooDomainScanner implements ScanModule {
      * presence of a key like "password" in the JSON response is NOT evidence of
      * data exposure -- the value must be checked.
      */
-    private boolean hasNonTrivialValue(String body, String fieldName) {
-        // Look for "fieldName": VALUE pattern and check the value
-        String searchKey = "\"" + fieldName + "\"";
-        int keyIdx = body.indexOf(searchKey);
-        if (keyIdx < 0) return false;
-
-        int colonIdx = body.indexOf(':', keyIdx + searchKey.length());
-        if (colonIdx < 0) return false;
-
-        // Skip whitespace after colon
-        int valStart = colonIdx + 1;
-        while (valStart < body.length() && body.charAt(valStart) == ' ') valStart++;
-        if (valStart >= body.length()) return false;
-
-        // Check for boolean false
-        if (body.startsWith("false", valStart)) return false;
-
-        // Check for null
-        if (body.startsWith("null", valStart)) return false;
-
-        // Check for numeric 0
-        if (body.charAt(valStart) == '0'
-                && (valStart + 1 >= body.length()
-                    || !Character.isDigit(body.charAt(valStart + 1)))) return false;
-
-        // Check for quoted value
-        if (body.charAt(valStart) == '"') {
-            int valEnd = body.indexOf('"', valStart + 1);
-            if (valEnd < 0) return false;
-            String value = body.substring(valStart + 1, valEnd);
-            // Empty string
-            if (value.isEmpty()) return false;
-            // All asterisks (redacted)
-            if (value.chars().allMatch(c -> c == '*')) return false;
-            // Non-empty, non-redacted value -- real data
-            return true;
+    static boolean hasNonTrivialValue(String body, String fieldName) {
+        try {
+            return hasNonTrivialValue(JsonParser.parseString(body), fieldName);
+        } catch (Exception ignored) {
+            return false;
         }
-
-        // Check for empty array []
-        if (body.charAt(valStart) == '[') {
-            int nextNonSpace = valStart + 1;
-            while (nextNonSpace < body.length() && body.charAt(nextNonSpace) == ' ') nextNonSpace++;
-            if (nextNonSpace < body.length() && body.charAt(nextNonSpace) == ']') return false;
-        }
-
-        // If we reach here with a non-trivial JSON value (object, non-zero number, true, etc.)
-        // consider it as containing data
-        return true;
     }
 
-    /**
-     * Compute set difference: a minus b.
-     */
-    private Set<String> difference(Set<String> a, Set<String> b) {
-        Set<String> result = new HashSet<>(a);
-        result.removeAll(b);
-        return result;
+    static boolean hasNonEmptyJsonRpcResultArray(String body) {
+        try {
+            JsonObject root = JsonParser.parseString(body).getAsJsonObject();
+            JsonElement result = root.get("result");
+            return result != null && result.isJsonArray() && result.getAsJsonArray().size() > 0;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private static boolean hasNonTrivialValue(JsonElement element, String fieldName) {
+        if (element == null || element.isJsonNull()) return false;
+        if (element.isJsonObject()) {
+            JsonObject object = element.getAsJsonObject();
+            if (object.has(fieldName) && isNonTrivialJsonValue(object.get(fieldName))) return true;
+            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+                if (hasNonTrivialValue(entry.getValue(), fieldName)) return true;
+            }
+        } else if (element.isJsonArray()) {
+            for (JsonElement child : element.getAsJsonArray()) {
+                if (hasNonTrivialValue(child, fieldName)) return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isNonTrivialJsonValue(JsonElement value) {
+        if (value == null || value.isJsonNull()) return false;
+        if (value.isJsonPrimitive()) {
+            JsonPrimitive primitive = value.getAsJsonPrimitive();
+            if (primitive.isBoolean()) return primitive.getAsBoolean();
+            if (primitive.isNumber()) return primitive.getAsDouble() != 0.0d;
+            String text = primitive.getAsString();
+            return !text.isBlank() && !text.chars().allMatch(c -> c == '*');
+        }
+        return value.isJsonArray() ? value.getAsJsonArray().size() > 0
+                : value.isJsonObject() && value.getAsJsonObject().size() > 0;
+    }
+
+    static String deriveOdooCallKwPath(String url) {
+        if (url == null) return "/web/dataset/call_kw";
+        try {
+            int scheme = url.indexOf("://");
+            int pathStart = scheme >= 0 ? url.indexOf('/', scheme + 3) : 0;
+            if (pathStart < 0) return "/web/dataset/call_kw";
+            int webStart = url.toLowerCase(Locale.ROOT).indexOf("/web/", pathStart);
+            String prefix = webStart >= 0 ? url.substring(pathStart, webStart) : "";
+            return prefix + "/web/dataset/call_kw";
+        } catch (Exception ignored) {
+            return "/web/dataset/call_kw";
+        }
     }
 
     // -- Utility Methods -------------------------------------------------------

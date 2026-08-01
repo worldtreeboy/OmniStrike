@@ -130,10 +130,10 @@ public class PrototypePollutionScanner implements ScanModule {
         // Discard if the app echoes back the entire request body (check non-proto properties)
         if (responseBody != null && isEchoingRequestBody(original.request().bodyToString(), responseBody)) return;
 
-        // Check persistence: send a clean GET to the same host
-        boolean persisted = checkPersistence(original, canary);
+        // Check persistence by replaying the original clean request.
+        HttpRequestResponse persistenceEvidence = checkPersistence(original, canary);
 
-        if (persisted) {
+        if (persistenceEvidence != null) {
             findingsStore.addFinding(Finding.builder("proto-pollution",
                             "Server-Side Prototype Pollution Confirmed (__proto__)",
                             Severity.MEDIUM, Confidence.TENTATIVE)
@@ -148,14 +148,14 @@ public class PrototypePollutionScanner implements ScanModule {
                             + "in Node.js.")
                     .payload(pollutedBody)
                     .responseEvidence(canary)
-                    .requestResponse(result)
+                    .requestResponse(persistenceEvidence)
                     .build());
 
             // Cleanup and verify
             if (config.getBool("proto.cleanupEnabled", false)) {
                 cleanupPollution(original, canaryKey);
                 // Verify cleanup
-                if (checkPersistence(original, canary)) {
+                if (checkPersistence(original, canary) != null) {
                     api.logging().logToOutput("[ProtoPollution] WARNING: Cleanup failed for " + canaryKey
                             + " — canary still persists after cleanup");
                 }
@@ -194,8 +194,8 @@ public class PrototypePollutionScanner implements ScanModule {
             String responseBody = result.response().bodyToString();
             if (responseBody != null && isEchoingRequestBody(body, responseBody)) return;
 
-            boolean persisted = checkPersistence(original, canary);
-            if (persisted) {
+            HttpRequestResponse persistenceEvidence = checkPersistence(original, canary);
+            if (persistenceEvidence != null) {
                 findingsStore.addFinding(Finding.builder("proto-pollution",
                                 "Server-Side Prototype Pollution Confirmed (constructor.prototype)",
                                 Severity.MEDIUM, Confidence.TENTATIVE)
@@ -209,12 +209,12 @@ public class PrototypePollutionScanner implements ScanModule {
                                 + "Use Object.create(null) or Map for user-controlled objects.")
                         .payload(pollutedBody)
                         .responseEvidence(canary)
-                        .requestResponse(result)
+                        .requestResponse(persistenceEvidence)
                         .build());
 
                 if (config.getBool("proto.cleanupEnabled", false)) {
                     cleanupConstructorPollution(original, canaryKey);
-                    if (checkPersistence(original, canary)) {
+                    if (checkPersistence(original, canary) != null) {
                         api.logging().logToOutput("[ProtoPollution] WARNING: Cleanup failed for constructor.prototype." + canaryKey);
                     }
                 }
@@ -277,7 +277,7 @@ public class PrototypePollutionScanner implements ScanModule {
                                 + "the Express/Fastify default status was overridden via prototype pollution.")
                         .payload(pollutedBody)
                         .responseEvidence("510")
-                        .requestResponse(result)
+                        .requestResponse(probe)
                         .build());
 
                 // Cleanup
@@ -341,7 +341,7 @@ public class PrototypePollutionScanner implements ScanModule {
                                         + "Content-Type to text/html on JSON endpoints.")
                                 .payload(pollutedBody)
                                 .responseEvidence(marker)
-                                .requestResponse(result)
+                                .requestResponse(probe)
                                 .build());
 
                         if (config.getBool("proto.cleanupEnabled", false)) {
@@ -404,7 +404,7 @@ public class PrototypePollutionScanner implements ScanModule {
                                         + "setting was overridden via __proto__, changing JSON formatting. "
                                         + "This confirms prototype pollution is effective on this Express app.")
                                 .payload(pollutedBody)
-                                .requestResponse(result)
+                                .requestResponse(probe)
                                 .build());
 
                         if (config.getBool("proto.cleanupEnabled", false)) {
@@ -461,29 +461,28 @@ public class PrototypePollutionScanner implements ScanModule {
     }
 
     /**
-     * Send a clean GET probe to the same host to check if canary persists.
+     * Replay the original clean request to check if the canary persists.
      */
-    private boolean checkPersistence(HttpRequestResponse original, String canary) {
+    private HttpRequestResponse checkPersistence(HttpRequestResponse original, String canary) {
         try {
-            // Probe with the same method as the original request — POST endpoints often
-            // return 404/405 for GET, causing false negatives. Send a clean body-less
-            // request using the original method and all original headers (auth, cookies).
+            // Probe with the same method and original body. POST-only endpoints often
+            // return 404/405 for GET; preserving the clean request avoids that false negative.
             HttpRequest probe = original.request();
 
             HttpRequestResponse result = StepperHttp.sendRequest(probe);
-            if (!ResponseGuard.isUsableResponse(result)) return false;
+            if (!ResponseGuard.isUsableResponse(result)) return null;
             if (result != null && result.response() != null) {
                 String body = result.response().bodyToString();
-                if (body != null && body.contains(canary)) return true;
+                if (body != null && body.contains(canary)) return result;
                 // Also check headers
                 for (var h : result.response().headers()) {
-                    if (h.value().contains(canary)) return true;
+                    if (h.value().contains(canary)) return result;
                 }
             }
         } catch (Exception e) {
             api.logging().logToError("Persistence probe failed: " + e.getMessage());
         }
-        return false;
+        return null;
     }
 
     /**

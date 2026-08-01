@@ -6,6 +6,9 @@ import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.params.HttpParameter;
 import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.omnistrike.framework.*;
 import com.omnistrike.model.*;
 
@@ -66,8 +69,7 @@ public class SapODataScanner implements ScanModule {
     // -- OData parameter name hints -------------------------------------------
 
     private static final Set<String> ODATA_PARAM_NAMES = Set.of(
-            "$filter", "$expand", "$select", "$orderby", "$top", "$skip",
-            "$search", "$apply", "sap-value-list");
+            "$filter", "filter");
 
     // OData filter operator keywords for value-based detection
     private static final Pattern ODATA_OPERATOR_PATTERN = Pattern.compile(
@@ -195,9 +197,15 @@ public class SapODataScanner implements ScanModule {
                                      String url, String urlPath) throws InterruptedException {
         HttpRequest request = original.request();
 
+        // Entity swapping and filter mutation must never replay an OData
+        // create/update/delete operation. Metadata below is a fresh GET.
+        if (!request.method().equalsIgnoreCase("GET")) {
+            testMetadataExposure(original, url, urlPath);
+            return;
+        }
+
         // Find the injectable parameter(s) -- prioritize OData parameters
         List<InjectableParam> targets = identifyTargets(request);
-        if (targets.isEmpty()) return;
 
         for (InjectableParam target : targets) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
@@ -209,18 +217,20 @@ public class SapODataScanner implements ScanModule {
             // Phase 1: Filter Injection
             testFilterInjection(original, target, detection.entitySetName, url);
 
-            // Phase 2: Entity Enumeration
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testEntityEnumeration(original, target, url);
-
-            // Phase 3: $expand Cross-Entity Access
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testExpandCrossEntity(original, target, url);
-
-            // Phase 4: Metadata Exposure
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testMetadataExposure(original, url, urlPath);
         }
+
+        // Resource-level probes are independent of whether the triggering
+        // request happened to contain a $filter parameter.
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (dedup.markIfNew(MODULE_ID, urlPath, "entity-enum")) {
+            testEntityEnumeration(original, url);
+        }
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (dedup.markIfNew(MODULE_ID, urlPath, "expand-probe")) {
+            testExpandCrossEntity(original, url);
+        }
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        testMetadataExposure(original, url, urlPath);
     }
 
     // -- Phase 1: Filter Injection --------------------------------------------
@@ -327,7 +337,7 @@ public class SapODataScanner implements ScanModule {
 
     // -- Phase 2: Entity Enumeration ------------------------------------------
 
-    private void testEntityEnumeration(HttpRequestResponse original, InjectableParam target,
+    private void testEntityEnumeration(HttpRequestResponse original,
                                         String url) throws InterruptedException {
         // Differential probe: two different entities must produce different responses
         // to confirm the URL path entity set is actually being processed
@@ -376,7 +386,7 @@ public class SapODataScanner implements ScanModule {
             boolean hasResultsMarker = body.contains("\"results\"") || body.contains("\"d\"")
                     || body.contains("\"value\"");
             if (status == 200 && body.length() > 50
-                    && hasResultsMarker
+                    && hasResultsMarker && countResultRows(body) > 0
                     && !body.toLowerCase().contains("does not exist")
                     && !body.toLowerCase().contains("not found")
                     && !body.toLowerCase().contains("resource not found")) {
@@ -398,7 +408,7 @@ public class SapODataScanner implements ScanModule {
 
     // -- Phase 3: $expand Cross-Entity Access ---------------------------------
 
-    private void testExpandCrossEntity(HttpRequestResponse original, InjectableParam target,
+    private void testExpandCrossEntity(HttpRequestResponse original,
                                         String url) throws InterruptedException {
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
 
@@ -416,7 +426,17 @@ public class SapODataScanner implements ScanModule {
 
         // Check for new navigation property data in response
         int newKeyCount = countNewJsonKeys(baselineBody, resultBody);
-        if (newKeyCount >= 3 && result.response().statusCode() == 200) {
+        boolean hasExpandedProperty = false;
+        for (String property : EXPAND_PROPERTIES.split(",")) {
+            if (resultBody.contains("\"" + property + "\"")
+                    && !baselineBody.contains("\"" + property + "\"")) {
+                hasExpandedProperty = true;
+                break;
+            }
+        }
+        if (newKeyCount >= 3 && hasExpandedProperty
+                && result.response().statusCode() == 200
+                && !resultBody.contains("\"error\"")) {
             findingsStore.addFinding(Finding.builder(MODULE_ID,
                             "SAP OData $expand Cross-Entity Data Access",
                             Severity.HIGH, Confidence.FIRM)
@@ -531,15 +551,16 @@ public class SapODataScanner implements ScanModule {
 
     private Encoding detectEncoding(String value) {
         if (value == null) return Encoding.RAW;
+        String lower = value.toLowerCase(Locale.ROOT);
 
         // Double URL-encoded: contains %25xx
-        if (value.contains("%2520") || value.contains("%2527") || value.contains("%253D")) {
+        if (lower.contains("%2520") || lower.contains("%2527") || lower.contains("%253d")) {
             return Encoding.DOUBLE_URL_ENCODED;
         }
 
         // URL-encoded: contains %xx patterns typical of OData filters
-        if (value.contains("%20") || value.contains("%27") || value.contains("%3D")
-                || value.contains("%24") || value.contains("%28") || value.contains("%29")) {
+        if (lower.contains("%20") || lower.contains("%27") || lower.contains("%3d")
+                || lower.contains("%24") || lower.contains("%28") || lower.contains("%29")) {
             return Encoding.URL_ENCODED;
         }
 
@@ -625,12 +646,12 @@ public class SapODataScanner implements ScanModule {
         if (ScanState.isCancelled()) return null;
 
         try {
-            String originalUrl = original.request().url();
-            String modifiedUrl = originalUrl.replace("/" + originalEntitySet, "/" + probeEntity);
-            if (modifiedUrl.equals(originalUrl)) return null; // replacement failed
+            String fullPath = extractFullPath(original.request().url());
+            String modifiedPath = replaceLastEntitySegment(fullPath, originalEntitySet, probeEntity);
+            if (modifiedPath == null || modifiedPath.equals(fullPath)) return null;
 
             HttpRequest modified = original.request().withPath(
-                    extractFullPath(modifiedUrl));
+                    modifiedPath);
 
             HttpRequestResponse result = StepperHttp.sendRequest(modified);
             if (result != null && !ResponseGuard.isUsableResponse(result)) return null;
@@ -693,6 +714,25 @@ public class SapODataScanner implements ScanModule {
         return null;
     }
 
+    static String replaceLastEntitySegment(String fullPath, String originalEntitySet,
+                                           String probeEntity) {
+        if (fullPath == null || originalEntitySet == null || probeEntity == null) return null;
+        int queryStart = fullPath.indexOf('?');
+        String path = queryStart >= 0 ? fullPath.substring(0, queryStart) : fullPath;
+        String query = queryStart >= 0 ? fullPath.substring(queryStart) : "";
+        Pattern segment = Pattern.compile("(?i)/" + Pattern.quote(originalEntitySet)
+                + "(?:\\([^/?]*\\))?(?=/|$)");
+        var matcher = segment.matcher(path);
+        int start = -1;
+        int end = -1;
+        while (matcher.find()) {
+            start = matcher.start();
+            end = matcher.end();
+        }
+        if (start < 0) return null;
+        return path.substring(0, start) + "/" + probeEntity + path.substring(end) + query;
+    }
+
     /**
      * Build the $metadata URL from a SAP OData service URL.
      * Strips the entity set and query params, appends $metadata.
@@ -751,11 +791,43 @@ public class SapODataScanner implements ScanModule {
      * SAP OData responses typically contain "__metadata" per entity in OData v2
      * or entries in "results" / "value" arrays in the response.
      */
-    private int countResultRows(String body) {
-        int metadataCount = countOccurrences(body, "\"__metadata\"");
-        int resultsCount = countOccurrences(body, "\"results\"");
-        // Return whichever count is higher as the row indicator
-        return Math.max(metadataCount, resultsCount);
+    static int countResultRows(String body) {
+        if (body == null || body.isBlank()) return 0;
+        int arrayCount = 0;
+        try {
+            arrayCount = largestNamedResultArray(JsonParser.parseString(body));
+        } catch (Exception ignored) {
+            // Some SAP gateways return non-standard JSON; retain marker fallback.
+        }
+        int metadataCount = countOccurrencesStatic(body, "\"__metadata\"");
+        return Math.max(arrayCount, metadataCount);
+    }
+
+    private static int largestNamedResultArray(JsonElement element) {
+        if (element == null || element.isJsonNull()) return 0;
+        int largest = 0;
+        if (element.isJsonObject()) {
+            JsonObject object = element.getAsJsonObject();
+            for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+                JsonElement value = entry.getValue();
+                if ((entry.getKey().equals("results") || entry.getKey().equals("value"))
+                        && value.isJsonArray()) {
+                    largest = Math.max(largest, value.getAsJsonArray().size());
+                }
+                largest = Math.max(largest, largestNamedResultArray(value));
+            }
+        } else if (element.isJsonArray()) {
+            for (JsonElement child : element.getAsJsonArray()) {
+                largest = Math.max(largest, largestNamedResultArray(child));
+            }
+        }
+        return largest;
+    }
+
+    private static int countOccurrencesStatic(String text, String search) {
+        int count = 0, idx = 0;
+        while ((idx = text.indexOf(search, idx)) >= 0) { count++; idx += search.length(); }
+        return count;
     }
 
     private int countNewJsonKeys(String baseline, String result) {

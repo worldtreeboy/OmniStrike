@@ -34,12 +34,10 @@ public class ModuleRegistry {
     }
 
     /**
-     * Modules that fire automatically based on technology fingerprinting and are
-     * NOT user-triggerable (no right-click entry, no custom-scan checkbox).
-     * They remain part of {@link #getEnabledActiveModules()} so the active-scan
-     * pipeline still calls them; each module self-filters by inspecting the
-     * request for its target fingerprint (e.g. D365 endpoints, Firebase URLs).
-     * The UI surfaces them as always-on (checkbox shown but disabled).
+     * Response-gated technology modules that have no individual right-click
+     * entry or custom-scan checkbox. "All Modules" supplies each selected HTTP
+     * exchange to them; each stays dormant unless its response fingerprint
+     * confirms the relevant product (for example D365 or Firebase).
      */
     private static final Set<String> AUTO_TRIGGERED_IDS = Set.of(
             "dynamics365-scanner",
@@ -171,6 +169,11 @@ public class ModuleRegistry {
      */
     public boolean isAutoTriggered(String moduleId) {
         return AUTO_TRIGGERED_IDS.contains(moduleId);
+    }
+
+    /** Enabled response-gated technology scanners included by "All Modules". */
+    public List<ScanModule> getEnabledAutoTriggeredModules() {
+        return filterModules(module -> isAutoTriggered(module.getId()));
     }
 
     private List<ScanModule> filterModules(Predicate<ScanModule> filter) {

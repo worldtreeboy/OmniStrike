@@ -188,6 +188,7 @@ public class OmniStrikeExtension implements BurpExtension {
         // Firebase Misconfiguration (auto-triggered, not user-triggerable)
         FirebaseMisconfigScanner firebase = new FirebaseMisconfigScanner();
         firebase.setDependencies(dedup, findingsStore, collaboratorManager);
+        firebase.setScopeManager(scopeManager);
         registry.registerModule(firebase);
 
         // SharePoint CAML Injection (auto-triggered, not user-triggerable)

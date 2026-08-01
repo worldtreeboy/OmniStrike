@@ -69,7 +69,7 @@ public class SpringActuatorScanner implements ScanModule {
 
     // Phase 1: Discovery — probe the actuator root to find available endpoints
     private static final String[] ACTUATOR_ROOTS = {
-            "/actuator", "/manage", "/actuator/"
+            "/actuator", "/manage"
     };
 
     // Phase 2: Sensitive endpoints — ordered by severity
@@ -90,7 +90,7 @@ public class SpringActuatorScanner implements ScanModule {
             {"/actuator/flyway", "Flyway DB migration info (reveals DB schema changes)", "MEDIUM"},
             {"/actuator/liquibase", "Liquibase DB migration info", "MEDIUM"},
             {"/actuator/sessions", "Active sessions (if Spring Session enabled)", "HIGH"},
-            {"/actuator/jolokia/list", "Jolokia JMX access — may enable RCE via MBeans", "CRITICAL"},
+            {"/actuator/jolokia/list", "Jolokia JMX metadata access — may expose dangerous MBeans", "HIGH"},
             {"/actuator/gateway/routes", "Spring Cloud Gateway routes — may reveal backends (CVE-2022-22947)", "HIGH"},
             {"/actuator/prometheus", "Prometheus metrics endpoint (leaks internal metric names)", "MEDIUM"},
     };
@@ -215,30 +215,38 @@ public class SpringActuatorScanner implements ScanModule {
     private void testActuatorExposure(HttpRequestResponse original, String url)
             throws InterruptedException {
         String baseUrl = extractBaseUrl(url);
+        String observedRoot = extractActuatorRootFromUrl(url);
 
-        // Only probe once per HOST (not per path — actuator endpoints are host-level)
-        if (!dedup.markIfNew(MODULE_ID, baseUrl, "actuator-probe")) return;
+        // Reverse proxies can host several applications/actuator roots per host.
+        String probeIdentity = baseUrl + (observedRoot == null ? "/" : observedRoot);
+        if (!dedup.markIfNew(MODULE_ID, probeIdentity, "actuator-probe")) return;
 
         // Phase 1: Discovery — find the actuator root
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-        String actuatorRoot = discoverActuatorRoot(original, baseUrl);
+        String actuatorRoot = discoverActuatorRoot(original, baseUrl, url);
 
         // Phase 2: Probe sensitive endpoints
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
         if (actuatorRoot != null) {
             probeSensitiveEndpoints(original, baseUrl, actuatorRoot, url);
+        } else {
+            // Phase 3: Try legacy Spring Boot 1.x paths only when no modern
+            // actuator root was found.
+            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+            probeLegacyEndpoints(original, baseUrl, url);
         }
-
-        // Phase 3: Try legacy Spring Boot 1.x paths if no actuator root found
-        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-        probeLegacyEndpoints(original, baseUrl, url);
     }
 
     // ── Phase 1: Actuator Root Discovery ─────────────────────────────────
 
-    private String discoverActuatorRoot(HttpRequestResponse original, String baseUrl)
+    private String discoverActuatorRoot(HttpRequestResponse original, String baseUrl, String sourceUrl)
             throws InterruptedException {
-        for (String root : ACTUATOR_ROOTS) {
+        LinkedHashSet<String> roots = new LinkedHashSet<>();
+        String observedRoot = extractActuatorRootFromUrl(sourceUrl);
+        if (observedRoot != null) roots.add(observedRoot);
+        roots.addAll(Arrays.asList(ACTUATOR_ROOTS));
+
+        for (String root : roots) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return null;
 
             HttpRequestResponse result = sendProbeRequest(original, baseUrl + root);
@@ -257,7 +265,7 @@ public class SpringActuatorScanner implements ScanModule {
 
                 // Differential: compare against a nonexistent path to avoid catch-all pages
                 HttpRequestResponse control = sendProbeRequest(original,
-                        baseUrl + "/omnistrike_nonexistent_" + System.currentTimeMillis());
+                        baseUrl + root + "/omnistrike_nonexistent_" + System.currentTimeMillis());
                 perHostDelay();
                 boolean differential = true;
                 if (control != null && control.response() != null) {
@@ -283,7 +291,9 @@ public class SpringActuatorScanner implements ScanModule {
             }
             perHostDelay();
         }
-        return null;
+        // A response from /<prefix>/actuator/... or /<prefix>/manage/... is
+        // already a strong route hint even when the root index itself is hidden.
+        return observedRoot;
     }
 
     // ── Phase 2: Sensitive Endpoint Probing ───────────────────────────────
@@ -304,7 +314,8 @@ public class SpringActuatorScanner implements ScanModule {
             if (path.contains("heapdump")
                     && !config.getBool("spring-actuator.heapdump.enabled", false)) continue;
 
-            String probeUrl = baseUrl + path;
+            String probePath = resolveActuatorEndpoint(actuatorRoot, path);
+            String probeUrl = baseUrl + probePath;
             HttpRequestResponse result = sendProbeRequest(original, probeUrl);
             if (result == null || result.response() == null) { perHostDelay(); continue; }
 
@@ -578,6 +589,38 @@ public class SpringActuatorScanner implements ScanModule {
             case "LOW": return Severity.LOW;
             default: return Severity.INFO;
         }
+    }
+
+    static String resolveActuatorEndpoint(String actuatorRoot, String canonicalPath) {
+        if (actuatorRoot == null || canonicalPath == null) return canonicalPath;
+        String root = actuatorRoot.endsWith("/") && actuatorRoot.length() > 1
+                ? actuatorRoot.substring(0, actuatorRoot.length() - 1) : actuatorRoot;
+        String suffix = canonicalPath.startsWith("/actuator/")
+                ? canonicalPath.substring("/actuator".length()) : canonicalPath;
+        if (!suffix.startsWith("/")) suffix = "/" + suffix;
+        return root + suffix;
+    }
+
+    static String extractActuatorRootFromUrl(String url) {
+        if (url == null) return null;
+        try {
+            int scheme = url.indexOf("://");
+            int pathStart = scheme >= 0 ? url.indexOf('/', scheme + 3) : 0;
+            if (pathStart < 0) return null;
+            int query = url.indexOf('?', pathStart);
+            String path = query >= 0 ? url.substring(pathStart, query) : url.substring(pathStart);
+            String lower = path.toLowerCase(Locale.ROOT);
+            for (String marker : new String[]{"/actuator", "/manage"}) {
+                int index = lower.indexOf(marker);
+                if (index >= 0) {
+                    int end = index + marker.length();
+                    if (end == path.length() || path.charAt(end) == '/') {
+                        return path.substring(0, end);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     private void perHostDelay() throws InterruptedException {

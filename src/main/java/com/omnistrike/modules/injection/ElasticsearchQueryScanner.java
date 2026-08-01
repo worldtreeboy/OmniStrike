@@ -84,7 +84,7 @@ public class ElasticsearchQueryScanner implements ScanModule {
     // ── ES query parameter names ───────────────────────────────────────────
 
     private static final Set<String> ES_PARAM_NAMES = Set.of(
-            "q", "query", "search", "filter", "source", "_source");
+            "q", "query", "search", "filter");
 
     // ES query syntax indicators in parameter values
     private static final Pattern ES_SYNTAX_PATTERN = Pattern.compile(
@@ -191,9 +191,10 @@ public class ElasticsearchQueryScanner implements ScanModule {
     private void testEsInjection(HttpRequestResponse original, ESDetection detection,
                                   String url, String urlPath) throws InterruptedException {
         HttpRequest request = original.request();
+        boolean searchEndpoint = isSearchEndpoint(url);
 
-        List<InjectableParam> targets = identifyTargets(request);
-        if (targets.isEmpty()) return;
+        List<InjectableParam> targets = searchEndpoint
+                ? identifyTargets(request) : Collections.emptyList();
 
         for (InjectableParam target : targets) {
             if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
@@ -204,18 +205,61 @@ public class ElasticsearchQueryScanner implements ScanModule {
             // Phase 1: Query Injection (match-all, tautology)
             testQueryInjection(original, target, url);
 
-            // Phase 2: Index Enumeration
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testIndexEnumeration(original, url, urlPath);
-
-            // Phase 3: Field/Mapping Exposure
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testFieldExposure(original, target, url);
-
-            // Phase 4: Script Injection Probe
-            if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
-            testScriptInjection(original, target, url);
         }
+
+        if (searchEndpoint && targets.isEmpty()) {
+            testJsonBodyQueryInjection(original, url);
+        }
+
+        // These phases probe the detected ES resource and do not require a q=
+        // style injectable parameter on the triggering request.
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        testIndexEnumeration(original, url, urlPath);
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (searchEndpoint && dedup.markIfNew(MODULE_ID, urlPath, "field-exposure")) {
+            testFieldExposure(original, url);
+        }
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (dedup.markIfNew(MODULE_ID, urlPath, "mapping-exposure")) {
+            testMappingExposure(original, url);
+        }
+        if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
+        if (searchEndpoint && dedup.markIfNew(MODULE_ID, urlPath, "script-fields")) {
+            testScriptInjection(original, url);
+        }
+    }
+
+    private void testJsonBodyQueryInjection(HttpRequestResponse original, String url)
+            throws InterruptedException {
+        String baselineBody = original.response().bodyToString();
+        int baselineHits = extractTotalHits(baselineBody);
+        String requestBody = original.request().bodyToString();
+        String matchAllBody = replaceRootQueryWithMatchAll(requestBody);
+        if (matchAllBody.equals(requestBody)) return;
+
+        HttpRequestResponse result = sendModifiedRequest(original,
+                original.request().withBody(matchAllBody));
+        if (result != null && result.response() != null
+                && result.response().statusCode() == 200
+                && ResponseGuard.isUsableResponse(result)) {
+            String resultBody = result.response().bodyToString();
+            int resultHits = extractTotalHits(resultBody);
+            if (baselineHits >= 0 && resultHits > baselineHits + 2
+                    && resultBody.contains("\"hits\"")
+                    && resultBody.contains("\"_source\"")
+                    && !resultBody.equals(baselineBody)) {
+                findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                "Elasticsearch Query Injection — JSON DSL match_all",
+                                Severity.HIGH, Confidence.FIRM)
+                        .url(url).parameter("request body (JSON DSL)")
+                        .evidence("Replaced the root query with match_all:{}; total hits increased from "
+                                + baselineHits + " to " + resultHits + ".")
+                        .payload("{\"query\":{\"match_all\":{}}}")
+                        .requestResponse(result)
+                        .build());
+            }
+        }
+        perHostDelay();
     }
 
     // ── Phase 1: Query Injection ──────────────────────────────────────────
@@ -456,7 +500,7 @@ public class ElasticsearchQueryScanner implements ScanModule {
 
     // ── Phase 3: Field/Mapping Exposure ───────────────────────────────────
 
-    private void testFieldExposure(HttpRequestResponse original, InjectableParam target,
+    private void testFieldExposure(HttpRequestResponse original,
                                     String url) throws InterruptedException {
         String baselineBody = original.response().bodyToString();
         if (baselineBody == null) baselineBody = "";
@@ -490,13 +534,16 @@ public class ElasticsearchQueryScanner implements ScanModule {
             perHostDelay();
         }
 
-        // Test 2: Probe _mapping endpoint for the current index
+    }
+
+    private void testMappingExposure(HttpRequestResponse original, String url)
+            throws InterruptedException {
+        // Probe _mapping for the exact index while retaining any reverse-proxy prefix.
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
         {
-            String baseUrl = extractBaseUrl(url);
+            String mappingUrl = buildMappingUrl(url);
             String index = extractIndexFromUrl(url);
-            if (index != null && !index.isEmpty()) {
-                String mappingUrl = baseUrl + "/" + index + "/_mapping";
+            if (mappingUrl != null && index != null && !index.isEmpty()) {
                 HttpRequestResponse result = sendProbeRequest(original, mappingUrl);
                 if (result != null && result.response() != null) {
                     if (ResponseGuard.isUsableResponse(result)) {
@@ -527,52 +574,61 @@ public class ElasticsearchQueryScanner implements ScanModule {
 
     // ── Phase 4: Script Injection Probe ───────────────────────────────────
 
-    private void testScriptInjection(HttpRequestResponse original, InjectableParam target,
+    private void testScriptInjection(HttpRequestResponse original,
                                       String url) throws InterruptedException {
         if (Thread.currentThread().isInterrupted() || ScanState.isCancelled()) return;
 
         String baselineBody = original.response().bodyToString();
         if (baselineBody == null) baselineBody = "";
 
-        // Test: Inject a script_fields canary via _source parameter
-        // This tests if the ES endpoint allows script execution via query params
-        String canaryPayload = target.originalValue + " OR _exists_:_omnistrike_canary_field";
-        HttpRequestResponse result = sendPayload(original, target, canaryPayload);
+        String probeBody = buildScriptFieldsProbe(original.request().bodyToString());
+        if (probeBody == null) return;
+        HttpRequestResponse result = sendModifiedRequest(original,
+                original.request().withBody(probeBody));
         if (result != null && result.response() != null
                 && !(result.response().statusCode() >= 400 && result.response().statusCode() < 500)) {
             if (ResponseGuard.isUsableResponse(result)) {
                 String resultBody = result.response().bodyToString();
                 if (resultBody == null) resultBody = "";
 
-                // If ES processes the _exists_ query without error and returns different results,
-                // it confirms query syntax is being interpreted
                 if (result.response().statusCode() == 200
                         && !resultBody.equals(baselineBody)
                         && resultBody.contains("\"hits\"")
+                        && resultBody.contains("omnistrike_script_canary")
+                        && !baselineBody.contains("omnistrike_script_canary")
                         && !resultBody.contains("\"error\"")) {
 
-                    // Compare hit counts — _exists_ with nonexistent field should return FEWER hits
-                    // (OR keeps some, but the nonexistent field clause returns 0).
-                    // Require resultHits < baselineHits to avoid FP from natural index churn.
-                    int baselineHits = extractTotalHits(baselineBody);
-                    int resultHits = extractTotalHits(resultBody);
-                    if (resultHits < baselineHits && baselineHits >= 0 && resultHits >= 0
-                            && (baselineHits - resultHits) >= 2) {
-                        findingsStore.addFinding(Finding.builder(MODULE_ID,
-                                        "Elasticsearch Query Syntax Interpreted — _exists_ operator",
-                                        Severity.MEDIUM, Confidence.FIRM)
-                                .url(url).parameter(target.name)
-                                .evidence("Injected _exists_ query operator changed hit count from "
-                                        + baselineHits + " to " + resultHits
-                                        + ". Confirms ES query syntax is being parsed from user input.")
-                                .payload(canaryPayload)
-                                .requestResponse(result)
-                                .build());
-                    }
+                    findingsStore.addFinding(Finding.builder(MODULE_ID,
+                                    "Elasticsearch Script Fields Executed",
+                                    Severity.MEDIUM, Confidence.FIRM)
+                            .url(url).parameter("request body (script_fields)")
+                            .evidence("A safe constant Painless script returned the unique "
+                                    + "omnistrike_script_canary value in search results.")
+                            .payload(probeBody)
+                            .requestResponse(result)
+                            .build());
                 }
             }
         }
         perHostDelay();
+    }
+
+    static String buildScriptFieldsProbe(String requestBody) {
+        try {
+            JsonObject root = JsonParser.parseString(requestBody).getAsJsonObject();
+            JsonObject script = new JsonObject();
+            script.addProperty("lang", "painless");
+            script.addProperty("source", "'omnistrike_script_canary'");
+            JsonObject field = new JsonObject();
+            field.add("script", script);
+            JsonObject fields = new JsonObject();
+            fields.add("__omnistrike", field);
+            root.add("script_fields", fields);
+            if (!root.has("size")) root.addProperty("size", 1);
+            return new Gson().toJson(root);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     // ── Target Identification ─────────────────────────────────────────────
@@ -584,6 +640,9 @@ public class ElasticsearchQueryScanner implements ScanModule {
             String name = param.name().toLowerCase();
             String value = param.value();
             if (value == null || value.isEmpty()) continue;
+            // source= carries JSON DSL, not Lucene query-string syntax. It is
+            // handled only when present as a JSON request body for now.
+            if (name.equals("source") || name.equals("_source")) continue;
 
             // Priority 1: Parameter value contains ES query syntax
             if (ES_SYNTAX_PATTERN.matcher(value).find()) {
@@ -651,7 +710,7 @@ public class ElasticsearchQueryScanner implements ScanModule {
         if (ScanState.isCancelled()) return null;
 
         try {
-            HttpRequest modified = original.request().withAddedParameters(
+            HttpRequest modified = original.request().withUpdatedParameters(
                     HttpParameter.urlParameter(paramName, paramValue));
 
             HttpRequestResponse result = StepperHttp.sendRequest(modified);
@@ -739,22 +798,13 @@ public class ElasticsearchQueryScanner implements ScanModule {
     /**
      * Extract the index name from an ES URL like /myindex/_search?q=test
      */
-    private String extractIndexFromUrl(String url) {
+    static String extractIndexFromUrl(String url) {
         try {
-            // Find path after host
-            int schemeEnd = url.indexOf("://");
-            if (schemeEnd < 0) return null;
-            int pathStart = url.indexOf('/', schemeEnd + 3);
-            if (pathStart < 0) return null;
-            String path = url.substring(pathStart);
-            // Remove query string
-            int qIdx = path.indexOf('?');
-            if (qIdx >= 0) path = path.substring(0, qIdx);
-            // Split by / and find first non-empty, non-underscore-prefixed segment
-            String[] segments = path.split("/");
-            for (String seg : segments) {
-                if (!seg.isEmpty() && !seg.startsWith("_")) {
-                    return seg;
+            String[] segments = new java.net.URI(url).getPath().split("/");
+            for (int i = 1; i < segments.length; i++) {
+                if (segments[i].startsWith("_") && i > 0) {
+                    String candidate = segments[i - 1];
+                    if (!candidate.isEmpty() && !candidate.startsWith("_")) return candidate;
                 }
             }
         } catch (Exception ignored) {}
@@ -774,13 +824,48 @@ public class ElasticsearchQueryScanner implements ScanModule {
         return url;
     }
 
-    private String extractBaseUrl(String url) {
+    static boolean isSearchEndpoint(String url) {
         try {
-            int schemeEnd = url.indexOf("://");
-            if (schemeEnd < 0) return url;
-            int pathStart = url.indexOf('/', schemeEnd + 3);
-            if (pathStart < 0) return url;
-            return url.substring(0, pathStart);
+            String path = new java.net.URI(url).getPath().toLowerCase(Locale.ROOT);
+            return path.matches(".*/_(?:search|async_search)(?:/template)?/?$");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    static String buildMappingUrl(String url) {
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            String path = uri.getPath();
+            java.util.regex.Matcher matcher = Pattern.compile(
+                    "(?i)^(.*?/[^/]+)/_(?:search|async_search)(?:/template)?/?$").matcher(path);
+            if (!matcher.matches()) return null;
+            return new java.net.URI(uri.getScheme(), uri.getAuthority(),
+                    matcher.group(1) + "/_mapping", null, null).toString();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    static String extractBaseUrl(String url) {
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            String[] segments = uri.getPath().split("/");
+            int underscore = -1;
+            for (int i = 0; i < segments.length; i++) {
+                if (segments[i].startsWith("_")) { underscore = i; break; }
+            }
+            int prefixEnd = underscore;
+            if (underscore > 0 && (segments[underscore].equalsIgnoreCase("_search")
+                    || segments[underscore].equalsIgnoreCase("_async_search"))) {
+                prefixEnd = underscore - 1;
+            }
+            StringBuilder prefix = new StringBuilder();
+            for (int i = 1; i < prefixEnd; i++) {
+                if (!segments[i].isEmpty()) prefix.append('/').append(segments[i]);
+            }
+            return new java.net.URI(uri.getScheme(), uri.getAuthority(),
+                    prefix.toString(), null, null).toString();
         } catch (Exception e) {
             return url;
         }
