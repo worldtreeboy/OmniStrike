@@ -337,33 +337,62 @@ public class OmniStrikeExtension implements BurpExtension {
                 + startupThemeName + ").");
 
         // ==================== UI ====================
+        // Register a lightweight host immediately. Building every workspace view
+        // is intentionally deferred to the EDT, but the suite tab must remain
+        // visible even if that construction is delayed or fails.
+        JPanel suiteTabHost = new JPanel(new java.awt.BorderLayout());
+        JLabel loadingLabel = new JLabel("Loading OmniStrike workspace…", SwingConstants.CENTER);
+        suiteTabHost.add(loadingLabel, java.awt.BorderLayout.CENTER);
+        api.userInterface().registerSuiteTab("OmniStrike", suiteTabHost);
+        api.logging().logToOutput("UI tab registered. Loading workspace...");
         SwingUtilities.invokeLater(() -> {
-            mainPanel = new MainPanel(
-                    registry, findingsStore, scopeManager,
-                    executor, interceptor, collaboratorManager, sessionKeepAlive,
-                    stepperEngine, tlsAnalyzer, dataBus, persistence, api);
-            api.userInterface().registerSuiteTab("OmniStrike", mainPanel);
-            // Wire Stepper log messages to the Activity Log
-            if (stepperEngine != null) {
-                stepperEngine.setUiLogger((module, message) ->
+            long uiStartNanos = System.nanoTime();
+            try {
+                mainPanel = new MainPanel(
+                        registry, findingsStore, scopeManager,
+                        executor, interceptor, collaboratorManager, sessionKeepAlive,
+                        stepperEngine, tlsAnalyzer, dataBus, persistence, api);
+                suiteTabHost.removeAll();
+                suiteTabHost.add(mainPanel, java.awt.BorderLayout.CENTER);
+                suiteTabHost.revalidate();
+                suiteTabHost.repaint();
+                // Wire Stepper log messages to the Activity Log
+                if (stepperEngine != null) {
+                    stepperEngine.setUiLogger((module, message) ->
+                            javax.swing.SwingUtilities.invokeLater(() ->
+                                    mainPanel.getLogPanel().log("INFO", module, message)));
+                }
+                // Wire CollaboratorManager (Custom OOB) log messages to the Activity Log
+                collaboratorManager.setUiLogger((module, message) ->
                         javax.swing.SwingUtilities.invokeLater(() ->
                                 mainPanel.getLogPanel().log("INFO", module, message)));
-            }
-            // Wire CollaboratorManager (Custom OOB) log messages to the Activity Log
-            collaboratorManager.setUiLogger((module, message) ->
-                    javax.swing.SwingUtilities.invokeLater(() ->
-                            mainPanel.getLogPanel().log("INFO", module, message)));
-            // Wire SessionKeepAlive log messages to the Activity Log
-            sessionKeepAlive.setUiLogger((module, message) ->
-                    javax.swing.SwingUtilities.invokeLater(() ->
-                            mainPanel.getLogPanel().log("INFO", module, message)));
-            // Wire TLS Analyzer log messages to the Activity Log
-            if (tlsAnalyzer != null) {
-                tlsAnalyzer.setUiLogger((module, message) ->
+                // Wire SessionKeepAlive log messages to the Activity Log
+                sessionKeepAlive.setUiLogger((module, message) ->
                         javax.swing.SwingUtilities.invokeLater(() ->
                                 mainPanel.getLogPanel().log("INFO", module, message)));
+                // Wire TLS Analyzer log messages to the Activity Log
+                if (tlsAnalyzer != null) {
+                    tlsAnalyzer.setUiLogger((module, message) ->
+                            javax.swing.SwingUtilities.invokeLater(() ->
+                                    mainPanel.getLogPanel().log("INFO", module, message)));
+                }
+                long uiMillis = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                        System.nanoTime() - uiStartNanos);
+                api.logging().logToOutput("UI workspace ready in " + uiMillis
+                        + " ms. Theme: " + startupThemeName + ".");
+            } catch (Throwable error) {
+                String message = error.getClass().getSimpleName()
+                        + (error.getMessage() != null ? ": " + error.getMessage() : "");
+                suiteTabHost.removeAll();
+                suiteTabHost.add(new JLabel(
+                        "<html><div style='text-align:center'><b>OmniStrike UI failed to load</b><br>"
+                                + escapeHtml(message)
+                                + "<br><br>See Extensions → Errors for details.</div></html>",
+                        SwingConstants.CENTER), java.awt.BorderLayout.CENTER);
+                suiteTabHost.revalidate();
+                suiteTabHost.repaint();
+                api.logging().logToError("OmniStrike UI initialization failed: " + message);
             }
-            api.logging().logToOutput("UI tab registered. Theme: " + startupThemeName + ".");
         });
 
         // ==================== CLEANUP ON UNLOAD ====================
@@ -413,5 +442,14 @@ public class OmniStrikeExtension implements BurpExtension {
                 + " | OOB: " + oobMode);
         api.logging().logToOutput(
                 "Configure target scope, then right-click a request and choose Send to OmniStrike.");
+    }
+
+    private static String escapeHtml(String value) {
+        if (value == null) return "Unknown error";
+        return value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
     }
 }

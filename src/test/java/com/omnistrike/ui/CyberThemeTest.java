@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import javax.swing.JButton;
 import javax.swing.JPanel;
 import javax.swing.JTabbedPane;
+import javax.swing.UIManager;
 import java.awt.Color;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -34,6 +35,22 @@ class CyberThemeTest {
         assertEquals("Default", GlobalThemeManager.normalizeThemeName("missing-theme"));
         assertEquals("Default", GlobalThemeManager.normalizeThemeName("Default"));
         assertEquals("Omni Pro", GlobalThemeManager.normalizeThemeName("Omni Pro"));
+    }
+
+    @Test
+    void nativeStartupDoesNotRewriteBurpUiDefaults() {
+        GlobalThemeManager.saveOriginalDefaults();
+        Object original = UIManager.get("Panel.background");
+        Color marker = new Color(1, 2, 3);
+        UIManager.put("Panel.background", marker);
+        try {
+            GlobalThemeManager.applyTheme(null);
+            assertSame(marker, UIManager.get("Panel.background"));
+            assertTrue(CyberTheme.isNativeMode());
+        } finally {
+            if (original == null) UIManager.getDefaults().remove("Panel.background");
+            else UIManager.put("Panel.background", original);
+        }
     }
 
     @Test

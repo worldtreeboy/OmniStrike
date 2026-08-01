@@ -373,6 +373,8 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 - Restored Burp's native look as the default for fresh installs.
 - Added a one-time migration from the v1.82 forced Omni Pro default while preserving other saved theme choices.
 - Invalid or missing theme preferences now fall back to Burp Default instead of Omni Pro.
+- Native startup no longer rewrites Burp-wide Swing defaults, removing the UI stall introduced by the original v1.84 build.
+- The suite tab now registers immediately with a loading state and shows initialization failures instead of disappearing silently.
 
 </details>
 

@@ -306,12 +306,17 @@ public final class GlobalThemeManager {
 
     /** Revert to Burp's native L&F on selection of Default or extension unload. */
     public static void revertToNative() {
-        boolean wasGlobal = currentScope == ThemeScope.GLOBAL && currentPalette != null;
+        boolean hadTheme = currentPalette != null;
+        boolean wasGlobal = currentScope == ThemeScope.GLOBAL && hadTheme;
         currentPalette = null;
         CyberTheme.setNativeMode(true);
         stopBreathing();
-        restoreUIManagerDefaults();
+        // Native startup already has Burp's correct defaults. Rewriting every
+        // UIManager key here is unnecessary, globally expensive, and can stall
+        // Burp while the extension tab is being registered.
+        if (!hadTheme) return;
         if (wasGlobal) {
+            restoreUIManagerDefaults();
             walkAllFrames(null);
         } else if (omniStrikeRoot != null) {
             CyberTheme.stripRecursive(omniStrikeRoot);
@@ -388,7 +393,11 @@ public final class GlobalThemeManager {
     private static void restoreUIManagerDefaults() {
         if (savedDefaults != null) {
             for (Map.Entry<String, Object> entry : savedDefaults.entrySet()) {
-                UIManager.put(entry.getKey(), entry.getValue());
+                if (entry.getValue() == null) {
+                    UIManager.getDefaults().remove(entry.getKey());
+                } else {
+                    UIManager.put(entry.getKey(), entry.getValue());
+                }
             }
         }
     }
