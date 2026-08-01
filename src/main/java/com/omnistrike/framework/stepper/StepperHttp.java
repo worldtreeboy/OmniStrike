@@ -33,6 +33,12 @@ public final class StepperHttp {
 
     private StepperHttp() {}
 
+    /** Prevents a scanner probe from bypassing a matched but failed prerequisite chain. */
+    public static final class StepperPreparationException extends RuntimeException {
+        public StepperPreparationException(String message) { super(message); }
+        public StepperPreparationException(String message, Throwable cause) { super(message, cause); }
+    }
+
     /** Called once during extension load with the Montoya API and the configured engine. */
     public static void init(MontoyaApi montoyaApi, StepperEngine stepperEngine) {
         api = montoyaApi;
@@ -57,8 +63,8 @@ public final class StepperHttp {
      * has the final say on session cookies. This keeps keep-alive from interfering
      * with Stepper while still guaranteeing fresh cookies on every module send.
      *
-     * Falls back to a raw send if {@link #init} was never called (e.g. during
-     * an unusual load order) so modules don't NPE.
+     * If a matched prerequisite chain fails, the scanner request is rejected
+     * instead of silently bypassing Stepper with stale or literal values.
      */
     public static HttpRequestResponse sendRequest(HttpRequest request) {
         MontoyaApi a = api;
@@ -85,10 +91,16 @@ public final class StepperHttp {
         if (s == null || !s.isEnabled()) return request;
         if (StepperEngine.isExecutingChain()) return request;
         try {
-            return s.processOutgoingRequest(request);
+            StepperEngine.PreparationResult result = s.prepareOutgoingRequest(request);
+            if (result.matched() && !result.successful()) {
+                throw new StepperPreparationException(result.message());
+            }
+            return result.request();
+        } catch (StepperPreparationException failure) {
+            throw failure;
         } catch (Exception e) {
-            // Never break a scan-module send because Stepper threw — fall through
-            return request;
+            throw new StepperPreparationException(
+                    "Stepper failed while preparing a scanner request", e);
         }
     }
 }

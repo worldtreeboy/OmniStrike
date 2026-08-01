@@ -127,7 +127,8 @@ public class StepperPanel extends JPanel {
         pauseBtn = new JButton(engine.isPaused() ? "Resume" : "Pause Now");
         styleButton(pauseBtn, NEON_RED);
         pauseBtn.setToolTipText(
-                "<html>Pause Stepper — new requests bypass the engine and in-flight chains abort at the next step.<br>"
+                "<html>Pause Stepper — matched OmniStrike probes are rejected and in-flight chains abort at the next step.<br>"
+                + "Burp-native traffic cannot be cancelled by the extension and continues unchanged.<br>"
                 + "Auto-set when OmniStrike's scan is stopped. Use this manually when pausing Burp's built-in scanner<br>"
                 + "(Burp doesn't notify extensions of pause/stop, so you have to hit this yourself).</html>");
         pauseBtn.addActionListener(e -> {
@@ -143,7 +144,8 @@ public class StepperPanel extends JPanel {
         styleCheckBox(stopOnFailureBox);
         stopOnFailureBox.setForeground(NEON_RED);
         stopOnFailureBox.setFont(MONO_FONT);
-        stopOnFailureBox.setToolTipText("Abort the chain immediately if any step returns no response (connection error or timeout)");
+        stopOnFailureBox.setToolTipText(
+                "Abort A/B immediately after a connection, HTTP, timeout, or extraction failure; OmniStrike will not send C");
         stopOnFailureBox.addActionListener(e -> engine.setStopOnFailure(stopOnFailureBox.isSelected()));
         topPanel.add(stopOnFailureBox);
 
@@ -280,6 +282,7 @@ public class StepperPanel extends JPanel {
                 if (sel < steps.size()) {
                     StepperStep step = steps.get(sel);
                     step.setEnabled(!step.isEnabled());
+                    engine.invalidateCache();
                     engine.saveState();
                     refreshStepsTable();
                     stepsTable.setRowSelectionInterval(sel, sel);
@@ -377,6 +380,7 @@ public class StepperPanel extends JPanel {
                 List<StepperStep> steps = engine.getSteps();
                 if (stepIdx < steps.size()) {
                     steps.get(stepIdx).removeExtractionRule(ruleIdx);
+                    engine.invalidateCache();
                     engine.saveState();
                     refreshRulesTable();
                 }
@@ -887,6 +891,7 @@ public class StepperPanel extends JPanel {
             }
 
             steps.get(stepIdx).addExtractionRule(new ExtractionRule(varName, type, pattern));
+            engine.invalidateCache();
             engine.saveState();
             refreshRulesTable();
         }

@@ -7,7 +7,7 @@
 Turn any request into a deliberate security test with parameter-level targeting,<br/>
 session automation, technology-aware probes, OOB detection, and optional AI analysis.
 
-[![Release](https://img.shields.io/badge/release-v1.84-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.86-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
 [![Java](https://img.shields.io/badge/Java-17%2B-f59e0b?style=for-the-badge&logo=openjdk&logoColor=white&labelColor=111827)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Burp-Montoya_API-f97316?style=for-the-badge&labelColor=111827)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge&color=22c55e&labelColor=111827)](LICENSE)
@@ -135,7 +135,9 @@ Passive modules inspect the request and response you explicitly send; they do no
 | **Security Header Analyzer** | Missing or risky browser security controls. |
 | **Technology Fingerprinter** | Frameworks, platforms, servers, and version disclosure. |
 | **Sensitive Data Exposure** | JWTs, cloud identifiers, payment data, SSNs, IBANs, and other secrets. |
-| **Error Disclosure Scanner** | Framework, runtime, database-driver, and stack-trace leakage. |
+| **Error Disclosure Scanner** | Strong framework, runtime, database-driver, and stack-trace signatures across normal and error status codes. |
+
+The Error Disclosure Scanner reads at most 512 KB of textual response data, recognizes vendor <code>+json</code>/<code>+xml</code> media types, and keeps exact response evidence for Burp highlighting. A 4xx response is not automatically safe: malformed-input responses are a common place for Jackson, framework, and database exceptions to escape.
 
 ## 🧰 Framework toolbox
 
@@ -145,7 +147,7 @@ Passive modules inspect the request and response you explicitly send; they do no
 | **Deserialization Generator** | Copy-ready payloads from 137+ gadget chains across six languages. |
 | **File Payload Generator** | PDF, SVG, DOCX, XLSX, XXE, web-shell, polyglot, EICAR, and inline test payloads. |
 | **Wordlist Generator** | Domain-scoped passive word harvesting for fuzzing and discovery. |
-| **TLS Analyzer** | Protocol probes, cipher classification, and certificate-chain inspection. |
+| **TLS Analyzer** | Protocol/cipher probes plus explicit hostname, validity, key, signature, self-signature, and Java trust-store checks. |
 
 ## 🧭 Scanning workflow
 
@@ -205,13 +207,13 @@ sequenceDiagram
 
 | Capability | Behavior |
 |:--|:--|
-| **Two-pass matching** | Exact matching distinguishes steps by method, service, path, query, and body; a looser pass still recognizes scanner-mutated target requests. |
+| **Scanner-safe matching** | Exact endpoint matching plus a conservative one-segment dynamic-ID match recognizes mutated scanner requests without wildcarding static routes. |
 | **Automatic variables** | A placeholder such as <code>{{token}}</code> is resolved from earlier headers, cookies, nested JSON, or response bodies. |
 | **Scoped cookie jar** | Cookies follow host/domain, path, and Secure rules across steps and into the final request. |
 | **Pinned values** | Manually supplied variables and cookies survive chain runs and override extracted values. |
-| **Cached mode** | Reuses successful chain state for a configurable TTL. |
-| **Per-request mode** | Runs a fresh isolated chain for every request that consumes a single-use token. |
-| **Failure handling** | Failed or aborted chains do not mark stale state as fresh; optional Stop on Failure prevents incomplete downstream requests. |
+| **Cached mode** | Reuses only a successful chain whose TTL, step count, request/rule fingerprint, and configuration still match. |
+| **Per-request mode** | Runs a fresh isolated chain for every request that consumes a single-use token; scanner workers can prepare independently. |
+| **Failure handling** | Failed, timed-out, or unresolved prerequisite chains clear partial state and prevent matched OmniStrike probes from sending. A short backoff avoids retry storms. |
 | **Pause / resume** | Stops new chains and halts active chains at the next step boundary. |
 | **Recursion protection** | Chain traffic cannot trigger another copy of the same chain. |
 
@@ -257,6 +259,9 @@ Use an explicit extraction rule when a response contains duplicate names, when t
 
 Click **Run Chain** and inspect **Current Variables**, **Cookie Jar**, and **Activity Log**. Use **Invalidate Cache** to force the next request to prepare fresh state.
 
+> [!NOTE]
+> OmniStrike's own module requests fail closed when Stepper cannot prepare them. Burp's native HTTP-handler API does not expose a request-cancel action, so native Scanner/Repeater traffic is best-effort: OmniStrike logs the failed preparation and leaves that request unchanged.
+
 </details>
 
 ## 📡 Out-of-band testing
@@ -273,6 +278,15 @@ Interactsh mode registers an isolated session, generates a fresh correlated subd
 
 > [!WARNING]
 > Use only an OOB service you trust. OOB payloads are sent by the target directly to that service and can include target-derived values for proof or correlation. This traffic does not pass through AI redaction. Disable OOB testing when assessment rules prohibit third-party callbacks or data egress.
+
+## 🔐 TLS analysis
+
+The TLS Analyzer opens direct, bounded connections from Burp's Java process. It normalizes DNS, IDN, IPv4, and IPv6 targets; sends SNI only for DNS names; probes each locally usable protocol; optionally enumerates the cipher suites available to the JVM; and inspects the returned X.509 chain.
+
+Certificate checks cover hostname/SAN matching, current validity, expiry, signature and public-key strength, cryptographically verified self-signing, and trust against Burp's Java runtime trust store. Hostname verification is performed explicitly after the permissive inspection handshake, so an untrusted certificate cannot hide a name mismatch.
+
+> [!NOTE]
+> This is a JSSE-based analyzer, not a replacement for a raw OpenSSL/testssl.sh assessment. <strong>Blocked by JDK</strong> means the local runtime prevented a meaningful probe. <strong>Not supported</strong> means no handshake was negotiable with the protocol and cipher implementations available to that JVM. The UI preserves that distinction instead of turning an inconclusive local limitation into a confirmed server finding.
 
 ## 🤖 AI analysis
 
@@ -385,6 +399,20 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 ## 🗒️ Release notes
 
 <details open>
+<summary><strong>v1.86 — Stateful scan preparation and analyzer correctness</strong></summary>
+
+- Reworked Stepper preparation for active scanning: matched OmniStrike probes now fail closed when prerequisites fail, time out, are paused, or leave required variables unresolved.
+- Added fingerprinted TTL caches, isolated per-request state, conservative dynamic path matching, bounded prerequisite timeouts, short failure backoff, and cleanup of partial variables/cookies.
+- Prevented disabled or missing prerequisites from reusing stale extracted values, and prevented TTL changes from resurrecting an older cache snapshot.
+- Fixed Error Disclosure finding loss under concurrent traffic, bounded body conversion before decoding, preserved exact Burp response markers, recognized vendor structured media types, and restored strong detections in 4xx responses.
+- Tightened noisy error signatures and expanded regression coverage across Java, Jackson, Spring, Python, Django, Werkzeug, PHP, Laravel, .NET, Ruby, Node.js, Go, and database errors.
+- Corrected TLS hostname verification, SNI behavior for IP literals, local-JDK protocol classification, IPv6 finding URLs, cancellation/UI races, recent-expiry handling, future-validity checks, cryptographic self-signature checks, and trust-store reporting.
+- Prevented inconclusive or locally blocked TLS 1.2/1.3 probes from becoming confirmed "not supported" findings.
+- Verified the complete project with 195 tests, zero failures, and a clean shaded-JAR build.
+
+</details>
+
+<details>
 <summary><strong>v1.84 — Conservative NoSQL operator injection</strong></summary>
 
 - Added a dedicated NoSQL operator-injection scanner for query, form, and nested JSON values using non-executable <code>$eq</code>/<code>$ne</code> and <code>$regex</code> control pairs.

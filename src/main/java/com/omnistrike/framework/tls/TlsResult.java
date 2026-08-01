@@ -25,7 +25,7 @@ public class TlsResult {
 
     public enum ProtocolStatus {
         SUPPORTED,           // server completed handshake
-        NOT_SUPPORTED,       // server cleanly refused
+        NOT_SUPPORTED,       // not negotiable with the local JVM's offered ciphers
         BLOCKED_BY_JDK,      // local JVM disabled the protocol — cannot probe
         ERROR                // network / cert / unexpected error
     }
@@ -58,11 +58,23 @@ public class TlsResult {
         public final List<String> sanEntries;    // SubjectAlternativeName entries
         public final boolean selfSigned;
         public final long daysUntilExpiry;       // negative if expired
+        public final long notBeforeEpochMs;      // 0 for legacy/unknown values
+        public final long notAfterEpochMs;       // 0 for legacy/unknown values
 
         public CertInfo(int index, String subject, String issuer, String serial,
                         String notBefore, String notAfter, String signatureAlgorithm,
                         String publicKeyAlgorithm, int publicKeySize,
                         List<String> sanEntries, boolean selfSigned, long daysUntilExpiry) {
+            this(index, subject, issuer, serial, notBefore, notAfter, signatureAlgorithm,
+                    publicKeyAlgorithm, publicKeySize, sanEntries, selfSigned,
+                    daysUntilExpiry, 0L, 0L);
+        }
+
+        public CertInfo(int index, String subject, String issuer, String serial,
+                        String notBefore, String notAfter, String signatureAlgorithm,
+                        String publicKeyAlgorithm, int publicKeySize,
+                        List<String> sanEntries, boolean selfSigned, long daysUntilExpiry,
+                        long notBeforeEpochMs, long notAfterEpochMs) {
             this.index = index;
             this.subject = subject;
             this.issuer = issuer;
@@ -76,6 +88,8 @@ public class TlsResult {
                     ? Collections.emptyList() : List.copyOf(sanEntries);
             this.selfSigned = selfSigned;
             this.daysUntilExpiry = daysUntilExpiry;
+            this.notBeforeEpochMs = notBeforeEpochMs;
+            this.notAfterEpochMs = notAfterEpochMs;
         }
     }
 
@@ -102,6 +116,7 @@ public class TlsResult {
 
     private volatile boolean handshakeReached = false;
     private volatile String hostnameMatchError = null;
+    private volatile String certificateTrustError = null;
     private volatile boolean frozen = false;
 
     public TlsResult(String host, int port) {
@@ -115,6 +130,7 @@ public class TlsResult {
     public long getTimestampMs() { return timestampMs; }
     public boolean isHandshakeReached() { return handshakeReached; }
     public String getHostnameMatchError() { return hostnameMatchError; }
+    public String getCertificateTrustError() { return certificateTrustError; }
 
     public Map<String, ProtocolOutcome> getProtocols() {
         return Collections.unmodifiableMap(protocols);
@@ -158,6 +174,10 @@ public class TlsResult {
 
     void setHostnameMatchError(String err) {
         if (!frozen) hostnameMatchError = err;
+    }
+
+    void setCertificateTrustError(String err) {
+        if (!frozen) certificateTrustError = err;
     }
 
     void addIssue(Issue issue) {

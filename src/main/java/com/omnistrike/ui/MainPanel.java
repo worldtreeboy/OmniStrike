@@ -161,7 +161,7 @@ public class MainPanel extends JPanel {
         JLabel privacyStateLabel = CyberTheme.createSeverityBadge(
                 PrivacyManager.isAiRedactionEnabled() ? "AI PRIVACY ON" : "AI PRIVACY OFF",
                 PrivacyManager.isAiRedactionEnabled() ? NEON_GREEN : NEON_RED);
-        JLabel versionChip = CyberTheme.createSeverityBadge("v1.84", NEON_MAGENTA);
+        JLabel versionChip = CyberTheme.createSeverityBadge("v1.86", NEON_MAGENTA);
         JButton controlsButton = new JButton(controlsExpanded ? "Hide controls" : "Controls");
         CyberTheme.styleButton(controlsButton, NEON_CYAN);
         controlsButton.setToolTipText("Show or hide scan profile, OOB, session, and theme controls");

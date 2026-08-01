@@ -76,11 +76,31 @@ public class ChainContext {
     /** Number of prereq steps that ran last time. Used for cache invalidation. -1 if never run. */
     public volatile int lastChainPrereqCount = -1;
 
+    /** Fingerprint of the exact prerequisite requests/rules that populated this context. */
+    public volatile String lastChainFingerprint = "";
+
     /** Reset all per-run state. Pinned cookies are restored by the engine after this. */
     public void reset() {
         variableStore.clear();
         cookieJar.clear();
         scopedCookies.clear();
         stepResponses.clear();
+    }
+
+    /** Isolated copy used while a cached chain is refreshed by another scanner thread. */
+    public ChainContext snapshot() {
+        ChainContext copy = new ChainContext();
+        for (var entry : variableStore.getAll().entrySet()) {
+            copy.variableStore.set(entry.getKey(), entry.getValue());
+        }
+        copy.cookieJar.putAll(cookieJar);
+        copy.scopedCookies.putAll(scopedCookies);
+        synchronized (stepResponses) {
+            copy.stepResponses.addAll(stepResponses);
+        }
+        copy.lastChainRunTime = lastChainRunTime;
+        copy.lastChainPrereqCount = lastChainPrereqCount;
+        copy.lastChainFingerprint = lastChainFingerprint;
+        return copy;
     }
 }

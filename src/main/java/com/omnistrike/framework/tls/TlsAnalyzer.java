@@ -7,9 +7,12 @@ import com.omnistrike.model.Finding;
 import com.omnistrike.model.Severity;
 
 import javax.net.ssl.*;
+import javax.naming.ldap.LdapName;
+import javax.naming.ldap.Rdn;
+import java.net.IDN;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.security.KeyStore;
 import java.security.PublicKey;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
@@ -45,19 +48,14 @@ import java.util.function.Consumer;
  *     Chain-issue detection (self-signed, expired, weak signature) is done
  *     after the handshake by inspecting {@link X509Certificate} fields.
  *
- * Analyses run on a small dedicated thread pool. Results are cached per
- * "host:port" so repeating an analysis on the same target reuses the prior
- * snapshot until {@link #invalidate(String, int)} is called.
+ * Analyses run on a small dedicated thread pool. Completed snapshots are cached
+ * per "host:port" for display/export until {@link #invalidate(String, int)} is called.
  */
 public class TlsAnalyzer {
 
     /** Protocols probed, ordered strongest → weakest. */
     public static final List<String> PROBE_PROTOCOLS = List.of(
             "TLSv1.3", "TLSv1.2", "TLSv1.1", "TLSv1", "SSLv3"
-    );
-
-    private static final Set<String> WEAK_PROTOCOLS = Set.of(
-            "SSLv2Hello", "SSLv3", "TLSv1", "TLSv1.1"
     );
 
     private static final int CONNECT_TIMEOUT_MS = 6000;
@@ -146,29 +144,38 @@ public class TlsAnalyzer {
     public void analyze(String host, int port, boolean enumerateCiphers,
                         boolean reportFindings,
                         Consumer<TlsResult> onComplete) {
-        if (host == null || host.isBlank() || port <= 0 || port > 65535) {
+        final String targetHost;
+        try {
+            targetHost = normalizeHost(host);
+        } catch (IllegalArgumentException invalidHost) {
             log("Invalid target: " + host + ":" + port);
             if (onComplete != null) onComplete.accept(null);
             return;
         }
-        final String cacheKey = key(host, port);
+        if (port <= 0 || port > 65535) {
+            log("Invalid target: " + host + ":" + port);
+            if (onComplete != null) onComplete.accept(null);
+            return;
+        }
+        final String cacheKey = key(targetHost, port);
         AtomicBoolean cancelled = new AtomicBoolean(false);
         java.util.concurrent.atomic.AtomicReference<AnalysisHandle> self =
                 new java.util.concurrent.atomic.AtomicReference<>();
         FutureTask<Void> task = new FutureTask<>(() -> {
-            TlsResult result = new TlsResult(host, port);
+            TlsResult result = new TlsResult(targetHost, port);
+            boolean successful = false;
             try {
-                log("Starting TLS analysis: " + host + ":" + port);
-                probeProtocols(host, port, result, cancelled);
+                log("Starting TLS analysis: " + targetHost + ":" + port);
+                probeProtocols(targetHost, port, result, cancelled);
                 if (cancelled.get()) return;
 
                 if (enumerateCiphers && result.hasAnySupportedProtocol()) {
                     log("Enumerating cipher suites for " + cacheKey + " ...");
-                    enumerateCipherSuites(host, port, result, cancelled);
+                    enumerateCipherSuites(targetHost, port, result, cancelled);
                 }
                 if (cancelled.get()) return;
 
-                fetchCertificateChain(host, port, result, cancelled);
+                fetchCertificateChain(targetHost, port, result, cancelled);
                 if (cancelled.get()) return;
 
                 evaluateIssues(result);
@@ -180,8 +187,9 @@ public class TlsAnalyzer {
                 cache.put(cacheKey, result);
 
                 if (reportFindings && findingsStore != null) {
-                    publishFindings(host, port, result);
+                    publishFindings(targetHost, port, result);
                 }
+                successful = true;
 
                 log("Analysis complete: " + cacheKey
                         + " — " + result.getProtocols().size() + " protocols probed, "
@@ -193,7 +201,14 @@ public class TlsAnalyzer {
             } finally {
                 AnalysisHandle ownHandle = self.get();
                 if (ownHandle != null) active.remove(cacheKey, ownHandle);
-                if (onComplete != null) onComplete.accept(result);
+                if (onComplete != null && !cancelled.get()) {
+                    try {
+                        onComplete.accept(successful ? result : null);
+                    } catch (RuntimeException callbackFailure) {
+                        log("TLS completion callback failed for " + cacheKey + ": "
+                                + callbackFailure.getMessage());
+                    }
+                }
             }
         }, null);
         AnalysisHandle handle = new AnalysisHandle(task, cancelled);
@@ -227,9 +242,6 @@ public class TlsAnalyzer {
             log("Could not build SSLContext — aborting probe");
             return;
         }
-        Set<String> jvmEnabled = Set.of(((SSLSocketFactory)
-                ctx.getSocketFactory()).getSupportedCipherSuites());
-
         // Determine which protocols this JVM permits us to enable. Anything
         // outside this set is BLOCKED_BY_JDK.
         Set<String> jvmProtocols = jvmSupportedProtocols(ctx);
@@ -250,8 +262,6 @@ public class TlsAnalyzer {
             }
         }
 
-        // Suppress unused warning — we may surface jvmEnabled later.
-        if (jvmEnabled.isEmpty()) { /* no-op */ }
     }
 
     private TlsResult.ProtocolOutcome singleProtocolProbe(SSLContext ctx, String host,
@@ -262,7 +272,7 @@ public class TlsAnalyzer {
             // Set both protocol AND SNI; servers often reject without SNI on TLS 1.2+
             s.setEnabledProtocols(new String[]{proto});
             SSLParameters params = s.getSSLParameters();
-            params.setServerNames(List.of(new javax.net.ssl.SNIHostName(host)));
+            applySni(params, host);
             // Allow every cipher this JVM has — server picks
             params.setCipherSuites(s.getSupportedCipherSuites());
             s.setSSLParameters(params);
@@ -282,12 +292,31 @@ public class TlsAnalyzer {
         }
     }
 
-    private Set<String> jvmSupportedProtocols(SSLContext ctx) {
+    static Set<String> jvmSupportedProtocols(SSLContext ctx) {
         try {
             SSLEngine engine = ctx.createSSLEngine();
-            return new HashSet<>(Arrays.asList(engine.getSupportedProtocols()));
+            Set<String> supported = new HashSet<>(Arrays.asList(engine.getSupportedProtocols()));
+            supported.removeIf(protocol -> !isProtocolLocallyUsable(ctx, protocol));
+            return supported;
         } catch (Exception e) {
-            return Set.of("TLSv1.3", "TLSv1.2"); // safe default
+            return Collections.emptySet();
+        }
+    }
+
+    static boolean isProtocolLocallyUsable(SSLContext ctx, String protocol) {
+        try {
+            SSLEngine engine = ctx.createSSLEngine();
+            engine.setUseClientMode(true);
+            engine.setEnabledProtocols(new String[]{protocol});
+            engine.setEnabledCipherSuites(engine.getSupportedCipherSuites());
+            engine.beginHandshake();
+            return true;
+        } catch (SSLHandshakeException locallyBlocked) {
+            return false;
+        } catch (IllegalArgumentException unsupported) {
+            return false;
+        } catch (Exception inconclusive) {
+            return true;
         }
     }
 
@@ -337,7 +366,7 @@ public class TlsAnalyzer {
                 return false;
             }
             SSLParameters params = s.getSSLParameters();
-            params.setServerNames(List.of(new javax.net.ssl.SNIHostName(host)));
+            applySni(params, host);
             s.setSSLParameters(params);
             s.startHandshake();
             return cipher.equals(s.getSession().getCipherSuite());
@@ -354,60 +383,168 @@ public class TlsAnalyzer {
         SSLContext ctx = buildPermissiveContext();
         if (ctx == null) return;
 
-        // First try with hostname verification ON to see whether the cert
-        // matches the requested host. Then re-fetch permissively if needed.
-        boolean nameMatches = checkHostnameMatch(ctx, host, port, result);
-        if (cancelled.get()) return;
-
         try (SSLSocket s = (SSLSocket) ctx.getSocketFactory().createSocket()) {
             s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
             s.setSoTimeout(READ_TIMEOUT_MS);
+            String[] supportedProtocols = result.getProtocols().values().stream()
+                    .filter(outcome -> outcome.status == TlsResult.ProtocolStatus.SUPPORTED)
+                    .map(outcome -> outcome.protocol)
+                    .toArray(String[]::new);
+            if (supportedProtocols.length > 0) s.setEnabledProtocols(supportedProtocols);
             SSLParameters params = s.getSSLParameters();
-            params.setServerNames(List.of(new javax.net.ssl.SNIHostName(host)));
+            applySni(params, host);
             s.setSSLParameters(params);
             s.startHandshake();
 
-            Certificate[] certs = s.getSession().getPeerCertificates();
+            SSLSession session = s.getSession();
+            Certificate[] certs = session.getPeerCertificates();
             List<TlsResult.CertInfo> chain = new ArrayList<>();
+            List<X509Certificate> x509Chain = new ArrayList<>();
             for (int i = 0; i < certs.length; i++) {
-                if (!(certs[i] instanceof X509Certificate)) continue;
-                X509Certificate x = (X509Certificate) certs[i];
+                if (!(certs[i] instanceof X509Certificate x)) continue;
+                x509Chain.add(x);
                 chain.add(parseCert(i, x));
             }
             result.setCertChain(chain);
 
-            if (!nameMatches && result.getHostnameMatchError() == null) {
+            boolean nameMatches = !x509Chain.isEmpty()
+                    && hostnameMatches(host, x509Chain.get(0));
+            if (!nameMatches) {
                 result.setHostnameMatchError("Hostname '" + host + "' did not match certificate");
             }
+
+            String trustError = validateCertificateTrust(x509Chain);
+            if (trustError != null) result.setCertificateTrustError(trustError);
         } catch (Exception e) {
             log("Cert fetch failed for " + host + ":" + port + " — " + e.getMessage());
         }
     }
 
-    private boolean checkHostnameMatch(SSLContext ctx, String host, int port, TlsResult result) {
-        try (SSLSocket s = (SSLSocket) ctx.getSocketFactory().createSocket()) {
-            s.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
-            s.setSoTimeout(READ_TIMEOUT_MS);
-            SSLParameters params = s.getSSLParameters();
-            params.setServerNames(List.of(new javax.net.ssl.SNIHostName(host)));
-            params.setEndpointIdentificationAlgorithm("HTTPS");
-            s.setSSLParameters(params);
-            s.startHandshake();
-            return true;
-        } catch (Exception e) {
-            String msg = e.getMessage() == null ? "" : e.getMessage().toLowerCase();
-            if (msg.contains("hostname") || msg.contains("subject alternative")
-                    || msg.contains("name does not match")) {
-                result.setHostnameMatchError(condense(e.getMessage()));
+    static String validateCertificateTrust(List<X509Certificate> chain) {
+        if (chain == null || chain.isEmpty()) return "No X.509 certificate chain was returned";
+        try {
+            TrustManagerFactory factory = TrustManagerFactory.getInstance(
+                    TrustManagerFactory.getDefaultAlgorithm());
+            factory.init((java.security.KeyStore) null);
+            X509Certificate[] certificates = chain.toArray(X509Certificate[]::new);
+            String authType = certificates[0].getPublicKey().getAlgorithm();
+            Exception lastFailure = null;
+            for (TrustManager manager : factory.getTrustManagers()) {
+                if (!(manager instanceof X509TrustManager trustManager)) continue;
+                try {
+                    trustManager.checkServerTrusted(certificates, authType);
+                    return null;
+                } catch (Exception untrusted) {
+                    lastFailure = untrusted;
+                }
             }
+            return condense(lastFailure == null
+                    ? "No platform X.509 trust manager was available"
+                    : lastFailure.getMessage());
+        } catch (Exception validationFailure) {
+            return condense(validationFailure.getClass().getSimpleName() + ": "
+                    + validationFailure.getMessage());
+        }
+    }
+
+    static boolean hostnameMatches(String host, X509Certificate certificate) {
+        if (host == null || certificate == null) return false;
+        String normalizedHost;
+        try {
+            normalizedHost = normalizeHost(host);
+        } catch (IllegalArgumentException invalidHost) {
             return false;
         }
+
+        boolean ipTarget = isIpLiteral(normalizedHost);
+        boolean hasRelevantSan = false;
+        try {
+            Collection<List<?>> sans = certificate.getSubjectAlternativeNames();
+            if (sans != null) {
+                for (List<?> entry : sans) {
+                    if (entry == null || entry.size() < 2 || !(entry.get(0) instanceof Integer type)) {
+                        continue;
+                    }
+                    if (ipTarget && type == 7) {
+                        hasRelevantSan = true;
+                        if (ipSanMatches(normalizedHost, entry.get(1))) return true;
+                    } else if (!ipTarget && type == 2 && entry.get(1) != null) {
+                        hasRelevantSan = true;
+                        if (dnsNameMatches(normalizedHost, String.valueOf(entry.get(1)))) return true;
+                    }
+                }
+            }
+        } catch (Exception malformedSans) {
+            return false;
+        }
+        if (hasRelevantSan || ipTarget) return false;
+
+        try {
+            LdapName subject = new LdapName(
+                    certificate.getSubjectX500Principal().getName("RFC2253"));
+            List<Rdn> rdns = subject.getRdns();
+            for (int i = rdns.size() - 1; i >= 0; i--) {
+                Rdn rdn = rdns.get(i);
+                if ("CN".equalsIgnoreCase(rdn.getType())) {
+                    return dnsNameMatches(normalizedHost, String.valueOf(rdn.getValue()));
+                }
+            }
+        } catch (Exception malformedSubject) {
+            return false;
+        }
+        return false;
+    }
+
+    static boolean dnsNameMatches(String normalizedHost, String certificateName) {
+        if (normalizedHost == null || certificateName == null || isIpLiteral(normalizedHost)) {
+            return false;
+        }
+        String pattern = certificateName.trim();
+        boolean wildcard = pattern.startsWith("*.");
+        if (wildcard) pattern = pattern.substring(2);
+        if (pattern.indexOf('*') >= 0) return false;
+        try {
+            pattern = IDN.toASCII(pattern, IDN.USE_STD3_ASCII_RULES)
+                    .toLowerCase(Locale.ROOT);
+        } catch (RuntimeException invalidName) {
+            return false;
+        }
+        if (pattern.endsWith(".")) pattern = pattern.substring(0, pattern.length() - 1);
+        if (!wildcard) return normalizedHost.equals(pattern);
+        if (pattern.indexOf('.') < 0 || !normalizedHost.endsWith("." + pattern)) return false;
+        String leftmost = normalizedHost.substring(0,
+                normalizedHost.length() - pattern.length() - 1);
+        return !leftmost.isEmpty() && leftmost.indexOf('.') < 0;
+    }
+
+    private static boolean ipSanMatches(String normalizedHost, Object sanValue) {
+        try {
+            InetAddress expected = InetAddress.getByName(stripIpv6Zone(normalizedHost));
+            InetAddress actual;
+            if (sanValue instanceof byte[] raw) {
+                actual = InetAddress.getByAddress(raw);
+            } else {
+                String candidate = String.valueOf(sanValue);
+                if (!isIpLiteral(candidate)) return false;
+                actual = InetAddress.getByName(stripIpv6Zone(candidate));
+            }
+            return expected.equals(actual);
+        } catch (Exception invalidAddress) {
+            return false;
+        }
+    }
+
+    private static String stripIpv6Zone(String value) {
+        int zone = value.indexOf('%');
+        return zone < 0 ? value : value.substring(0, zone);
     }
 
     private TlsResult.CertInfo parseCert(int index, X509Certificate x) {
         SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z");
         long now = System.currentTimeMillis();
-        long days = Duration.ofMillis(x.getNotAfter().getTime() - now).toDays();
+        long notBeforeMs = x.getNotBefore().getTime();
+        long notAfterMs = x.getNotAfter().getTime();
+        long days = Math.floorDiv(notAfterMs - now, Duration.ofDays(1).toMillis());
 
         String pkAlgo = "unknown";
         int pkSize = 0;
@@ -433,7 +570,7 @@ public class TlsAnalyzer {
             }
         } catch (Exception ignored) {}
 
-        boolean selfSigned = x.getSubjectX500Principal().equals(x.getIssuerX500Principal());
+        boolean selfSigned = isCryptographicallySelfSigned(x);
 
         return new TlsResult.CertInfo(
                 index,
@@ -447,12 +584,27 @@ public class TlsAnalyzer {
                 pkSize,
                 sans,
                 selfSigned,
-                days);
+                days,
+                notBeforeMs,
+                notAfterMs);
+    }
+
+    static boolean isCryptographicallySelfSigned(X509Certificate certificate) {
+        if (certificate == null
+                || !certificate.getSubjectX500Principal().equals(certificate.getIssuerX500Principal())) {
+            return false;
+        }
+        try {
+            certificate.verify(certificate.getPublicKey());
+            return true;
+        } catch (Exception notSelfSigned) {
+            return false;
+        }
     }
 
     // ── Issue evaluation ───────────────────────────────────────────────────
 
-    private void evaluateIssues(TlsResult r) {
+    void evaluateIssues(TlsResult r) {
         // Protocol-version issues
         for (TlsResult.ProtocolOutcome o : r.getProtocols().values()) {
             if (o.status != TlsResult.ProtocolStatus.SUPPORTED) continue;
@@ -479,16 +631,16 @@ public class TlsAnalyzer {
                 anyModern = true; break;
             }
         }
-        if (r.isHandshakeReached() && !anyModern) {
+        if (r.isHandshakeReached() && !anyModern
+                && isConclusiveRejection(r, "TLSv1.2")
+                && isConclusiveRejection(r, "TLSv1.3")) {
             r.addIssue(new TlsResult.Issue(Severity.HIGH,
                     "No modern TLS support",
                     "Server does not advertise TLS 1.2 or TLS 1.3; clients with current security defaults cannot connect."));
         }
 
         // No TLS 1.3 (informational)
-        boolean tls13 = r.getProtocols().containsKey("TLSv1.3")
-                && r.getProtocols().get("TLSv1.3").status == TlsResult.ProtocolStatus.SUPPORTED;
-        if (r.isHandshakeReached() && !tls13) {
+        if (r.isHandshakeReached() && isConclusiveRejection(r, "TLSv1.3")) {
             r.addIssue(new TlsResult.Issue(Severity.LOW,
                     "TLS 1.3 not supported",
                     "Adding TLS 1.3 reduces handshake latency and removes legacy primitives. Best-practice."));
@@ -496,7 +648,7 @@ public class TlsAnalyzer {
 
         // Weak ciphers
         for (String cipher : r.getSupportedCiphers()) {
-            String lower = cipher.toLowerCase();
+            String lower = cipher.toLowerCase(Locale.ROOT);
             for (Map.Entry<String, Severity> entry : CIPHER_RED_FLAGS.entrySet()) {
                 if (lower.contains(entry.getKey())) {
                     r.addIssue(new TlsResult.Issue(entry.getValue(),
@@ -511,11 +663,20 @@ public class TlsAnalyzer {
         if (!r.getCertChain().isEmpty()) {
             TlsResult.CertInfo leaf = r.getCertChain().get(0);
 
-            if (leaf.daysUntilExpiry < 0) {
+            boolean expired = leaf.notAfterEpochMs > 0
+                    ? leaf.notAfterEpochMs < r.getTimestampMs()
+                    : leaf.daysUntilExpiry < 0;
+            boolean notYetValid = leaf.notBeforeEpochMs > 0
+                    && leaf.notBeforeEpochMs > r.getTimestampMs();
+            if (expired) {
                 r.addIssue(new TlsResult.Issue(Severity.HIGH,
                         "Certificate expired",
                         "Leaf cert expired " + (-leaf.daysUntilExpiry) + " day(s) ago (notAfter "
                                 + leaf.notAfter + ")."));
+            } else if (notYetValid) {
+                r.addIssue(new TlsResult.Issue(Severity.HIGH,
+                        "Certificate is not yet valid",
+                        "Leaf cert validity begins at " + leaf.notBefore + "."));
             } else if (leaf.daysUntilExpiry <= 14) {
                 r.addIssue(new TlsResult.Issue(Severity.MEDIUM,
                         "Certificate expires soon",
@@ -526,7 +687,8 @@ public class TlsAnalyzer {
                         "Leaf cert notAfter " + leaf.notAfter + "."));
             }
 
-            String sigAlg = leaf.signatureAlgorithm == null ? "" : leaf.signatureAlgorithm.toLowerCase();
+            String sigAlg = leaf.signatureAlgorithm == null ? ""
+                    : leaf.signatureAlgorithm.toLowerCase(Locale.ROOT);
             if (sigAlg.contains("md5")) {
                 r.addIssue(new TlsResult.Issue(Severity.HIGH,
                         "Weak certificate signature algorithm: MD5",
@@ -566,6 +728,18 @@ public class TlsAnalyzer {
                     "Hostname does not match certificate",
                     r.getHostnameMatchError()));
         }
+        if (r.getCertificateTrustError() != null) {
+            r.addIssue(new TlsResult.Issue(Severity.LOW,
+                    "Certificate chain not trusted by local JVM",
+                    r.getCertificateTrustError()
+                            + ". Trust is evaluated against Burp's Java runtime trust store; "
+                            + "an internal client trust store may differ."));
+        }
+    }
+
+    static boolean isConclusiveRejection(TlsResult result, String protocol) {
+        TlsResult.ProtocolOutcome outcome = result.getProtocols().get(protocol);
+        return outcome != null && outcome.status == TlsResult.ProtocolStatus.NOT_SUPPORTED;
     }
 
     // ── Findings publication (FindingsStore + Burp Dashboard) ──────────────
@@ -576,7 +750,7 @@ public class TlsAnalyzer {
                 Finding f = Finding.builder("tls-analyzer",
                                 "[TLS] " + issue.title + " on " + host + ":" + port,
                                 issue.severity, Confidence.CERTAIN)
-                        .url("https://" + host + ":" + port + "/")
+                        .url(tlsUrl(host, port))
                         .description(issue.detail
                                 + "\n\nTarget: " + host + ":" + port
                                 + "\nProtocols supported: " + summarizeProtocols(r)
@@ -606,7 +780,7 @@ public class TlsAnalyzer {
     }
 
     private String buildRemediation(TlsResult.Issue issue) {
-        String t = issue.title.toLowerCase();
+        String t = issue.title.toLowerCase(Locale.ROOT);
         if (t.contains("sslv3") || t.contains("sslv2"))
             return "Disable SSLv2/SSLv3 in the TLS terminator (nginx ssl_protocols, Apache SSLProtocol, ELB security policies, etc.).";
         if (t.contains("tlsv1.0") || t.contains("tlsv1.1"))
@@ -619,6 +793,8 @@ public class TlsAnalyzer {
             return "Restrict the cipher list to AEAD-suite ciphers (ECDHE-*-GCM, ECDHE-*-CHACHA20). Drop NULL/anon/EXPORT/RC4/3DES/DES/MD5.";
         if (t.contains("certificate expired") || t.contains("expires"))
             return "Renew the certificate. Automate renewal via ACME/cert-manager so this never recurs.";
+        if (t.contains("not yet valid"))
+            return "Deploy a certificate whose validity window includes the current time and verify clock synchronization on the TLS terminator.";
         if (t.contains("md5") || t.contains("sha-1") || t.contains("sha1"))
             return "Re-issue the certificate with a SHA-256 (or stronger) signature.";
         if (t.contains("rsa key size") || t.contains("ec curve"))
@@ -627,6 +803,8 @@ public class TlsAnalyzer {
             return "Replace with a certificate from a trusted CA (Let's Encrypt, internal PKI, etc.).";
         if (t.contains("hostname does not match"))
             return "Re-issue the certificate with the correct CN/SAN entries for this hostname.";
+        if (t.contains("not trusted"))
+            return "Serve the complete intermediate chain and use a CA trusted by the intended clients. Verify any required internal CA deployment.";
         return "Review the TLS configuration of the terminator.";
     }
 
@@ -661,8 +839,81 @@ public class TlsAnalyzer {
         return msg.length() > 200 ? msg.substring(0, 200) + "..." : msg;
     }
 
+    static String normalizeHost(String host) {
+        if (host == null) throw new IllegalArgumentException("host is required");
+        String normalized = host.trim();
+        if (normalized.startsWith("[") && normalized.endsWith("]")) {
+            normalized = normalized.substring(1, normalized.length() - 1);
+        }
+        if (normalized.isEmpty() || normalized.contains("/") || normalized.contains("\\")
+                || normalized.chars().anyMatch(Character::isWhitespace)) {
+            throw new IllegalArgumentException("invalid host");
+        }
+        if (isIpLiteral(normalized)) return normalized.toLowerCase(Locale.ROOT);
+        try {
+            String ascii = IDN.toASCII(normalized, IDN.USE_STD3_ASCII_RULES);
+            if (ascii.endsWith(".")) ascii = ascii.substring(0, ascii.length() - 1);
+            if (ascii.isEmpty() || ascii.length() > 253) throw new IllegalArgumentException("invalid host");
+            return ascii.toLowerCase(Locale.ROOT);
+        } catch (RuntimeException invalid) {
+            throw new IllegalArgumentException("invalid host", invalid);
+        }
+    }
+
+    static boolean isIpLiteral(String host) {
+        if (host == null || host.isBlank()) return false;
+        String value = host;
+        if (value.startsWith("[") && value.endsWith("]")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        if (value.indexOf(':') >= 0) {
+            int zone = value.indexOf('%');
+            String address = zone >= 0 ? value.substring(0, zone) : value;
+            String zoneId = zone >= 0 ? value.substring(zone + 1) : "";
+            long colons = address.chars().filter(c -> c == ':').count();
+            if (colons < 2 || !address.matches("[0-9A-Fa-f:.]+")
+                    || (zone >= 0 && (zoneId.isEmpty() || !zoneId.matches("[A-Za-z0-9_.-]+")))) {
+                return false;
+            }
+            try {
+                return InetAddress.getByName(address) != null;
+            } catch (Exception invalidIpv6) {
+                return false;
+            }
+        }
+        String[] parts = value.split("\\.", -1);
+        if (parts.length != 4) return false;
+        for (String part : parts) {
+            if (part.isEmpty() || part.length() > 3
+                    || !part.chars().allMatch(c -> c >= '0' && c <= '9')) {
+                return false;
+            }
+            if (Integer.parseInt(part) > 255) return false;
+        }
+        return true;
+    }
+
+    private static void applySni(SSLParameters parameters, String host) {
+        if (!isIpLiteral(host)) {
+            parameters.setServerNames(List.of(new SNIHostName(host)));
+        }
+    }
+
+    static String tlsUrl(String host, int port) {
+        String normalized = normalizeHost(host);
+        String authority = normalized.indexOf(':') >= 0
+                ? "[" + normalized.replace("%", "%25") + "]" : normalized;
+        return "https://" + authority + (port == 443 ? "" : ":" + port) + "/";
+    }
+
     private static String key(String host, int port) {
-        return (host == null ? "?" : host.toLowerCase()) + ":" + port;
+        try {
+            String normalized = normalizeHost(host);
+            return (normalized.indexOf(':') >= 0 ? "[" + normalized + "]" : normalized)
+                    + ":" + port;
+        } catch (IllegalArgumentException invalid) {
+            return "?:" + port;
+        }
     }
 
     private void log(String msg) {
@@ -671,9 +922,6 @@ public class TlsAnalyzer {
         if (logger != null) {
             try { logger.accept("TLSAnalyzer", msg); } catch (Exception ignored) {}
         }
-        // Suppress unused KeyStore import warning — engine intentionally avoids
-        // loading a KeyStore (permissive trust manager).
-        if (false) { try { KeyStore.getInstance(KeyStore.getDefaultType()); } catch (Exception ignored) {} }
     }
 
     private static class AnalysisHandle {

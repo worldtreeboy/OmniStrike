@@ -13,6 +13,7 @@ import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.io.FileWriter;
 import java.io.PrintWriter;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -52,6 +53,7 @@ public class TlsAnalyzerPanel extends JPanel {
 
     private volatile String currentHost;
     private volatile int currentPort;
+    private long currentScanId;
 
     public TlsAnalyzerPanel(TlsAnalyzer analyzer) {
         this.analyzer = analyzer;
@@ -144,10 +146,11 @@ public class TlsAnalyzerPanel extends JPanel {
         JTextArea help = new JTextArea(
                 "How it works:\n"
                 + "  - Probes are made from the plugin process (Burp's Montoya API does not expose the negotiated TLS metadata).\n"
-                + "  - Each protocol is tested individually; supported = handshake completed, blocked-by-JDK = your local JVM disables it.\n"
-                + "  - Modern JDKs (17+) disable SSLv3 / TLSv1 / TLSv1.1 by default. Those rows will appear as 'BLOCKED_BY_JDK' even if\n"
+                 + "  - Each protocol is tested individually; supported = handshake completed, blocked-by-JDK = your local JVM disables it.\n"
+                + "  - Not supported means no handshake was possible with the ciphers available to this JVM; it is not a raw OpenSSL-style exhaustive proof.\n"
+                 + "  - Modern JDKs (17+) disable SSLv3 / TLSv1 / TLSv1.1 by default. Those rows will appear as 'BLOCKED_BY_JDK' even if\n"
                 + "    the server still accepts them. Edit jdk.tls.disabledAlgorithms in java.security and restart Burp to probe legacy protocols.\n"
-                + "  - Cert chain inspection uses a permissive trust manager so we can examine self-signed/expired certs without aborting.");
+                 + "  - Cert inspection uses a permissive handshake, then separately checks hostname and the Java runtime trust store.");
         help.setEditable(false);
         help.setLineWrap(true);
         help.setWrapStyleWord(true);
@@ -269,8 +272,12 @@ public class TlsAnalyzerPanel extends JPanel {
             return;
         }
 
+        if (currentHost != null && analyzer.isRunning(currentHost, currentPort)) {
+            analyzer.cancel(currentHost, currentPort);
+        }
         currentHost = host;
         currentPort = port;
+        long scanId = ++currentScanId;
         clearTables();
         runBtn.setEnabled(false);
         stopBtn.setEnabled(true);
@@ -283,6 +290,7 @@ public class TlsAnalyzerPanel extends JPanel {
                 enumerateCiphersBox.isSelected(),
                 publishFindingsBox.isSelected(),
                 result -> SwingUtilities.invokeLater(() -> {
+                    if (scanId != currentScanId) return;
                     runBtn.setEnabled(true);
                     stopBtn.setEnabled(false);
                     if (result == null) {
@@ -301,6 +309,7 @@ public class TlsAnalyzerPanel extends JPanel {
 
     private void stopScan() {
         if (currentHost == null) return;
+        currentScanId++;
         boolean stopped = analyzer.cancel(currentHost, currentPort);
         if (stopped) {
             statusLabel.setForeground(NEON_ORANGE);
@@ -311,7 +320,13 @@ public class TlsAnalyzerPanel extends JPanel {
     }
 
     private void clearResults() {
-        if (currentHost != null) analyzer.invalidate(currentHost, currentPort);
+        currentScanId++;
+        if (currentHost != null) {
+            analyzer.cancel(currentHost, currentPort);
+            analyzer.invalidate(currentHost, currentPort);
+        }
+        runBtn.setEnabled(true);
+        stopBtn.setEnabled(false);
         clearTables();
         statusLabel.setText(" ");
     }
@@ -365,7 +380,7 @@ public class TlsAnalyzerPanel extends JPanel {
     }
 
     private static String classifyCipher(String cipher) {
-        String lower = cipher.toLowerCase();
+        String lower = cipher.toLowerCase(Locale.ROOT);
         if (lower.contains("_null_") || lower.contains("_anon_") || lower.contains("_export"))
             return "DANGEROUS (no/weak crypto)";
         if (lower.contains("_rc4_") || lower.contains("_des_") || lower.contains("_3des_") || lower.contains("_rc2_"))
@@ -373,7 +388,7 @@ public class TlsAnalyzerPanel extends JPanel {
         if (lower.contains("_md5"))
             return "DANGEROUS (MD5 MAC)";
         if (lower.contains("_cbc_"))
-            return "DANGEROUS (CBC padding-oracle)";
+            return "LEGACY (CBC; verify mitigations)";
         if (lower.startsWith("tls_rsa_with") || lower.startsWith("ssl_rsa_with"))
             return "WEAK (no forward secrecy)";
         if (lower.contains("_gcm_") || lower.contains("_chacha20"))

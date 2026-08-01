@@ -1,6 +1,7 @@
 package com.omnistrike.modules.recon;
 
 import burp.api.montoya.MontoyaApi;
+import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import com.omnistrike.framework.ScanTargetIdentity;
@@ -21,8 +22,9 @@ import java.util.regex.Pattern;
  * Ruby/Rails, Node.js, Go panics, and database driver exceptions.
  *
  * Rules:
- *   - 4xx responses are NEVER flagged (user-error bodies are out of scope).
- *     Only 5xx, and 2xx/3xx that contain a trace body, fire findings.
+ *   - Every HTTP status is eligible when the body contains a strong error
+ *     signature. This includes 4xx validation responses, where framework and
+ *     deserialization exceptions are commonly leaked.
  *   - Strong anchors only: stack frames with file+line, distinctive debug markup,
  *     or fully-qualified exception class names. Generic words like "Exception"
  *     alone never trigger — too common in docs and JSON payloads.
@@ -33,7 +35,7 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private static final String MODULE_ID = "error-disclosure";
     private static final int MAX_BODY_SIZE = 512_000;
-    private static final int MIN_BODY_SIZE = 30;
+    private static final int MIN_BODY_SIZE = 8;
 
     private MontoyaApi api;
     private ModuleConfig config;
@@ -77,9 +79,10 @@ public class ErrorDisclosureScanner implements ScanModule {
     private static final Pattern JAVA_CAUSED_BY = Pattern.compile(
             "Caused by:\\s+(?:[a-z][\\w]*\\.){2,}[A-Z]\\w*(?:Exception|Error)\\b");
 
-    // Jackson: specific class names in com.fasterxml.jackson.*
+    // Jackson: exception/error classes in com.fasterxml.jackson.*. Do not match
+    // ordinary classes such as ObjectMapper on documentation pages.
     private static final Pattern JACKSON_CLASS = Pattern.compile(
-            "com\\.fasterxml\\.jackson\\.[\\w.]+"
+            "com\\.fasterxml\\.jackson\\.[\\w.]*[A-Z]\\w*(?:Exception|Error)\\b"
                     + "|(?:JsonMappingException|JsonParseException|UnrecognizedPropertyException"
                     + "|InvalidDefinitionException|MismatchedInputException|InvalidFormatException"
                     + "|InvalidTypeIdException|ValueInstantiationException|IgnoredPropertyException"
@@ -155,7 +158,7 @@ public class ErrorDisclosureScanner implements ScanModule {
     private static final Pattern WERKZEUG_DEBUG = Pattern.compile(
             "(?i)<title>[^<]*Werkzeug Debugger</title>"
                     + "|The Werkzeug Debugger"
-                    + "|class=\"debugger\"|werkzeug\\.debug|data-traceback-id");
+                    + "|werkzeug\\.debug|data-traceback-id");
 
     // PHP: error with filename+line, or Uncaught ... Stack trace: #0
     private static final Pattern PHP_ERROR = Pattern.compile(
@@ -164,13 +167,17 @@ public class ErrorDisclosureScanner implements ScanModule {
                     + "|Uncaught (?:[A-Z]\\w+\\\\)*[A-Z]\\w+(?:Exception|Error):[\\s\\S]{0,500}Stack trace:"
                     + "|(?m)^#\\d+\\s+.+?\\.php\\(\\d+\\):\\s+\\w+");
 
-    // Laravel Whoops / Ignition debug page — distinctive HTML class names and namespace fragments
+    // Laravel Whoops / Ignition debug page — distinctive HTML markers.
     private static final Pattern LARAVEL_DEBUG = Pattern.compile(
             "(?i)<title>[^<]*Whoops!"
                     + "|class=\"exception-message"
                     + "|id=\"exception-header"
-                    + "|\\bIlluminate\\\\[A-Z]\\w+\\\\[A-Z]"
                     + "|class=\"frame-code|<div class=\"Whoops");
+
+    // An Illuminate class alone may be documentation or source code. Require
+    // an exception/error suffix plus trace context before treating it as a leak.
+    private static final Pattern LARAVEL_EXCEPTION = Pattern.compile(
+            "\\bIlluminate\\\\(?:[A-Z]\\w*\\\\)+[A-Z]\\w*(?:Exception|Error)\\b");
 
     // ASP.NET yellow screen
     private static final Pattern DOTNET_YELLOW = Pattern.compile(
@@ -180,7 +187,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     // .NET stack frame with "in <file>:line N" (distinct: Java uses "(File.java:N)")
     private static final Pattern DOTNET_FRAME = Pattern.compile(
-            "(?m)^\\s*at\\s+[\\w.<>]+\\([^)]*\\)\\s+in\\s+[^:\\n]+:line\\s+\\d+");
+            "(?m)^\\s*at\\s+[\\w.<>]+\\([^)]*\\)\\s+in\\s+"
+                    + "(?:[A-Za-z]:[\\\\/])?[^:\\r\\n]+:line\\s+\\d+");
 
     // Fully-qualified System.* or Microsoft.* exception class
     private static final Pattern DOTNET_EXCEPTION = Pattern.compile(
@@ -194,9 +202,11 @@ public class ErrorDisclosureScanner implements ScanModule {
     private static final Pattern RAILS_ERROR = Pattern.compile(
             "(?:ActionController|ActiveRecord|ActionView|ActiveModel)::[A-Z]\\w+(?:Error|Exception)\\b");
 
-    // Node.js: "    at funcName (/path/file.js:42:10)"
+    // Node.js: named/anonymous frames on POSIX, Windows, and file:// paths.
     private static final Pattern NODEJS_FRAME = Pattern.compile(
-            "(?m)^\\s+at\\s+[\\w.<>\\[\\] ]+\\s\\([\\w./\\\\-]+\\.(?:js|ts|mjs|cjs):\\d+:\\d+\\)");
+            "(?m)^\\s+at\\s+(?:(?:async\\s+|new\\s+)?[\\w.$<>\\[\\] /:-]+\\s+\\()?"
+                    + "(?:file:/+)?(?:[A-Za-z]:[\\\\/]|/)[^()\\r\\n]+?"
+                    + "\\.(?:js|ts|mjs|cjs):\\d+:\\d+\\)?");
 
     // Go: goroutine header, panic prefix, or .go:line+offset
     private static final Pattern GO_PANIC = Pattern.compile(
@@ -247,10 +257,11 @@ public class ErrorDisclosureScanner implements ScanModule {
             + "|DB2 SQL Error: SQLCODE=-?\\d+"
             // SQLCODE (IBM DB2 / generic)
             + "|SQLCODE\\s*=\\s*-?\\d{3,6}"
-            // Sybase / SAP ASE
-            + "|Sybase message:|Adaptive Server Enterprise|sybsystemprocs"
+            // Sybase / SAP ASE. Product names alone are fingerprints, not errors.
+            + "|Sybase message:[^\n]{1,200}"
             // Informix
-            + "|INFORMIX-SQL|com\\.informix\\.jdbc|\\bifx_[a-z_]+\\("
+            + "|INFORMIX-SQL|com\\.informix\\.jdbc\\.[\\w.]*[A-Z]\\w*(?:Exception|Error)\\b"
+            + "|\\bifx_[a-z_]+\\("
             // Firebird / InterBase
             + "|Dynamic SQL Error|isc_dsql_error|Firebird[\\s\\S]{0,50}error"
             // CockroachDB
@@ -266,7 +277,8 @@ public class ErrorDisclosureScanner implements ScanModule {
         return "Passively detects verbose server error pages and stack traces in HTTP responses. "
                 + "Covers Java (incl. Jackson + Spring), Python (incl. Django + Flask/Werkzeug), "
                 + "PHP (incl. Laravel), .NET/ASP.NET, Ruby/Rails, Node.js, Go, and database drivers. "
-                + "Skips all 4xx responses. Flags INFO / Tentative — one finding per path per category.";
+                + "Uses strong error signatures on every HTTP status. Flags INFO / Tentative — "
+                + "one finding per path per category.";
     }
 
     @Override public ModuleCategory getCategory() { return ModuleCategory.RECON; }
@@ -286,12 +298,6 @@ public class ErrorDisclosureScanner implements ScanModule {
         HttpResponse response = requestResponse.response();
         if (response == null) return findings;
 
-        int status;
-        try { status = response.statusCode(); } catch (Exception e) { return findings; }
-
-        // 4xx = user error — never flag per project policy.
-        if (status >= 400 && status < 500) return findings;
-
         if (!isScannableType(response)) return findings;
 
         String host, path, url;
@@ -302,9 +308,8 @@ public class ErrorDisclosureScanner implements ScanModule {
         } catch (Exception e) { return findings; }
 
         String body;
-        try { body = response.bodyToString(); } catch (Exception e) { return findings; }
+        try { body = boundedBodyToString(response); } catch (Exception e) { return findings; }
         if (body == null || body.length() < MIN_BODY_SIZE) return findings;
-        if (body.length() > MAX_BODY_SIZE) body = body.substring(0, MAX_BODY_SIZE);
 
         checkJava(body, host, path, url, requestResponse, findings);
         checkJackson(body, host, path, url, requestResponse, findings);
@@ -327,8 +332,6 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkJava(String body, String host, String path, String url,
                             HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.JAVA)) return;
-
         // Tier 1: Stack frame — "at com.example.Foo.bar(Foo.java:42)"
         Matcher m = JAVA_STACK_FRAME.matcher(body);
         String ev = m.find() ? m.group() : null;
@@ -348,7 +351,7 @@ public class ErrorDisclosureScanner implements ScanModule {
         // Tier 5: JAXB XML binding errors — FQ javax/jakarta.xml.bind.* prefix, standalone-safe
         if (ev == null) ev = firstMatch(JAVA_JAXB, body);
 
-        if (ev == null) { unmark(host, path, Category.JAVA); return; }
+        if (ev == null || !mark(host, path, Category.JAVA)) return;
         out.add(finding(Category.JAVA, url, rr, ev,
                 "Java exception or stack trace leaked in response body — exposes internal "
                         + "class names, file paths, line numbers, and runtime state. "
@@ -362,8 +365,6 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkJackson(String body, String host, String path, String url,
                                HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.JACKSON)) return;
-
         // Tier 1: Fully-qualified Jackson class name — strongest, standalone safe
         Matcher cls = JACKSON_CLASS.matcher(body);
         boolean hasClass = cls.find();
@@ -378,7 +379,7 @@ public class ErrorDisclosureScanner implements ScanModule {
                 && JACKSON_MSG.matcher(body).find()
                 && JAVA_STACK_FRAME.matcher(body).find();
 
-        if (!hasClass && !hasPoly && !hasMsg) { unmark(host, path, Category.JACKSON); return; }
+        if (!hasClass && !hasPoly && !hasMsg) return;
 
         String ev;
         String description;
@@ -406,15 +407,16 @@ public class ErrorDisclosureScanner implements ScanModule {
                     + "Enable DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES carefully.";
         }
 
-        out.add(finding(Category.JACKSON, url, rr, ev, description, remediation));
+        if (mark(host, path, Category.JACKSON)) {
+            out.add(finding(Category.JACKSON, url, rr, ev, description, remediation));
+        }
     }
 
     private void checkSpring(String body, String host, String path, String url,
                               HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.SPRING)) return;
         String ev = firstMatch(SPRING_WHITELABEL, body);
         if (ev == null) ev = firstMatch(SPRING_EXCEPTION, body);
-        if (ev == null) { unmark(host, path, Category.SPRING); return; }
+        if (ev == null || !mark(host, path, Category.SPRING)) return;
         out.add(finding(Category.SPRING, url, rr, ev,
                 "Spring framework error or Whitelabel Error Page disclosed — "
                         + "indicates missing custom error handling in a Spring Boot application.",
@@ -425,9 +427,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkPython(String body, String host, String path, String url,
                               HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.PYTHON)) return;
         Matcher m = PYTHON_TRACEBACK.matcher(body);
-        if (!m.find()) { unmark(host, path, Category.PYTHON); return; }
+        if (!m.find() || !mark(host, path, Category.PYTHON)) return;
         out.add(finding(Category.PYTHON, url, rr, m.group(),
                 "Python traceback leaked — exposes source file paths, line numbers, "
                         + "and the full exception chain.",
@@ -437,9 +438,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkDjango(String body, String host, String path, String url,
                               HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.DJANGO)) return;
         Matcher m = DJANGO_DEBUG.matcher(body);
-        if (!m.find()) { unmark(host, path, Category.DJANGO); return; }
+        if (!m.find() || !mark(host, path, Category.DJANGO)) return;
         out.add(finding(Category.DJANGO, url, rr, m.group(),
                 "Django debug page disclosed (DEBUG=True). These pages expose settings, "
                         + "installed apps, SQL queries, full tracebacks, and request data.",
@@ -449,9 +449,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkWerkzeug(String body, String host, String path, String url,
                                 HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.WERKZEUG)) return;
         Matcher m = WERKZEUG_DEBUG.matcher(body);
-        if (!m.find()) { unmark(host, path, Category.WERKZEUG); return; }
+        if (!m.find() || !mark(host, path, Category.WERKZEUG)) return;
         out.add(finding(Category.WERKZEUG, url, rr, m.group(),
                 "Werkzeug/Flask interactive debugger exposed. If the full debugger console "
                         + "is reachable, an attacker can execute arbitrary Python via the debugger PIN.",
@@ -461,9 +460,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkPhp(String body, String host, String path, String url,
                            HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.PHP)) return;
         Matcher m = PHP_ERROR.matcher(body);
-        if (!m.find()) { unmark(host, path, Category.PHP); return; }
+        if (!m.find() || !mark(host, path, Category.PHP)) return;
         out.add(finding(Category.PHP, url, rr, m.group(),
                 "PHP error or stack trace leaked — exposes file system paths, line numbers, "
                         + "and sometimes function arguments.",
@@ -473,9 +471,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkLaravel(String body, String host, String path, String url,
                                HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.LARAVEL)) return;
         Matcher m = LARAVEL_DEBUG.matcher(body);
-        if (!m.find()) { unmark(host, path, Category.LARAVEL); return; }
+        if (!m.find() || !mark(host, path, Category.LARAVEL)) return;
         out.add(finding(Category.LARAVEL, url, rr, m.group(),
                 "Laravel Whoops/Ignition debug page exposed — discloses environment variables, "
                         + "source code excerpts, and request data. Historical CVE-2021-3129 in "
@@ -486,7 +483,6 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkDotNet(String body, String host, String path, String url,
                               HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.DOTNET)) return;
         String ev = firstMatch(DOTNET_YELLOW, body);
         if (ev == null) ev = firstMatch(DOTNET_FRAME, body);
         if (ev == null) {
@@ -496,7 +492,7 @@ public class ErrorDisclosureScanner implements ScanModule {
                 ev = ex.group();
             }
         }
-        if (ev == null) { unmark(host, path, Category.DOTNET); return; }
+        if (ev == null || !mark(host, path, Category.DOTNET)) return;
         out.add(finding(Category.DOTNET, url, rr, ev,
                 ".NET/ASP.NET error page or stack trace leaked in response body.",
                 "Set <customErrors mode=\"On\"/> in web.config. For ASP.NET Core, remove "
@@ -506,7 +502,6 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkRuby(String body, String host, String path, String url,
                             HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.RUBY)) return;
         String ev = firstMatch(RUBY_FRAME, body);
         if (ev == null) {
             // Rails error class alone is weak; require a Ruby frame or Rails.root context.
@@ -515,7 +510,7 @@ public class ErrorDisclosureScanner implements ScanModule {
                 ev = r.group();
             }
         }
-        if (ev == null) { unmark(host, path, Category.RUBY); return; }
+        if (ev == null || !mark(host, path, Category.RUBY)) return;
         out.add(finding(Category.RUBY, url, rr, ev,
                 "Ruby/Rails stack trace leaked in response body.",
                 "Set config.consider_all_requests_local = false in production.rb and ensure "
@@ -524,15 +519,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkNodeJs(String body, String host, String path, String url,
                               HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.NODEJS)) return;
         String ev = firstMatch(NODEJS_FRAME, body);
-        // If no direct frame yet, check for specific error messages — but require a frame to confirm.
-        if (ev == null && NODEJS_FRAME.matcher(body).find()) {
-            ev = firstMatch(Pattern.compile(
-                    "Error: Cannot find module '[^']+'"
-                            + "|UnhandledPromiseRejectionWarning:"), body);
-        }
-        if (ev == null) { unmark(host, path, Category.NODEJS); return; }
+        if (ev == null || !mark(host, path, Category.NODEJS)) return;
         out.add(finding(Category.NODEJS, url, rr, ev,
                 "Node.js stack trace leaked — exposes absolute file paths on the server filesystem.",
                 "Add a global Express error handler that returns a generic response. "
@@ -541,9 +529,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkGo(String body, String host, String path, String url,
                           HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.GO)) return;
         Matcher m = GO_PANIC.matcher(body);
-        if (!m.find()) { unmark(host, path, Category.GO); return; }
+        if (!m.find() || !mark(host, path, Category.GO)) return;
         out.add(finding(Category.GO, url, rr, m.group(),
                 "Go panic or runtime error leaked in response body.",
                 "Add a recover() middleware wrapping each HTTP handler. Log the panic "
@@ -552,9 +539,8 @@ public class ErrorDisclosureScanner implements ScanModule {
 
     private void checkDatabase(String body, String host, String path, String url,
                                 HttpRequestResponse rr, List<Finding> out) {
-        if (!mark(host, path, Category.DATABASE)) return;
         Matcher m = DB_ERROR.matcher(body);
-        if (!m.find()) { unmark(host, path, Category.DATABASE); return; }
+        if (!m.find() || !mark(host, path, Category.DATABASE)) return;
         out.add(finding(Category.DATABASE, url, rr, m.group(),
                 "Database / SQL error leaked in response body — exposes schema names, table/column "
                         + "names, query fragments, SQLSTATE codes, or vendor-specific error text "
@@ -568,23 +554,34 @@ public class ErrorDisclosureScanner implements ScanModule {
     // ── Helpers ──
 
     private boolean isScannableType(HttpResponse response) {
+        boolean foundContentType = false;
         for (var h : response.headers()) {
             if (h.name().equalsIgnoreCase("Content-Type")) {
-                String ct = h.value().toLowerCase();
-                for (String t : SCANNABLE_TYPES) { if (ct.contains(t)) return true; }
-                return false;
+                foundContentType = true;
+                if (isScannableContentType(h.value())) return true;
             }
         }
-        return true; // no Content-Type → scan anyway (many error pages omit it)
+        return !foundContentType; // many error pages omit Content-Type entirely
+    }
+
+    static boolean isScannableContentType(String value) {
+        if (value == null || value.isBlank()) return true;
+        String mediaType = value.split(";", 2)[0].trim().toLowerCase(Locale.ROOT);
+        return SCANNABLE_TYPES.contains(mediaType)
+                || (mediaType.startsWith("application/")
+                && (mediaType.endsWith("+json") || mediaType.endsWith("+xml")));
+    }
+
+    static String boundedBodyToString(HttpResponse response) {
+        ByteArray bytes = response.body();
+        if (bytes == null || bytes.length() == 0) return "";
+        int end = Math.min(bytes.length(), MAX_BODY_SIZE);
+        return (end == bytes.length() ? bytes : bytes.subArray(0, end)).toString();
     }
 
     private boolean mark(String host, String path, Category cat) {
         return BoundedDeduplication.markIfNew(
                 seen, host + "|" + path + "|" + cat.name());
-    }
-
-    private void unmark(String host, String path, Category cat) {
-        seen.remove(host + "|" + path + "|" + cat.name());
     }
 
     private static String firstMatch(Pattern p, String body) {
@@ -596,12 +593,14 @@ public class ErrorDisclosureScanner implements ScanModule {
                                     String rawEvidence, String description, String remediation) {
         String ev = rawEvidence == null ? "" : rawEvidence.replaceAll("\\s+", " ").trim();
         if (ev.length() > 300) ev = ev.substring(0, 300) + "...";
+        String marker = rawEvidence == null ? "" : rawEvidence.strip();
+        if (marker.length() > 300) marker = marker.substring(0, 300);
         return Finding.builder(MODULE_ID, cat.displayName + " disclosed",
                         Severity.INFO, Confidence.TENTATIVE)
                 .url(url)
                 .description(description)
                 .evidence(ev)
-                .responseEvidence(ev)
+                .responseEvidence(marker)
                 .remediation(remediation)
                 .requestResponse(rr)
                 .build();
