@@ -991,7 +991,7 @@ public final class ThemePalette {
         return name;
     }
     /**
-     * Omni Pro — the polished default with deep slate surfaces, cyan focus, and violet depth.
+     * Omni Pro — the polished default: deep slate surfaces, cyan focus, and violet depth.
      * Designed for long assessment sessions with restrained contrast and clear hierarchy.
      */
     public static ThemePalette omniPro() {

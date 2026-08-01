@@ -21,11 +21,6 @@ public final class GlobalThemeManager {
 
     private GlobalThemeManager() {}
 
-    /** Persisted/display name for Burp's native look. */
-    public static final String DEFAULT_THEME_NAME = "Default";
-    /** Stable product theme used for startup and as the selectable fallback. */
-    public static final String PRODUCT_DEFAULT_THEME_NAME = "Omni Pro";
-
     /** Snapshot of original UIManager defaults, taken once before the first theme apply. */
     private static Map<String, Object> savedDefaults;
 
@@ -121,34 +116,11 @@ public final class GlobalThemeManager {
 
     /** Resolves a persisted display name to a palette; Default intentionally returns null. */
     public static ThemePalette findThemeByName(String name) {
-        if (name == null || DEFAULT_THEME_NAME.equals(name)) return null;
+        if (name == null || "Default".equals(name)) return null;
         for (int i = 1; i < THEME_NAMES.length && i < ALL_THEMES.length; i++) {
             if (THEME_NAMES[i].equals(name)) return ALL_THEMES[i];
         }
         return null;
-    }
-
-    /** Returns a valid persisted theme name, falling back to Burp's native look. */
-    public static String normalizeThemeName(String name) {
-        if (name == null || DEFAULT_THEME_NAME.equals(name)) return DEFAULT_THEME_NAME;
-        return findThemeByName(name) != null ? name : DEFAULT_THEME_NAME;
-    }
-
-    /** Returns a valid rendered product theme; native mode is reserved for unload. */
-    public static String normalizeProductThemeName(String name) {
-        return findThemeByName(name) != null ? name : PRODUCT_DEFAULT_THEME_NAME;
-    }
-
-    /** Themes exposed in the UI, excluding the currently unsupported native renderer. */
-    public static String[] selectableThemeNames() {
-        return java.util.Arrays.copyOfRange(THEME_NAMES, 1, THEME_NAMES.length);
-    }
-
-    /** Resolves a selectable-theme index to its palette. */
-    public static ThemePalette selectableThemeAt(int index) {
-        int catalogIndex = index + 1;
-        if (catalogIndex < 1 || catalogIndex >= ALL_THEMES.length) return ALL_THEMES[1];
-        return ALL_THEMES[catalogIndex];
     }
 
     // ── UIManager keys to override ──────────────────────────────────────
@@ -323,19 +295,17 @@ public final class GlobalThemeManager {
         }
     }
 
-    /** Revert to Burp's native L&F on selection of Default or extension unload. */
+    /**
+     * Revert to Burp's native L&F. Only called on extension unload —
+     * during normal use, switching back to "Default" is blocked in the UI.
+     */
     public static void revertToNative() {
-        boolean hadTheme = currentPalette != null;
-        boolean wasGlobal = currentScope == ThemeScope.GLOBAL && hadTheme;
+        boolean wasGlobal = currentScope == ThemeScope.GLOBAL && currentPalette != null;
         currentPalette = null;
         CyberTheme.setNativeMode(true);
         stopBreathing();
-        // Native startup already has Burp's correct defaults. Rewriting every
-        // UIManager key here is unnecessary, globally expensive, and can stall
-        // Burp while the extension tab is being registered.
-        if (!hadTheme) return;
+        restoreUIManagerDefaults();
         if (wasGlobal) {
-            restoreUIManagerDefaults();
             walkAllFrames(null);
         } else if (omniStrikeRoot != null) {
             CyberTheme.stripRecursive(omniStrikeRoot);
@@ -412,11 +382,7 @@ public final class GlobalThemeManager {
     private static void restoreUIManagerDefaults() {
         if (savedDefaults != null) {
             for (Map.Entry<String, Object> entry : savedDefaults.entrySet()) {
-                if (entry.getValue() == null) {
-                    UIManager.getDefaults().remove(entry.getKey());
-                } else {
-                    UIManager.put(entry.getKey(), entry.getValue());
-                }
+                UIManager.put(entry.getKey(), entry.getValue());
             }
         }
     }

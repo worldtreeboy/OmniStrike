@@ -161,7 +161,7 @@ public class MainPanel extends JPanel {
         JLabel privacyStateLabel = CyberTheme.createSeverityBadge(
                 PrivacyManager.isAiRedactionEnabled() ? "AI PRIVACY ON" : "AI PRIVACY OFF",
                 PrivacyManager.isAiRedactionEnabled() ? NEON_GREEN : NEON_RED);
-        JLabel versionChip = CyberTheme.createSeverityBadge("v1.84", NEON_MAGENTA);
+        JLabel versionChip = CyberTheme.createSeverityBadge("v1.83", NEON_MAGENTA);
         JButton controlsButton = new JButton(controlsExpanded ? "Hide controls" : "Controls");
         CyberTheme.styleButton(controlsButton, NEON_CYAN);
         controlsButton.setToolTipText("Show or hide scan profile, OOB, session, and theme controls");
@@ -310,8 +310,8 @@ public class MainPanel extends JPanel {
         themeLabel.setFont(MONO_LABEL);
         row1.add(themeLabel);
 
-        JComboBox<String> themeCombo = new JComboBox<>(GlobalThemeManager.selectableThemeNames());
-        themeCombo.setSelectedIndex(0); // Omni Pro
+        JComboBox<String> themeCombo = new JComboBox<>(GlobalThemeManager.THEME_NAMES);
+        themeCombo.setSelectedIndex(0); // Default
         styleComboBox(themeCombo);
         themeCombo.setToolTipText("Switch OmniStrike theme");
         row1.add(themeCombo);
@@ -327,8 +327,9 @@ public class MainPanel extends JPanel {
         ButtonGroup scopeGroup = new ButtonGroup();
         scopeGroup.add(scopeLocalRadio);
         scopeGroup.add(scopeGlobalRadio);
-        scopeLocalRadio.setVisible(true);
-        scopeGlobalRadio.setVisible(true);
+        // Initially hidden (no theme selected = Default)
+        scopeLocalRadio.setVisible(false);
+        scopeGlobalRadio.setVisible(false);
 
         scopeLocalRadio.addActionListener(e -> {
             GlobalThemeManager.changeScope(GlobalThemeManager.ThemeScope.OMNISTRIKE_ONLY);
@@ -358,31 +359,43 @@ public class MainPanel extends JPanel {
         });
         row1.add(glowCheckbox);
 
-        // Product palettes are scoped to OmniStrike unless global styling is
-        // explicitly selected. Native rendering is reserved for unload cleanup.
+        // Default stays available so users can freely switch between Burp-native
+        // styling and any OmniStrike palette.
         themeCombo.addActionListener(e -> {
             int idx = themeCombo.getSelectedIndex();
-            if (idx < 0 || idx >= themeCombo.getItemCount()) return;
-            ThemePalette palette = GlobalThemeManager.selectableThemeAt(idx);
+            if (idx < 0 || idx >= GlobalThemeManager.ALL_THEMES.length) return;
+            ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
+
+            if (palette != null) {
+                scopeLocalRadio.setVisible(true);
+                scopeGlobalRadio.setVisible(true);
+                glowCheckbox.setEnabled(true);
+            } else {
+                scopeLocalRadio.setVisible(false);
+                scopeGlobalRadio.setVisible(false);
+                glowCheckbox.setSelected(false);
+                glowCheckbox.setEnabled(false);
+                GlobalThemeManager.stopBreathing();
+            }
             GlobalThemeManager.applyTheme(palette);
-            persistence.setString("theme.name", (String) themeCombo.getSelectedItem());
+            persistence.setString("theme.name", GlobalThemeManager.THEME_NAMES[idx]);
             reapplyTheme();
         });
 
         // Startup loaded the palette before component construction; synchronize
         // the selector and scope controls with that persisted state.
         try {
-            String savedTheme = GlobalThemeManager.normalizeProductThemeName(
-                    persistence.getString("theme.name", GlobalThemeManager.PRODUCT_DEFAULT_THEME_NAME));
-            themeCombo.setSelectedItem(savedTheme);
-            scopeLocalRadio.setVisible(true);
-            scopeGlobalRadio.setVisible(true);
+            String savedTheme = persistence.getString("theme.name", "Omni Pro");
+            themeCombo.setSelectedItem(savedTheme != null ? savedTheme : "Omni Pro");
+            boolean themed = !"Default".equals(savedTheme);
+            scopeLocalRadio.setVisible(themed);
+            scopeGlobalRadio.setVisible(themed);
             if ("GLOBAL".equals(persistence.getString("theme.scope", "OMNISTRIKE_ONLY"))) {
                 scopeGlobalRadio.setSelected(true);
             } else {
                 scopeLocalRadio.setSelected(true);
             }
-            if (persistence.getBoolean("theme.glow", false)) {
+            if (themed && persistence.getBoolean("theme.glow", false)) {
                 glowCheckbox.setSelected(true);
                 GlobalThemeManager.startBreathing();
             }
