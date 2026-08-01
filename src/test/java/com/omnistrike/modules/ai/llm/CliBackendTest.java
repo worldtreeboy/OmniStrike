@@ -29,4 +29,29 @@ class CliBackendTest {
         assertFalse(truncated);
         assertEquals("hello 世界", output.toString());
     }
+
+    @Test
+    void codexPrefersDedicatedFinalMessageOverNoisyTranscript() {
+        String transcript = "Codex banner\nuser\n{\"findings\":[]}\nassistant\n{\"payloads\":[]}";
+
+        assertEquals("{\"findings\":[{\"title\":\"confirmed\"}]}",
+                CliBackend.selectCodexResponse(
+                        "  {\"findings\":[{\"title\":\"confirmed\"}]}  ", transcript));
+    }
+
+    @Test
+    void codexFallbackSelectsLastValidJsonObjectInsteadOfPromptExample() {
+        String transcript = "Codex banner\nuser prompt schema: {\"findings\":[]}\n"
+                + "assistant\n```json\n{\"payloads\":[{\"payload\":\"' OR 1=1--\"}]}\n```\n"
+                + "tokens used: 123";
+
+        assertEquals("{\"payloads\":[{\"payload\":\"' OR 1=1--\"}]}",
+                CliBackend.selectCodexResponse("", transcript));
+    }
+
+    @Test
+    void codexFallbackPreservesPlainTextWhenNoJsonExists() {
+        assertEquals("plain assistant response",
+                CliBackend.selectCodexResponse(null, "  plain assistant response  "));
+    }
 }

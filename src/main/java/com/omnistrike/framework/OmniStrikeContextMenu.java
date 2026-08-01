@@ -26,22 +26,17 @@ import java.util.function.Supplier;
 /**
  * Adds right-click context menu items in Burp's Proxy, Repeater, etc.
  *
- * New menu structure — each module has Normal Scan + AI Scan sub-options:
+ * Each module has a normal scan plus one predictable AI action:
  *
  *   "Send to OmniStrike (All Modules)"     — runs all enabled non-AI modules
  *   "Send to OmniStrike >"
  *     Active Scanners (label)
  *       XSS Scanner >
  *         Normal Scan
- *         AI Scan >                          (only shown when AI is configured)
- *           Smart Fuzzing
- *           Smart Fuzzing + WAF Bypass
- *           Smart Fuzzing + Adaptive
- *           Full AI Scan
+ *         Targeted AI Test                   (only shown when AI is configured)
  *       SQLi Detector >
  *         Normal Scan
- *         AI Scan >
- *           ...
+ *         Targeted AI Test
  *     ─────────────────
  *     Passive Analyzers (label)
  *       Client-Side Analyzer >
@@ -368,11 +363,7 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
      * Active modules:
      *   Module Name >
      *     Normal Scan
-     *     AI Scan >              (only when AI is configured)
-     *       Smart Fuzzing
-     *       Smart Fuzzing + WAF Bypass
-     *       Smart Fuzzing + Adaptive
-     *       Full AI Scan
+     *     Targeted AI Test       (only when AI is configured)
      *
      * Passive modules (e.g., Client-Side Analyzer):
      *   Module Name >
@@ -413,53 +404,17 @@ public class OmniStrikeContextMenu implements ContextMenuItemsProvider {
                 });
                 moduleMenu.add(aiItem);
             } else {
-                // Active modules: full AI submenu with fuzzing options
-                JMenu aiMenu = new JMenu("AI Scan");
-                aiMenu.setToolTipText("AI-powered scanning for " + moduleName);
-
-                // Smart Fuzzing
-                JMenuItem fuzzItem = new JMenuItem("Smart Fuzzing");
-                fuzzItem.setToolTipText("AI generates targeted payloads (active)");
-                fuzzItem.addActionListener(e -> {
-                    aiAnalyzer.manualScan(reqResp, true, true, false, false, moduleId);
+                // Active modules get one predictable AI action: a bounded payload set for
+                // this module only, followed by one focused review of the responses.
+                JMenuItem aiItem = new JMenuItem("Targeted AI Test");
+                aiItem.setToolTipText("Actively test only " + moduleName
+                        + " with a bounded AI-generated payload set");
+                aiItem.addActionListener(e -> {
+                    aiAnalyzer.manualScan(reqResp, false, true, false, false, moduleId);
                     showToast(moduleName + " + AI",
-                            "AI smart fuzzing started\n" + url);
+                            "Targeted AI test started\n" + url);
                 });
-                aiMenu.add(fuzzItem);
-
-                // Smart Fuzzing + WAF Bypass
-                JMenuItem wafItem = new JMenuItem("Smart Fuzzing + WAF Bypass");
-                wafItem.setToolTipText("AI fuzzing with WAF evasion when payloads are blocked");
-                wafItem.addActionListener(e -> {
-                    aiAnalyzer.manualScan(reqResp, true, true, true, false, moduleId);
-                    showToast(moduleName + " + AI + WAF Bypass",
-                            "AI fuzzing with WAF bypass started\n" + url);
-                });
-                aiMenu.add(wafItem);
-
-                // Smart Fuzzing + Adaptive
-                JMenuItem adaptiveItem = new JMenuItem("Smart Fuzzing + Adaptive");
-                adaptiveItem.setToolTipText("AI fuzzing with multi-round adaptive testing");
-                adaptiveItem.addActionListener(e -> {
-                    aiAnalyzer.manualScan(reqResp, true, true, false, true, moduleId);
-                    showToast(moduleName + " + AI + Adaptive",
-                            "AI adaptive fuzzing started\n" + url);
-                });
-                aiMenu.add(adaptiveItem);
-
-                aiMenu.addSeparator();
-
-                // Full AI Scan (all capabilities)
-                JMenuItem fullItem = new JMenuItem("Full AI Scan");
-                fullItem.setToolTipText("Passive analysis + smart fuzzing + WAF bypass + adaptive");
-                fullItem.addActionListener(e -> {
-                    aiAnalyzer.manualScan(reqResp, true, true, true, true, moduleId);
-                    showToast(moduleName + " + Full AI",
-                            "Full AI scan started\n" + url);
-                });
-                aiMenu.add(fullItem);
-
-                moduleMenu.add(aiMenu);
+                moduleMenu.add(aiItem);
             }
         }
 

@@ -77,6 +77,14 @@ public class CliBackend {
             promptFile = writePromptTempFile(prompt);
         }
 
+        // Codex can write only the final assistant message to this file. Its normal
+        // terminal transcript contains banners, the echoed prompt, and session metadata,
+        // none of which belongs in the JSON response passed to the scanner.
+        File codexResponseFile = null;
+        if (provider == LlmProvider.CLI_CODEX) {
+            codexResponseFile = createPrivateTempFile("omnistrike-codex-response-", ".txt");
+        }
+
         boolean kimiStdinBridge = provider == LlmProvider.CLI_KIMI
                 && IS_WINDOWS && !binary.toLowerCase().endsWith(".exe");
         boolean promptViaStdin = provider.usesStdinForPrompt() || kimiStdinBridge;
@@ -85,7 +93,7 @@ public class CliBackend {
         if (kimiStdinBridge) {
             command = buildKimiStdinCommand(binary);
         } else if (provider.usesStdinForPrompt()) {
-            command = buildCommand(provider, binary);
+            command = buildCommand(provider, binary, codexResponseFile);
 
             // On Windows, wrap with cmd.exe /c so .cmd/.bat wrappers (npm globals) are found.
             // Safe because command arguments never contain attacker-controlled content —
@@ -102,7 +110,10 @@ public class CliBackend {
 
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(true);
+            // Keep model output and diagnostics separate for every provider. Merging stderr
+            // into stdout corrupts otherwise-valid JSON whenever a CLI prints a banner,
+            // update notice, debug log, or session metadata.
+            pb.redirectErrorStream(false);
             // Don't inherit env that might cause interactive prompts
             pb.environment().put("NO_COLOR", "1");
             pb.environment().put("TERM", "dumb");
@@ -115,15 +126,25 @@ public class CliBackend {
             // its own write, never drain our stdin, and deadlock against our
             // blocking stdin write below.
             StringBuilder output = new StringBuilder();
+            StringBuilder diagnostics = new StringBuilder();
             AtomicBoolean outputTruncated = new AtomicBoolean(false);
+            AtomicBoolean diagnosticsTruncated = new AtomicBoolean(false);
             Thread reader = new Thread(() -> {
                 try {
                     outputTruncated.set(readUtf8Bounded(
                             process.getInputStream(), output, MAX_OUTPUT_CHARS));
                 } catch (IOException ignored) {}
-            }, "OmniStrike-CLI-Reader");
+            }, "OmniStrike-CLI-Stdout");
             reader.setDaemon(true);
             reader.start();
+            Thread diagnosticsReader = new Thread(() -> {
+                try {
+                    diagnosticsTruncated.set(readUtf8Bounded(
+                            process.getErrorStream(), diagnostics, MAX_OUTPUT_CHARS));
+                } catch (IOException ignored) {}
+            }, "OmniStrike-CLI-Stderr");
+            diagnosticsReader.setDaemon(true);
+            diagnosticsReader.start();
 
             // Pipe the prompt via stdin for stdin-based providers — never as a CLI
             // argument. Other providers (CLI_KIMI / CLI_GROK) already carry the prompt
@@ -150,16 +171,20 @@ public class CliBackend {
                         provider.getDisplayName() + " timed out after " + TIMEOUT_SECONDS + "s");
             }
 
-            // Wait for the reader thread to finish
+            // Wait for both reader threads to finish. Draining both streams concurrently
+            // prevents either OS pipe from filling and deadlocking the child process.
             reader.join(5000);
-            if (reader.isAlive()) {
+            diagnosticsReader.join(5000);
+            if (reader.isAlive() || diagnosticsReader.isAlive()) {
                 try { process.getInputStream().close(); } catch (IOException ignored) {}
+                try { process.getErrorStream().close(); } catch (IOException ignored) {}
                 reader.interrupt();
+                diagnosticsReader.interrupt();
                 throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
-                        provider.getDisplayName() + " output stream did not close after process exit");
+                        provider.getDisplayName() + " output streams did not close after process exit");
             }
 
-            if (outputTruncated.get()) {
+            if (outputTruncated.get() || diagnosticsTruncated.get()) {
                 throw new LlmException(LlmException.ErrorType.PARSE_ERROR,
                         provider.getDisplayName() + " output exceeded the "
                                 + MAX_OUTPUT_CHARS + " character safety limit");
@@ -167,16 +192,21 @@ public class CliBackend {
 
             int exitCode = process.exitValue();
             String result = stripAnsi(output.toString().trim());
-            if (provider == LlmProvider.CLI_KIMI) {
+            String diagnosticText = stripAnsi(diagnostics.toString().trim());
+
+            if (exitCode != 0) {
+                String errorText = diagnosticText.isBlank() ? result : diagnosticText;
+                throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                        provider.getDisplayName() + " exited with code " + exitCode + ": "
+                                + truncate(errorText, 300));
+            }
+
+            if (provider == LlmProvider.CLI_CODEX) {
+                result = extractCodexText(codexResponseFile, result);
+            } else if (provider == LlmProvider.CLI_KIMI) {
                 result = extractKimiText(result);
             } else if (provider == LlmProvider.CLI_GROK) {
                 result = extractGrokText(result);
-            }
-
-            if (exitCode != 0) {
-                throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
-                        provider.getDisplayName() + " exited with code " + exitCode + ": "
-                                + truncate(result, 300));
             }
 
             if (result.isEmpty()) {
@@ -200,6 +230,9 @@ public class CliBackend {
             if (promptFile != null && !promptFile.delete()) {
                 promptFile.deleteOnExit();
             }
+            if (codexResponseFile != null && !codexResponseFile.delete()) {
+                codexResponseFile.deleteOnExit();
+            }
         }
     }
 
@@ -218,7 +251,7 @@ public class CliBackend {
      * Builds the command-line arguments for each CLI provider.
      * The prompt is NEVER included as an argument — it is always piped via stdin.
      */
-    private List<String> buildCommand(LlmProvider provider, String binary) {
+    private List<String> buildCommand(LlmProvider provider, String binary, File codexResponseFile) {
         List<String> cmd = new ArrayList<>();
         cmd.add(binary);
 
@@ -236,12 +269,15 @@ public class CliBackend {
                 cmd.add(".");
             }
             case CLI_CODEX -> {
-                // codex exec --color never --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -
-                // (reads prompt from stdin; bypass flag = headless auto-approve)
+                // Read the sensitive prompt from stdin and capture only the final assistant
+                // message. Ephemeral mode avoids persisting pentest data in resumable sessions.
                 cmd.add("exec");
                 cmd.add("--color");
                 cmd.add("never");
                 cmd.add("--skip-git-repo-check");
+                cmd.add("--ephemeral");
+                cmd.add("--output-last-message");
+                cmd.add(codexResponseFile.getAbsolutePath());
                 cmd.add("-");
             }
             case CLI_OPENCODE -> {
@@ -347,19 +383,100 @@ public class CliBackend {
      */
     private File writePromptTempFile(String prompt) throws LlmException {
         try {
-            File f = Files.createTempFile("omnistrike-grok-prompt-", ".txt").toFile();
-            try {
-                Files.setPosixFilePermissions(f.toPath(), Set.of(
-                        PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
-            } catch (UnsupportedOperationException ignored) {
-                // Windows ACLs inherit from the user's temp directory.
-            }
+            File f = createPrivateTempFile("omnistrike-grok-prompt-", ".txt");
             Files.writeString(f.toPath(), prompt, StandardCharsets.UTF_8);
             return f;
         } catch (IOException e) {
             throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
                     "Failed to write prompt temp file for Grok CLI: " + e.getMessage(), e);
         }
+    }
+
+    private File createPrivateTempFile(String prefix, String suffix) throws LlmException {
+        try {
+            File file = Files.createTempFile(prefix, suffix).toFile();
+            try {
+                Files.setPosixFilePermissions(file.toPath(), Set.of(
+                        PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+            } catch (UnsupportedOperationException ignored) {
+                // Windows ACLs inherit from the user's temp directory.
+            }
+            return file;
+        } catch (IOException e) {
+            throw new LlmException(LlmException.ErrorType.CONNECTION_ERROR,
+                    "Failed to create private CLI response file: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Reads Codex's dedicated final-message file. The transcript fallback selects the last
+     * complete JSON object, which avoids accidentally parsing a JSON example echoed from the
+     * prompt when an older or custom Codex wrapper does not populate the file.
+     */
+    private String extractCodexText(File responseFile, String stdout) {
+        String lastMessage = "";
+        if (responseFile != null && responseFile.isFile()) {
+            try {
+                lastMessage = Files.readString(responseFile.toPath(), StandardCharsets.UTF_8);
+            } catch (IOException ignored) {}
+        }
+        return selectCodexResponse(lastMessage, stdout);
+    }
+
+    static String selectCodexResponse(String lastMessage, String stdout) {
+        if (lastMessage != null && !lastMessage.isBlank()) {
+            return lastMessage.trim();
+        }
+        String lastJson = extractLastJsonObject(stdout);
+        return lastJson != null ? lastJson : (stdout == null ? "" : stdout.trim());
+    }
+
+    static String extractLastJsonObject(String text) {
+        if (text == null || text.isEmpty()) return null;
+        String lastValid = null;
+        for (int start = 0; start < text.length(); start++) {
+            if (text.charAt(start) != '{') continue;
+            int objectDepth = 0;
+            int arrayDepth = 0;
+            boolean inString = false;
+            boolean escaped = false;
+            for (int i = start; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (inString && c == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (c == '"') {
+                    inString = !inString;
+                    continue;
+                }
+                if (inString) continue;
+                if (c == '{') objectDepth++;
+                else if (c == '}') objectDepth--;
+                else if (c == '[') arrayDepth++;
+                else if (c == ']') arrayDepth--;
+
+                if (objectDepth < 0 || arrayDepth < 0) break;
+                if (objectDepth == 0 && arrayDepth == 0) {
+                    String candidate = text.substring(start, i + 1);
+                    try {
+                        if (JsonParser.parseString(candidate).isJsonObject()) {
+                            lastValid = candidate;
+                            // This complete outer object is one response candidate; skip
+                            // its nested objects so they cannot replace it merely because
+                            // their opening brace appears later in the transcript.
+                            start = i;
+                        }
+                    } catch (Exception ignored) {}
+                    break;
+                }
+            }
+        }
+        return lastValid;
     }
 
     /**

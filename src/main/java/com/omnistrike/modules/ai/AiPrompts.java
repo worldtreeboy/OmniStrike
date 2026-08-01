@@ -50,7 +50,7 @@ final class AiPrompts {
 
             Focus on payloads most likely to succeed based on the parameter names, values, content type, and technology stack visible in the traffic.
 
-            Generate as many payloads as you think are necessary to thoroughly test every injectable parameter. Do not limit yourself — be exhaustive. When you have nothing more to try, return an empty list.
+            PAYLOAD_LIMIT_INSTRUCTION
 
             For JSON bodies use injection_point "json". Prefer the target's JSON Pointer (for example /user/name or /items/0/id) in parameter; a leaf name is acceptable only when unique.
             For a complete XML replacement document use injection_point "xml".

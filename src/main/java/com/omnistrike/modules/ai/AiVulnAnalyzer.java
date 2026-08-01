@@ -29,13 +29,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * AI-Powered Vulnerability Analyzer with optional active scanning capabilities.
- *
- * Modes (all optional, toggled independently):
- *   - Passive Analysis: LLM reviews HTTP traffic for security issues (default)
- *   - Smart Fuzzing: LLM generates targeted payloads, extension sends them
- *   - WAF Bypass: when payloads are blocked, LLM generates evasion variants
- *   - Adaptive Scanning: multi-round LLM-guided testing
+ * AI-Powered Vulnerability Analyzer with passive review and bounded,
+ * module-specific active testing.
  *
  * Completely optional — disabled by default. Queues all LLM calls to an
  * internal executor so the proxy thread is never blocked.
@@ -88,8 +83,12 @@ public class AiVulnAnalyzer implements ScanModule {
     private volatile boolean wafBypassEnabled = false;
     private volatile boolean adaptiveScanEnabled = false;
 
-    // Max payloads per LLM request: 0 = unlimited (AI decides), >0 = user-defined cap
-    private volatile int maxPayloadsPerRequest = 0;
+    // AI-generated traffic must always be bounded. Targeted module scans use an
+    // additional hard ceiling even when the general user setting is higher.
+    static final int DEFAULT_AI_PAYLOAD_LIMIT = 12;
+    static final int MAX_AI_PAYLOAD_LIMIT = 50;
+    static final int MAX_TARGETED_PAYLOAD_LIMIT = 12;
+    private volatile int maxPayloadsPerRequest = DEFAULT_AI_PAYLOAD_LIMIT;
 
     // SharedDataBus for tech stack context (Improvement 3)
     private volatile SharedDataBus sharedDataBus;
@@ -191,8 +190,12 @@ public class AiVulnAnalyzer implements ScanModule {
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for XSS, SQLi, SSRF, command injection, or any other type. "
                     + "Every payload MUST have attack_type set to \"ssti\". Any non-SSTI payload will be discarded.")),
             Map.entry("cmdi-scanner", new ModuleFocus("Command Injection",
-                    "SCOPE: OS Command Injection ONLY (Linux and Windows). "
-                    + "Generate payloads for: pipe, semicolon, backtick, $() substitution, && and || chaining. "
+                    "SCOPE: OS Command Injection ONLY (Linux and Windows).\n"
+                    + "Use non-destructive confirmation probes and prioritize likely parameters. Cover distinct separator families: "
+                    + "pipe, semicolon, backtick, $() substitution, && and || chaining.\n"
+                    + "OOB TESTING IS MANDATORY: include fixed-canary DNS callbacks for every likely injectable parameter "
+                    + "using the callback domain or placeholder provided below. Also include a small number of 5-second "
+                    + "sleep/ping timing probes. Never exfiltrate target data.\n"
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for SQLi, XSS, SSTI, SSRF, or any other vulnerability type. "
                     + "Every payload MUST have attack_type set to \"cmdi\". Any non-cmdi payload will be discarded.")),
             Map.entry("ssrf-scanner", new ModuleFocus("Server-Side Request Forgery (SSRF)",
@@ -272,11 +275,10 @@ public class AiVulnAnalyzer implements ScanModule {
         return AiPrompts.ANALYSIS_PROMPT;
     }
 
-    private String buildFuzzPrompt(String targetModuleId) {
-        int limit = maxPayloadsPerRequest;
-        String limitLine = (limit > 0)
-                ? "Generate at most " + limit + " total payloads.\n\n"
-                : "Generate as many payloads as necessary. Be exhaustive. When you have nothing more to try, return an empty list.\n\n";
+    String buildFuzzPrompt(String targetModuleId) {
+        int limit = getEffectivePayloadLimit(targetModuleId);
+        String limitLine = "Generate at most " + limit + " total payloads. Prioritize distinct, high-signal tests; "
+                + "do not produce cosmetic variations of the same payload.\n\n";
 
         // Collaborator info for OOB payloads
         String collabLine = buildCollaboratorPromptSection();
@@ -301,12 +303,8 @@ public class AiVulnAnalyzer implements ScanModule {
         }
 
         // Generic prompt — inject the limit and collaborator info dynamically
-        String base = AiPrompts.SMART_FUZZ_PROMPT;
-        if (limit > 0) {
-            base = base.replace(
-                    "Generate as many payloads as you think are necessary to thoroughly test every injectable parameter. Do not limit yourself — be exhaustive. When you have nothing more to try, return an empty list.",
-                    "Generate at most " + limit + " total payloads across all parameters.");
-        }
+        String base = AiPrompts.SMART_FUZZ_PROMPT.replace(
+                "PAYLOAD_LIMIT_INSTRUCTION", limitLine.trim());
         if (!collabLine.isEmpty()) {
             base = base.replace("HTTP Request:\n", collabLine + "HTTP Request:\n");
         }
@@ -415,7 +413,7 @@ public class AiVulnAnalyzer implements ScanModule {
 
     @Override
     public String getDescription() {
-        return "AI-powered security analysis with optional smart fuzzing, WAF bypass, and adaptive scanning.";
+        return "AI-powered passive analysis and bounded, module-specific active testing.";
     }
 
     @Override
@@ -584,8 +582,9 @@ public class AiVulnAnalyzer implements ScanModule {
                                       boolean wafBypass, boolean adaptiveScan,
                                       String targetModuleId, String targetParameter) {
         if (cancelled) return;
+        String scanLabel = targetModuleId != null ? "Targeted AI Test" : "Smart Fuzzing";
         try {
-            logInfo("Smart Fuzzing: Requesting payloads for " + exchange.getUrl()
+            logInfo(scanLabel + ": Requesting payloads for " + exchange.getUrl()
                     + (targetParameter != null ? " [param: " + targetParameter + "]" : ""));
 
             // Improvement 6: Rate limit check before starting
@@ -634,7 +633,8 @@ public class AiVulnAnalyzer implements ScanModule {
 
             String prompt = enrichedPrompt.toString();
             trackInputTokens(prompt);
-            logInfo(">>> Sending fuzz request to " + llmClient.getProvider().getDisplayName()
+            String requestKind = targetModuleId != null ? "targeted payload request" : "payload request";
+            logInfo(">>> Sending " + requestKind + " to " + llmClient.getProvider().getDisplayName()
                     + " (model: " + llmClient.getModel() + ") | prompt size: " + prompt.length() + " chars"
                     + " | est. cost: " + getCostSummary()
                     + (targetModuleId != null ? " | module: " + targetModuleId : ""));
@@ -643,10 +643,10 @@ public class AiVulnAnalyzer implements ScanModule {
             // Improvement 9: Structured output enforcement with retry
             String rawResponse = callWithRetry(prompt);
             long elapsedMs = System.currentTimeMillis() - startMs;
-            logInfo("<<< AI fuzz response received in " + elapsedMs + "ms | response size: "
+            logInfo("<<< AI payload response received in " + elapsedMs + "ms | response size: "
                     + (rawResponse != null ? rawResponse.length() : 0) + " chars");
 
-            if (cancelled) { logInfo("Smart Fuzzing: Cancelled."); return; }
+            if (cancelled) { logInfo(scanLabel + ": Cancelled."); return; }
 
             List<FuzzPayload> payloads = parseFuzzPayloads(rawResponse);
 
@@ -658,7 +658,7 @@ public class AiVulnAnalyzer implements ScanModule {
                 payloads.removeIf(p -> !isMatchingAttackType(p.attackType, expectedType));
                 int dropped = beforeFilter - payloads.size();
                 if (dropped > 0) {
-                    logInfo("Smart Fuzzing: Filtered out " + dropped + " off-target payload(s) "
+                    logInfo(scanLabel + ": Filtered out " + dropped + " off-target payload(s) "
                             + "(expected: " + expectedType + ", target: " + targetModuleId + ")");
                 }
             }
@@ -671,7 +671,7 @@ public class AiVulnAnalyzer implements ScanModule {
                         && !p.parameter.equalsIgnoreCase(targetParameter));
                 int dropped = beforeParamFilter - payloads.size();
                 if (dropped > 0) {
-                    logInfo("Smart Fuzzing: Filtered out " + dropped + " off-parameter payload(s) "
+                    logInfo(scanLabel + ": Filtered out " + dropped + " off-parameter payload(s) "
                             + "(expected: " + targetParameter + ")");
                 }
             }
@@ -679,13 +679,31 @@ public class AiVulnAnalyzer implements ScanModule {
             // Improvement 12: Filter out payloads already tested (fuzz history dedup)
             payloads = filterAlreadyTested(payloads, exchange.getUrl());
 
+            if (requiresOobForTargetedScan(targetModuleId)
+                    && payloads.stream().noneMatch(this::containsConfiguredOobTarget)) {
+                logError(scanLabel + ": AI returned no OOB callback payloads. "
+                        + "The scan was stopped because OOB verification is mandatory for Command Injection.");
+                return;
+            }
+
+            // Enforce the cap after all filtering as well as during JSON parsing. This is
+            // deliberately redundant: one targeted click must never become hundreds of
+            // active requests after a setting change or future parser refactor.
+            int effectiveLimit = getEffectivePayloadLimit(targetModuleId);
+            if (payloads.size() > effectiveLimit) {
+                int discarded = payloads.size() - effectiveLimit;
+                payloads = new ArrayList<>(payloads.subList(0, effectiveLimit));
+                logInfo(scanLabel + ": Discarded " + discarded
+                        + " payload(s) above the safety limit of " + effectiveLimit);
+            }
+
             if (payloads.isEmpty()) {
-                logInfo("Smart Fuzzing: No NEW payloads generated for " + exchange.getUrl()
+                logInfo(scanLabel + ": No new payloads generated for " + exchange.getUrl()
                         + " (all were already tested — attack vectors may be exhausted)");
                 return;
             }
 
-            logInfo("Smart Fuzzing: Testing " + payloads.size() + " payloads against " + exchange.getUrl());
+            logInfo(scanLabel + ": Testing " + payloads.size() + " payloads against " + exchange.getUrl());
 
             String baselineBody = "";
             if (originalReqResp.response() != null) {
@@ -696,11 +714,11 @@ public class AiVulnAnalyzer implements ScanModule {
             // Step 2: Send each payload and collect results
             List<FuzzResult> allResults = new ArrayList<>();
             for (FuzzPayload payload : payloads) {
-                if (cancelled) { logInfo("Smart Fuzzing: Cancelled mid-scan."); return; }
+                if (cancelled) { logInfo(scanLabel + ": Cancelled mid-scan."); return; }
 
                 // Improvement 6: Rate limit check before each request
                 if (!waitForRateLimit(exchange.getUrl())) {
-                    logInfo("Smart Fuzzing: Halted due to rate limiting/IP block.");
+                    logInfo(scanLabel + ": Halted due to rate limiting/IP block.");
                     break;
                 }
 
@@ -733,7 +751,7 @@ public class AiVulnAnalyzer implements ScanModule {
 
                     // Step 3: WAF bypass if blocked
                     if (wafBypass && wafDetected && !cancelled) {
-                        logInfo("Smart Fuzzing: WAF detected for payload [" + resolvedPayload.attackType + "], attempting bypass");
+                        logInfo(scanLabel + ": WAF detected for payload [" + resolvedPayload.attackType + "], attempting bypass");
                         List<FuzzResult> bypassResults = performWafBypass(
                                 originalReqResp.request(), resolvedPayload, response,
                                 targetModuleId, baselineBody);
@@ -741,7 +759,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     }
                 } catch (Exception e) {
                     errorCount.incrementAndGet();
-                    logError("Smart Fuzzing: Error sending payload - " + e.getMessage());
+                    logError(scanLabel + ": Error sending payload - " + e.getMessage());
                 }
             }
 
@@ -795,21 +813,21 @@ public class AiVulnAnalyzer implements ScanModule {
                 }
             }
 
-            if (cancelled) { logInfo("Smart Fuzzing: Cancelled."); return; }
+            if (cancelled) { logInfo(scanLabel + ": Cancelled."); return; }
 
             // Step 5: Final analysis — ask LLM to analyze all results
             analyzeFuzzResults(exchange.getUrl(), allResults, originalReqResp, targetModuleId);
 
             analyzedCount.incrementAndGet();
-            logInfo("Smart Fuzzing: Completed for " + exchange.getUrl()
+            logInfo(scanLabel + ": Completed for " + exchange.getUrl()
                     + " (" + allResults.size() + " total test requests)");
 
         } catch (LlmException e) {
             errorCount.incrementAndGet();
-            logError("Smart Fuzzing: LLM error - " + e.getErrorType() + " - " + e.getMessage());
+            logError(scanLabel + ": LLM error - " + e.getErrorType() + " - " + e.getMessage());
         } catch (Exception e) {
             errorCount.incrementAndGet();
-            logError("Smart Fuzzing: Unexpected error - " + e.getMessage());
+            logError(scanLabel + ": Unexpected error - " + e.getMessage());
         }
     }
 
@@ -1128,6 +1146,11 @@ public class AiVulnAnalyzer implements ScanModule {
 
         try {
             String summary = formatResultsForLlm(results);
+            ModuleFocus focus = targetModuleId != null ? MODULE_FOCUS.get(targetModuleId) : null;
+            String focusRule = focus != null
+                    ? "\nSCOPE: Review these results ONLY for " + focus.displayName()
+                    + ". Do not report any other vulnerability class.\n"
+                    : "";
             String prompt = """
                     You are a senior penetration tester analyzing the results of automated security testing.
                     Review these test results and identify CONFIRMED vulnerabilities only.
@@ -1141,12 +1164,26 @@ public class AiVulnAnalyzer implements ScanModule {
                     {"findings": [{"title": "Brief title", "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO", "description": "What the vulnerability is and how it was confirmed", "evidence": "The specific response content that confirms the vulnerability", "poc": "Copy-paste-ready PoC URL, curl command, or payload", "remediation": "How to fix", "cwe": "CWE-XXX"}]}
 
                     Test Results:
-                    """ + summary;
+                    """ + focusRule + summary;
 
-            String rawResponse = llmClient.call(prompt);
+            logInfo("Targeted AI Test: Reviewing " + results.size()
+                    + " response(s) for confirmed evidence");
+            String rawResponse = callWithRetry(prompt);
             LlmAnalysisResult result = llmClient.parseResponse(rawResponse);
+            String expectedType = targetModuleId != null ? getAttackType(targetModuleId) : null;
+            int droppedFindings = 0;
+            int acceptedFindings = 0;
 
             for (LlmAnalysisResult.LlmFinding llmFinding : result.getFindings()) {
+                if (expectedType != null && !"unknown".equals(expectedType)) {
+                    String combined = (llmFinding.getTitle() != null ? llmFinding.getTitle() : "")
+                            + " " + (llmFinding.getDescription() != null ? llmFinding.getDescription() : "")
+                            + " " + (llmFinding.getCweId() != null ? llmFinding.getCweId() : "");
+                    if (!isFindingMatchingType(combined.toLowerCase(), expectedType)) {
+                        droppedFindings++;
+                        continue;
+                    }
+                }
                 Severity severity = parseSeverity(llmFinding.getSeverity());
                 String title = llmFinding.getTitle();
                 if (llmFinding.getCweId() != null && !llmFinding.getCweId().isEmpty()) {
@@ -1163,17 +1200,24 @@ public class AiVulnAnalyzer implements ScanModule {
                         .url(url)
                         .evidence(fuzzEv)
                         .responseEvidence(llmFinding.getEvidence())
-                        .description("[AI Smart Fuzz] " + llmFinding.getDescription())
+                        .description("[AI Targeted Test] " + llmFinding.getDescription())
                         .remediation(llmFinding.getRemediation())
                         .requestResponse(originalReqResp)
                         .build();
 
                 findingsStore.addFinding(finding);
                 findingsCount.incrementAndGet();
+                acceptedFindings++;
             }
+            if (droppedFindings > 0) {
+                logInfo("Targeted AI Test: Filtered out " + droppedFindings
+                        + " off-target final finding(s) for " + url);
+            }
+            logInfo("Targeted AI Test: Evidence review completed with "
+                    + acceptedFindings + " confirmed finding(s)");
         } catch (Exception e) {
             errorCount.incrementAndGet();
-            logError("Fuzz Analysis: Error analyzing results - " + e.getMessage());
+            logError("Targeted AI Test: Error analyzing results - " + e.getMessage());
         }
     }
 
@@ -1187,7 +1231,7 @@ public class AiVulnAnalyzer implements ScanModule {
                 .evidence(evidence)
                 .payload(result.payload.payload)
                 .responseEvidence(evidence)
-                .description("[AI Smart Fuzz] " + result.payload.description)
+                .description("[AI Targeted Test] " + result.payload.description)
                 .requestResponse(result.response)
                 .build();
 
@@ -1269,6 +1313,9 @@ public class AiVulnAnalyzer implements ScanModule {
                 resolvedPayload = resolvedPayload.replace(COLLAB_PLACEHOLDER, "oob-test.invalid");
                 break;
             }
+
+            logInfo("Targeted AI Test: Tracked OOB callback armed | host=" + collabPayload
+                    + " | param=" + payload.parameter);
 
             // Replace only the first occurrence per iteration
             resolvedPayload = resolvedPayload.replaceFirst(
@@ -2352,9 +2399,34 @@ public class AiVulnAnalyzer implements ScanModule {
     }
     public int getMaxBodySize() { return maxBodySize; }
 
-    /** Set max payloads per request. 0 = unlimited (AI decides when to stop). */
-    public void setMaxPayloadsPerRequest(int max) { this.maxPayloadsPerRequest = Math.max(0, max); }
+    /** Set max payloads per AI request. Values are clamped to a safe range. */
+    public void setMaxPayloadsPerRequest(int max) {
+        this.maxPayloadsPerRequest = max <= 0
+                ? DEFAULT_AI_PAYLOAD_LIMIT
+                : Math.min(max, MAX_AI_PAYLOAD_LIMIT);
+    }
     public int getMaxPayloadsPerRequest() { return maxPayloadsPerRequest; }
+
+    int getEffectivePayloadLimit(String targetModuleId) {
+        return targetModuleId == null
+                ? maxPayloadsPerRequest
+                : Math.min(maxPayloadsPerRequest, MAX_TARGETED_PAYLOAD_LIMIT);
+    }
+
+    boolean hasOobCapability() {
+        if (collaboratorManager == null || !collaboratorManager.isAvailable()) return false;
+        String address = collaboratorManager.getServerAddress();
+        return address != null && !address.isBlank();
+    }
+
+    private static boolean requiresOobForTargetedScan(String targetModuleId) {
+        return "cmdi-scanner".equals(targetModuleId);
+    }
+
+    private boolean containsConfiguredOobTarget(FuzzPayload payload) {
+        return payload != null && payload.payload != null
+                && payload.payload.contains(COLLAB_PLACEHOLDER);
+    }
 
     // Active scanning toggles
     public void setPassiveAnalysisEnabled(boolean enabled) { this.passiveAnalysisEnabled = enabled; }
@@ -2446,6 +2518,12 @@ public class AiVulnAnalyzer implements ScanModule {
     private void doManualScan(HttpRequestResponse reqResp, boolean passive,
                                boolean fuzz, boolean wafBypass, boolean adaptive,
                                String targetModuleId, String targetParameter) {
+        if (fuzz && requiresOobForTargetedScan(targetModuleId) && !hasOobCapability()) {
+            logError("Targeted AI Test: Command Injection requires an active OOB source. "
+                    + "Enable Burp Collaborator or connect Interactsh in OOB Configuration.");
+            return;
+        }
+
         // Passive-only scan (no fuzzing) = analyzing response content (e.g., Client-Side Analyzer).
         // Always send a fresh request to get the latest JS/HTML, bypassing cache.
         // Also re-fetch for any scan where response is missing, empty, or 304.
@@ -2453,7 +2531,7 @@ public class AiVulnAnalyzer implements ScanModule {
         boolean needsRefresh = passiveOnly || needsFreshResponse(reqResp);
 
         logInfo("Manual scan: target=" + (targetModuleId != null ? targetModuleId : "all")
-                + " passive=" + passive + " fuzz=" + fuzz
+                + " passive=" + passive + " activeTest=" + fuzz
                 + (targetParameter != null ? " param=" + targetParameter : "")
                 + " needsRefresh=" + needsRefresh + " url=" + reqResp.request().url());
 
@@ -2508,7 +2586,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     }
                 });
             } catch (RejectedExecutionException e) {
-                logError("AI fuzz: Queue full, request rejected for " + finalReqResp.request().url());
+                logError("Targeted AI Test: Queue full, request rejected for " + finalReqResp.request().url());
             }
         }
     }

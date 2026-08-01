@@ -41,7 +41,7 @@ session automation, technology-aware probes, OOB detection, and optional AI anal
 - **Keep complex sessions alive.** Refresh login cookies or replay multi-step authentication flows before a probe leaves Burp.
 - **Go beyond generic payload lists.** Run focused scanners for modern injection classes, enterprise platforms, cloud products, and API technologies.
 - **Detect blind behavior.** Use Burp Collaborator, ProjectDiscovery Interactsh, or OmniStrike's custom HTTP/DNS OOB listener.
-- **Keep control of AI.** AI analysis is optional, disabled by default, and supports local CLI or API-key backends.
+- **Keep control of AI.** AI analysis is optional, disabled by default, and runs bounded tests for only the vulnerability class you select.
 - **Review findings in one place.** Findings appear in OmniStrike and are forwarded to Burp's Dashboard with request/response evidence.
 
 ~~~mermaid
@@ -153,7 +153,7 @@ The primary context-menu entry opens a single parameter-and-module picker.
 | Context-menu action | Result |
 |:--|:--|
 | **Send to OmniStrike (All Modules)** | Opens the parameter and module picker. |
-| **Send to OmniStrike ▸** | Runs one selected module in Normal or AI mode. |
+| **Send to OmniStrike ▸** | Runs one selected module as a deterministic Normal Scan or a bounded Targeted AI Test. |
 | **Set as Session Login Request** | Keeps a login/refresh request in memory for Session Keep-Alive. |
 | **Send to Stepper** | Adds the request to a prerequisite chain. |
 
@@ -303,6 +303,21 @@ Redaction covers authorization headers, every cookie value, private/custom heade
 > [!CAUTION]
 > Redaction is defense in depth, not a mathematical guarantee: an unusual client-specific value can evade any local detector. For engagements that prohibit third-party disclosure, use a locally hosted model/CLI or leave AI disabled. CLI backends also process attacker-controlled response text and may expose local tool capabilities depending on the CLI's own configuration; use them only in an isolated environment.
 
+### Targeted AI testing
+
+For an active module, the context menu offers two deliberate choices:
+
+| Action | Behavior |
+|:--|:--|
+| **Normal Scan** | Runs OmniStrike's deterministic scanner and built-in verification logic for the selected module. |
+| **Targeted AI Test** | Asks the configured model for a small set of high-signal probes for only the selected vulnerability class, sends them through Burp, and reviews the resulting evidence. |
+
+A Targeted AI Test sends at most **12 probe requests**. It completes after that single bounded pass: there are no legacy Smart Fuzzing batches, adaptive follow-up rounds, or separate WAF-bypass loops. Passive-only analyzers remain passive and do not generate attack traffic.
+
+Command-injection AI testing requires an active OOB backend. OmniStrike supplies the model with an OOB placeholder, replaces it with a fresh correlated Burp Collaborator, Interactsh, or custom-listener hostname for each probe, and continues monitoring after the request pass completes. Matching callbacks are reported as confirmed findings. SQL injection and other modules can also use correlated OOB probes when the selected model proposes them.
+
+The model proposes tests; OmniStrike still controls request mutation, authenticated delivery, response capture, OOB correlation, scope filtering, and finding creation. CLI output is normalized before parsing so provider banners, progress messages, and echoed prompts cannot be mistaken for the model's structured result.
+
 ## 🎛️ Scan controls
 
 | Control | Description |
@@ -311,6 +326,7 @@ Redaction covers authorization headers, every cookie value, private/custom heade
 | **Throttle** | None, adaptive backoff, or a fixed delay. |
 | **Time-based testing** | Separately gates slower blind timing checks. |
 | **Static-resource skip** | Avoids active injection against common asset extensions. |
+| **Targeted AI probes** | One module-specific pass with a hard maximum of 12 requests and no adaptive or WAF-bypass rounds. |
 | **Redact AI Data** | Sanitizes the AI-facing prompt at the shared provider boundary; enabled by default. |
 | **Mask UI Data** | Optionally masks captured target data across views, copies, and exports. |
 | **Themes** | 29 UI themes, scoped to OmniStrike or optionally applied globally. |
@@ -377,6 +393,8 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 - Hardened Session Keep-Alive and Stepper origin, redirect, cookie, cache, framing, persistence, and shutdown behavior.
 - Bounded scan queues, subprocess/API output, passive discovery stores, deduplication caches, response parsing, and AI state; rejected work is now visible instead of silently disappearing.
 - Kept AI redaction default-on, removed API-key persistence, reduced CLI prompt exposure, and preserved authenticated local scanning while sanitizing only the AI-facing copy.
+- Replaced open-ended AI fuzzing workflows with a bounded Targeted AI Test: one selected module, at most 12 focused probes, scope-filtered evidence review, and mandatory correlated OOB testing for command injection.
+- Isolated structured CLI results from provider banners and transcripts across supported AI backends, preventing malformed-output retries and silently lost findings.
 - Confirmed all scanning remains explicitly right-click-driven; no active or passive module runs automatically on proxy traffic.
 
 </details>

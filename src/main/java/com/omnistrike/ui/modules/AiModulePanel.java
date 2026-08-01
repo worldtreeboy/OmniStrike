@@ -154,7 +154,7 @@ public class AiModulePanel extends JPanel {
         statsBar.setMaximumSize(new Dimension(Integer.MAX_VALUE, 36));
         statsBar.setBackground(BG_DARK);
 
-        statsLabel = new JLabel("Running: 0  |  Queued: 0  |  Analyzed: 0  |  Findings: 0  |  Fuzz Requests: 0  |  Errors: 0");
+        statsLabel = new JLabel("Running: 0  |  Queued: 0  |  Analyzed: 0  |  Findings: 0  |  AI Test Requests: 0  |  Errors: 0");
         statsLabel.setFont(MONO_FONT);
         statsLabel.setForeground(FG_SECONDARY);
         statsBar.add(statsLabel, BorderLayout.CENTER);
@@ -545,7 +545,7 @@ public class AiModulePanel extends JPanel {
         JLabel text = new JLabel("AI analysis is completely optional. When enabled, "
                 + "HTTP request/response data from in-scope traffic will be sent to the configured LLM provider "
                 + "(via CLI tool or API key). Data leaves your machine. "
-                + "Smart Fuzzing sends active requests \u2014 use responsibly.");
+                + "Targeted AI testing sends active requests \u2014 use responsibly.");
         text.setForeground(FG_PRIMARY);
         text.setFont(MONO_FONT);
 
@@ -567,12 +567,12 @@ public class AiModulePanel extends JPanel {
         JLabel limitLabel = createFieldLabel("Max Payloads:");
         limitPanel.add(limitLabel);
 
-        maxPayloadsField = new JTextField("0", 5);
-        maxPayloadsField.setToolTipText("Max payloads per AI request (0 = unlimited — AI decides when to stop)");
+        maxPayloadsField = new JTextField(String.valueOf(analyzer.getMaxPayloadsPerRequest()), 5);
+        maxPayloadsField.setToolTipText("Max payloads per AI request (1-50; targeted module tests are capped at 12)");
         CyberTheme.styleTextField(maxPayloadsField);
         limitPanel.add(maxPayloadsField);
 
-        JLabel limitHint = new JLabel("(0 = unlimited)");
+        JLabel limitHint = new JLabel("(targeted tests: max 12)");
         limitHint.setForeground(FG_SECONDARY);
         limitHint.setFont(MONO_SMALL);
         limitPanel.add(limitHint);
@@ -582,7 +582,9 @@ public class AiModulePanel extends JPanel {
             try {
                 int val = Integer.parseInt(maxPayloadsField.getText().trim());
                 analyzer.setMaxPayloadsPerRequest(val);
-                limitHint.setText(val == 0 ? "(0 = unlimited)" : "(limit: " + val + ")");
+                int applied = analyzer.getMaxPayloadsPerRequest();
+                maxPayloadsField.setText(String.valueOf(applied));
+                limitHint.setText("(limit: " + applied + "; targeted max 12)");
                 limitHint.setForeground(NEON_GREEN);
             } catch (NumberFormatException ex) {
                 limitHint.setText("Invalid number");
@@ -591,7 +593,7 @@ public class AiModulePanel extends JPanel {
         });
         limitPanel.add(applyLimitBtn);
 
-        JLabel note = new JLabel("  AI capabilities (fuzzing, WAF bypass, adaptive) are selected per-scan via right-click context menu.");
+        JLabel note = new JLabel("  Active-module AI tests are scoped to the selected vulnerability type; no adaptive or WAF-bypass loops.");
         note.setForeground(FG_SECONDARY);
         note.setFont(MONO_SMALL);
         limitPanel.add(note);
@@ -1225,7 +1227,7 @@ public class AiModulePanel extends JPanel {
                     + "  |  Queued: " + queued
                     + "  |  Analyzed: " + analyzer.getAnalyzedCount()
                     + "  |  Findings: " + analyzer.getFindingsCount()
-                    + "  |  Fuzz Requests: " + analyzer.getFuzzRequestsSent()
+                    + "  |  AI Test Requests: " + analyzer.getFuzzRequestsSent()
                     + "  |  Errors: " + errors
                     + "  |  " + analyzer.getCostSummary());
 
