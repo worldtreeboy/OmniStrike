@@ -7,7 +7,7 @@
 Turn any request into a deliberate security test with parameter-level targeting,<br/>
 session automation, technology-aware probes, OOB detection, and optional AI analysis.
 
-[![Release](https://img.shields.io/badge/release-v1.83-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.84-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
 [![Java](https://img.shields.io/badge/Java-17%2B-f59e0b?style=for-the-badge&logo=openjdk&logoColor=white&labelColor=111827)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Burp-Montoya_API-f97316?style=for-the-badge&labelColor=111827)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge&color=22c55e&labelColor=111827)](LICENSE)
@@ -313,7 +313,7 @@ Redaction covers authorization headers, every cookie value, private/custom heade
 | **Static-resource skip** | Avoids active injection against common asset extensions. |
 | **Redact AI Data** | Sanitizes the AI-facing prompt at the shared provider boundary; enabled by default. |
 | **Mask UI Data** | Optionally masks captured target data across views, copies, and exports. |
-| **Themes** | 29 UI themes, scoped to OmniStrike or optionally applied globally. |
+| **Themes** | Burp's native theme by default, plus 29 optional palettes scoped to OmniStrike or applied globally. |
 
 ## 🏗️ Build from source
 
@@ -368,6 +368,15 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 ## 🗒️ Release notes
 
 <details open>
+<summary><strong>v1.84 — Burp-native theme by default</strong></summary>
+
+- Restored Burp's native look as the default for fresh installs.
+- Added a one-time migration from the v1.82 forced Omni Pro default while preserving other saved theme choices.
+- Invalid or missing theme preferences now fall back to Burp Default instead of Omni Pro.
+
+</details>
+
+<details>
 <summary><strong>v1.83 — Full scanner hardening and verified release</strong></summary>
 
 - Audited every active scanner, passive analyzer, OOB path, session workflow, and shared scan primitive; added regression coverage for the confirmed failure modes.

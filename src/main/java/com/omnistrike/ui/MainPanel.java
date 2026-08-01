@@ -161,7 +161,7 @@ public class MainPanel extends JPanel {
         JLabel privacyStateLabel = CyberTheme.createSeverityBadge(
                 PrivacyManager.isAiRedactionEnabled() ? "AI PRIVACY ON" : "AI PRIVACY OFF",
                 PrivacyManager.isAiRedactionEnabled() ? NEON_GREEN : NEON_RED);
-        JLabel versionChip = CyberTheme.createSeverityBadge("v1.83", NEON_MAGENTA);
+        JLabel versionChip = CyberTheme.createSeverityBadge("v1.84", NEON_MAGENTA);
         JButton controlsButton = new JButton(controlsExpanded ? "Hide controls" : "Controls");
         CyberTheme.styleButton(controlsButton, NEON_CYAN);
         controlsButton.setToolTipText("Show or hide scan profile, OOB, session, and theme controls");
@@ -385,8 +385,9 @@ public class MainPanel extends JPanel {
         // Startup loaded the palette before component construction; synchronize
         // the selector and scope controls with that persisted state.
         try {
-            String savedTheme = persistence.getString("theme.name", "Omni Pro");
-            themeCombo.setSelectedItem(savedTheme != null ? savedTheme : "Omni Pro");
+            String savedTheme = GlobalThemeManager.normalizeThemeName(
+                    persistence.getString("theme.name", GlobalThemeManager.DEFAULT_THEME_NAME));
+            themeCombo.setSelectedItem(savedTheme);
             boolean themed = !"Default".equals(savedTheme);
             scopeLocalRadio.setVisible(themed);
             scopeGlobalRadio.setVisible(themed);

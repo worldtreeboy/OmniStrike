@@ -21,6 +21,9 @@ public final class GlobalThemeManager {
 
     private GlobalThemeManager() {}
 
+    /** Persisted/display name for Burp's native look. */
+    public static final String DEFAULT_THEME_NAME = "Default";
+
     /** Snapshot of original UIManager defaults, taken once before the first theme apply. */
     private static Map<String, Object> savedDefaults;
 
@@ -116,11 +119,17 @@ public final class GlobalThemeManager {
 
     /** Resolves a persisted display name to a palette; Default intentionally returns null. */
     public static ThemePalette findThemeByName(String name) {
-        if (name == null || "Default".equals(name)) return null;
+        if (name == null || DEFAULT_THEME_NAME.equals(name)) return null;
         for (int i = 1; i < THEME_NAMES.length && i < ALL_THEMES.length; i++) {
             if (THEME_NAMES[i].equals(name)) return ALL_THEMES[i];
         }
         return null;
+    }
+
+    /** Returns a valid persisted theme name, falling back to Burp's native look. */
+    public static String normalizeThemeName(String name) {
+        if (name == null || DEFAULT_THEME_NAME.equals(name)) return DEFAULT_THEME_NAME;
+        return findThemeByName(name) != null ? name : DEFAULT_THEME_NAME;
     }
 
     // ── UIManager keys to override ──────────────────────────────────────
@@ -295,10 +304,7 @@ public final class GlobalThemeManager {
         }
     }
 
-    /**
-     * Revert to Burp's native L&F. Only called on extension unload —
-     * during normal use, switching back to "Default" is blocked in the UI.
-     */
+    /** Revert to Burp's native L&F on selection of Default or extension unload. */
     public static void revertToNative() {
         boolean wasGlobal = currentScope == ThemeScope.GLOBAL && currentPalette != null;
         currentPalette = null;

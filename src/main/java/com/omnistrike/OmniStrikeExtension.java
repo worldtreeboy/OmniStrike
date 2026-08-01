@@ -21,7 +21,7 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.83 — Entry Point
+ * OmniStrike v1.84 — Entry Point
  *
  * A unified multi-module vulnerability scanning framework for Burp Suite:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
@@ -50,7 +50,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.83 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.84 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -308,17 +308,22 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== THEME SYSTEM ====================
         // Snapshot Burp's original UIManager defaults before applying any theme
         GlobalThemeManager.saveOriginalDefaults();
-        // v1.82 visual migration: select the new product theme before constructing
-        // Swing components. Previously MainPanel was built in native mode, so all
-        // style helpers became no-ops and a persisted "Default" preference could
-        // make the redesign look identical to the old UI.
-        String startupTheme = persistence.getString("theme.name", "Omni Pro");
-        if (!persistence.getBoolean("ui.omniProMigrated", false)) {
-            if (startupTheme == null || "Default".equals(startupTheme)) {
-                startupTheme = "Omni Pro";
+        // Burp-native styling is the default. v1.82 temporarily migrated native
+        // installs to Omni Pro, so reset that forced value once while preserving
+        // every other explicitly selected theme.
+        String storedTheme = persistence.getString(
+                "theme.name", GlobalThemeManager.DEFAULT_THEME_NAME);
+        String startupTheme = GlobalThemeManager.normalizeThemeName(storedTheme);
+        if (!java.util.Objects.equals(storedTheme, startupTheme)) {
+            persistence.setString("theme.name", startupTheme);
+        }
+        if (!persistence.getBoolean("ui.burpDefaultMigrated", false)) {
+            if (persistence.getBoolean("ui.omniProMigrated", false)
+                    && "Omni Pro".equals(startupTheme)) {
+                startupTheme = GlobalThemeManager.DEFAULT_THEME_NAME;
                 persistence.setString("theme.name", startupTheme);
             }
-            persistence.setBoolean("ui.omniProMigrated", true);
+            persistence.setBoolean("ui.burpDefaultMigrated", true);
         }
         GlobalThemeManager.setCurrentScope(
                 "GLOBAL".equals(persistence.getString("theme.scope", "OMNISTRIKE_ONLY"))
@@ -326,9 +331,6 @@ public class OmniStrikeExtension implements BurpExtension {
                         : GlobalThemeManager.ThemeScope.OMNISTRIKE_ONLY);
         com.omnistrike.ui.ThemePalette startupPalette =
                 GlobalThemeManager.findThemeByName(startupTheme);
-        if (startupPalette == null && !"Default".equals(startupTheme)) {
-            startupPalette = com.omnistrike.ui.ThemePalette.omniPro();
-        }
         GlobalThemeManager.applyTheme(startupPalette);
         final String startupThemeName = startupTheme;
         api.logging().logToOutput("Theme system initialized (startup theme: "
@@ -401,7 +403,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.83 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.84 ready ===");
         String oobMode = switch (collaboratorManager.getMode()) {
             case BURP_COLLABORATOR -> "Burp Collaborator";
             case CUSTOM_OOB -> "Custom OOB (configure listener in UI)";

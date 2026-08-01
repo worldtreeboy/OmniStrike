@@ -29,6 +29,14 @@ class CyberThemeTest {
     }
 
     @Test
+    void startupThemeFallsBackToBurpDefault() {
+        assertEquals("Default", GlobalThemeManager.normalizeThemeName(null));
+        assertEquals("Default", GlobalThemeManager.normalizeThemeName("missing-theme"));
+        assertEquals("Default", GlobalThemeManager.normalizeThemeName("Default"));
+        assertEquals("Omni Pro", GlobalThemeManager.normalizeThemeName("Omni Pro"));
+    }
+
+    @Test
     void omniProInstallsRoundedPaintedControlsAndModernTabs() {
         CyberTheme.setNativeMode(false);
         CyberTheme.loadPalette(ThemePalette.omniPro());
