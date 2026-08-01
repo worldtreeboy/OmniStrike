@@ -308,22 +308,14 @@ public class OmniStrikeExtension implements BurpExtension {
         // ==================== THEME SYSTEM ====================
         // Snapshot Burp's original UIManager defaults before applying any theme
         GlobalThemeManager.saveOriginalDefaults();
-        // Burp-native styling is the default. v1.82 temporarily migrated native
-        // installs to Omni Pro, so reset that forced value once while preserving
-        // every other explicitly selected theme.
+        // The redesigned component tree requires an OmniStrike palette. Native
+        // rendering remains available internally for unload cleanup, but is not a
+        // safe workspace renderer; coerce old Default preferences to Omni Pro.
         String storedTheme = persistence.getString(
-                "theme.name", GlobalThemeManager.DEFAULT_THEME_NAME);
-        String startupTheme = GlobalThemeManager.normalizeThemeName(storedTheme);
+                "theme.name", GlobalThemeManager.PRODUCT_DEFAULT_THEME_NAME);
+        String startupTheme = GlobalThemeManager.normalizeProductThemeName(storedTheme);
         if (!java.util.Objects.equals(storedTheme, startupTheme)) {
             persistence.setString("theme.name", startupTheme);
-        }
-        if (!persistence.getBoolean("ui.burpDefaultMigrated", false)) {
-            if (persistence.getBoolean("ui.omniProMigrated", false)
-                    && "Omni Pro".equals(startupTheme)) {
-                startupTheme = GlobalThemeManager.DEFAULT_THEME_NAME;
-                persistence.setString("theme.name", startupTheme);
-            }
-            persistence.setBoolean("ui.burpDefaultMigrated", true);
         }
         GlobalThemeManager.setCurrentScope(
                 "GLOBAL".equals(persistence.getString("theme.scope", "OMNISTRIKE_ONLY"))

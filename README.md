@@ -313,7 +313,7 @@ Redaction covers authorization headers, every cookie value, private/custom heade
 | **Static-resource skip** | Avoids active injection against common asset extensions. |
 | **Redact AI Data** | Sanitizes the AI-facing prompt at the shared provider boundary; enabled by default. |
 | **Mask UI Data** | Optionally masks captured target data across views, copies, and exports. |
-| **Themes** | Burp's native theme by default, plus 29 optional palettes scoped to OmniStrike or applied globally. |
+| **Themes** | Omni Pro by default, plus 28 optional palettes scoped to OmniStrike or applied globally. |
 
 ## 🏗️ Build from source
 
@@ -368,12 +368,11 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 ## 🗒️ Release notes
 
 <details open>
-<summary><strong>v1.84 — Burp-native theme by default</strong></summary>
+<summary><strong>v1.84 — Stable themed startup</strong></summary>
 
-- Restored Burp's native look as the default for fresh installs.
-- Added a one-time migration from the v1.82 forced Omni Pro default while preserving other saved theme choices.
-- Invalid or missing theme preferences now fall back to Burp Default instead of Omni Pro.
-- Native startup no longer rewrites Burp-wide Swing defaults, removing the UI stall introduced by the original v1.84 build.
+- Restored Omni Pro as the startup default after native rendering proved incompatible with the redesigned component tree.
+- Removed Burp-native rendering from the theme selector while keeping every themed palette and OmniStrike-only scoping.
+- Invalid, missing, or previously saved Default preferences now fall back to Omni Pro.
 - The suite tab now registers immediately with a loading state and shows initialization failures instead of disappearing silently.
 
 </details>

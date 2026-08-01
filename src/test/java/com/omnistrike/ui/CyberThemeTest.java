@@ -30,11 +30,24 @@ class CyberThemeTest {
     }
 
     @Test
-    void startupThemeFallsBackToBurpDefault() {
+    void themeNormalizationKeepsNativeFallbackForCleanup() {
         assertEquals("Default", GlobalThemeManager.normalizeThemeName(null));
         assertEquals("Default", GlobalThemeManager.normalizeThemeName("missing-theme"));
         assertEquals("Default", GlobalThemeManager.normalizeThemeName("Default"));
         assertEquals("Omni Pro", GlobalThemeManager.normalizeThemeName("Omni Pro"));
+    }
+
+    @Test
+    void productThemeSelectionUsesOmniProAndExcludesNativeRenderer() {
+        assertEquals("Omni Pro", GlobalThemeManager.normalizeProductThemeName(null));
+        assertEquals("Omni Pro", GlobalThemeManager.normalizeProductThemeName("Default"));
+        assertEquals("Omni Pro", GlobalThemeManager.normalizeProductThemeName("missing-theme"));
+        assertEquals("Cyberpunk", GlobalThemeManager.normalizeProductThemeName("Cyberpunk"));
+        assertEquals(GlobalThemeManager.THEME_NAMES.length - 1,
+                GlobalThemeManager.selectableThemeNames().length);
+        assertEquals("Omni Pro", GlobalThemeManager.selectableThemeNames()[0]);
+        assertSame(GlobalThemeManager.findThemeByName("Omni Pro"),
+                GlobalThemeManager.selectableThemeAt(0));
     }
 
     @Test

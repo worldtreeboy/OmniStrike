@@ -310,8 +310,8 @@ public class MainPanel extends JPanel {
         themeLabel.setFont(MONO_LABEL);
         row1.add(themeLabel);
 
-        JComboBox<String> themeCombo = new JComboBox<>(GlobalThemeManager.THEME_NAMES);
-        themeCombo.setSelectedIndex(0); // Default
+        JComboBox<String> themeCombo = new JComboBox<>(GlobalThemeManager.selectableThemeNames());
+        themeCombo.setSelectedIndex(0); // Omni Pro
         styleComboBox(themeCombo);
         themeCombo.setToolTipText("Switch OmniStrike theme");
         row1.add(themeCombo);
@@ -327,9 +327,8 @@ public class MainPanel extends JPanel {
         ButtonGroup scopeGroup = new ButtonGroup();
         scopeGroup.add(scopeLocalRadio);
         scopeGroup.add(scopeGlobalRadio);
-        // Initially hidden (no theme selected = Default)
-        scopeLocalRadio.setVisible(false);
-        scopeGlobalRadio.setVisible(false);
+        scopeLocalRadio.setVisible(true);
+        scopeGlobalRadio.setVisible(true);
 
         scopeLocalRadio.addActionListener(e -> {
             GlobalThemeManager.changeScope(GlobalThemeManager.ThemeScope.OMNISTRIKE_ONLY);
@@ -359,44 +358,31 @@ public class MainPanel extends JPanel {
         });
         row1.add(glowCheckbox);
 
-        // Default stays available so users can freely switch between Burp-native
-        // styling and any OmniStrike palette.
+        // Product palettes are scoped to OmniStrike unless global styling is
+        // explicitly selected. Native rendering is reserved for unload cleanup.
         themeCombo.addActionListener(e -> {
             int idx = themeCombo.getSelectedIndex();
-            if (idx < 0 || idx >= GlobalThemeManager.ALL_THEMES.length) return;
-            ThemePalette palette = GlobalThemeManager.ALL_THEMES[idx];
-
-            if (palette != null) {
-                scopeLocalRadio.setVisible(true);
-                scopeGlobalRadio.setVisible(true);
-                glowCheckbox.setEnabled(true);
-            } else {
-                scopeLocalRadio.setVisible(false);
-                scopeGlobalRadio.setVisible(false);
-                glowCheckbox.setSelected(false);
-                glowCheckbox.setEnabled(false);
-                GlobalThemeManager.stopBreathing();
-            }
+            if (idx < 0 || idx >= themeCombo.getItemCount()) return;
+            ThemePalette palette = GlobalThemeManager.selectableThemeAt(idx);
             GlobalThemeManager.applyTheme(palette);
-            persistence.setString("theme.name", GlobalThemeManager.THEME_NAMES[idx]);
+            persistence.setString("theme.name", (String) themeCombo.getSelectedItem());
             reapplyTheme();
         });
 
         // Startup loaded the palette before component construction; synchronize
         // the selector and scope controls with that persisted state.
         try {
-            String savedTheme = GlobalThemeManager.normalizeThemeName(
-                    persistence.getString("theme.name", GlobalThemeManager.DEFAULT_THEME_NAME));
+            String savedTheme = GlobalThemeManager.normalizeProductThemeName(
+                    persistence.getString("theme.name", GlobalThemeManager.PRODUCT_DEFAULT_THEME_NAME));
             themeCombo.setSelectedItem(savedTheme);
-            boolean themed = !"Default".equals(savedTheme);
-            scopeLocalRadio.setVisible(themed);
-            scopeGlobalRadio.setVisible(themed);
+            scopeLocalRadio.setVisible(true);
+            scopeGlobalRadio.setVisible(true);
             if ("GLOBAL".equals(persistence.getString("theme.scope", "OMNISTRIKE_ONLY"))) {
                 scopeGlobalRadio.setSelected(true);
             } else {
                 scopeLocalRadio.setSelected(true);
             }
-            if (themed && persistence.getBoolean("theme.glow", false)) {
+            if (persistence.getBoolean("theme.glow", false)) {
                 glowCheckbox.setSelected(true);
                 GlobalThemeManager.startBreathing();
             }

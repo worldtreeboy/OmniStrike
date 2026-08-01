@@ -23,6 +23,8 @@ public final class GlobalThemeManager {
 
     /** Persisted/display name for Burp's native look. */
     public static final String DEFAULT_THEME_NAME = "Default";
+    /** Stable product theme used for startup and as the selectable fallback. */
+    public static final String PRODUCT_DEFAULT_THEME_NAME = "Omni Pro";
 
     /** Snapshot of original UIManager defaults, taken once before the first theme apply. */
     private static Map<String, Object> savedDefaults;
@@ -130,6 +132,23 @@ public final class GlobalThemeManager {
     public static String normalizeThemeName(String name) {
         if (name == null || DEFAULT_THEME_NAME.equals(name)) return DEFAULT_THEME_NAME;
         return findThemeByName(name) != null ? name : DEFAULT_THEME_NAME;
+    }
+
+    /** Returns a valid rendered product theme; native mode is reserved for unload. */
+    public static String normalizeProductThemeName(String name) {
+        return findThemeByName(name) != null ? name : PRODUCT_DEFAULT_THEME_NAME;
+    }
+
+    /** Themes exposed in the UI, excluding the currently unsupported native renderer. */
+    public static String[] selectableThemeNames() {
+        return java.util.Arrays.copyOfRange(THEME_NAMES, 1, THEME_NAMES.length);
+    }
+
+    /** Resolves a selectable-theme index to its palette. */
+    public static ThemePalette selectableThemeAt(int index) {
+        int catalogIndex = index + 1;
+        if (catalogIndex < 1 || catalogIndex >= ALL_THEMES.length) return ALL_THEMES[1];
+        return ALL_THEMES[catalogIndex];
     }
 
     // ── UIManager keys to override ──────────────────────────────────────
