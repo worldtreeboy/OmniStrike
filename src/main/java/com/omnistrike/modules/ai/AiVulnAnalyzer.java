@@ -155,6 +155,8 @@ public class AiVulnAnalyzer implements ScanModule {
             "forbidden", "not acceptable", "security violation",
             "blocked by", "waf", "attack detected"
     );
+    private static final Pattern SAFE_NOSQL_REGEX = Pattern.compile(
+            "(?:\\.\\*|\\^\\.\\*\\$|\\^[A-Za-z0-9_.-]{1,128}\\$)");
 
 
     // ==================== Module-Specific Focus ====================
@@ -173,6 +175,16 @@ public class AiVulnAnalyzer implements ScanModule {
                     + "Test EVERY injectable parameter. Use BOTH single and double quotes.\n"
                     + "STRICTLY FORBIDDEN: Do NOT generate ANY payloads for XSS, SSTI, command injection, SSRF, path traversal, or any other vulnerability type. "
                     + "Every payload MUST have attack_type set to \"sqli\". Any non-SQLi payload will be discarded.")),
+            Map.entry("nosqli-scanner", new ModuleFocus("NoSQL Operator Injection",
+                    "SCOPE: MongoDB-style NoSQL operator injection ONLY. Generate paired, non-destructive "
+                    + "JSON operator objects using only $eq, $ne, and $regex. Use a unique impossible value "
+                    + "for the narrow control and a broad value for the comparison.\n"
+                    + "JSON TARGETS ONLY: set injection_point to \"json\" or \"body\" and identify the "
+                    + "existing scalar with its JSON Pointer when possible. If the request is not JSON, "
+                    + "return no payloads; the built-in scanner handles query/form bracket syntax.\n"
+                    + "STRICTLY FORBIDDEN: $where, $function, JavaScript, timing payloads, destructive/update "
+                    + "operators, SQL syntax, command injection, SSRF, SSTI, XSS, or any unrelated type. "
+                    + "Every payload MUST have attack_type set to exactly \"nosqli\". Unsafe payloads are discarded.")),
             Map.entry("ssti-scanner", new ModuleFocus("Server-Side Template Injection (SSTI)",
                     "SCOPE: Server-Side Template Injection ONLY for Jinja2, Twig, Freemarker, Velocity, Pebble, Mako, ERB, Smarty, Thymeleaf.\n"
                     + "PRIORITY ORDER:\n"
@@ -339,6 +351,7 @@ public class AiVulnAnalyzer implements ScanModule {
     private static String getAttackType(String moduleId) {
         return switch (moduleId) {
             case "sqli-detector" -> "sqli";
+            case "nosqli-scanner" -> "nosqli";
             case "ssti-scanner" -> "ssti";
             case "cmdi-scanner" -> "cmdi";
             case "ssrf-scanner" -> "ssrf";
@@ -364,6 +377,8 @@ public class AiVulnAnalyzer implements ScanModule {
         // Use a mapping of known aliases
         return switch (e) {
             case "sqli" -> p.contains("sqli") || p.contains("sql") && !p.contains("nosql");
+            case "nosqli" -> p.contains("nosqli") || p.contains("nosql")
+                    || p.contains("mongodb") && p.contains("operator");
             case "xss" -> p.contains("xss") || p.contains("cross-site scripting");
             case "ssti" -> p.contains("ssti") || p.contains("template");
             case "cmdi" -> p.contains("cmdi") || p.contains("command") || p.contains("rce") || p.contains("os_command");
@@ -383,6 +398,8 @@ public class AiVulnAnalyzer implements ScanModule {
         return switch (expectedType) {
             case "sqli" -> combined.contains("sql") || combined.contains("sqli") || combined.contains("injection")
                     && (combined.contains("database") || combined.contains("query"));
+            case "nosqli" -> (combined.contains("nosql") || combined.contains("mongodb"))
+                    && (combined.contains("operator") || combined.contains("injection"));
             case "xss" -> combined.contains("xss") || combined.contains("cross-site scripting")
                     || combined.contains("reflected") && combined.contains("script");
             case "ssti" -> combined.contains("ssti") || combined.contains("template")
@@ -655,7 +672,9 @@ public class AiVulnAnalyzer implements ScanModule {
             if (targetModuleId != null) {
                 String expectedType = getAttackType(targetModuleId);
                 int beforeFilter = payloads.size();
-                payloads.removeIf(p -> !isMatchingAttackType(p.attackType, expectedType));
+                payloads.removeIf(p -> !isMatchingAttackType(p.attackType, expectedType)
+                        || "nosqli".equals(expectedType)
+                        && !isSafeNoSqlJsonPayload(p.injectionPoint, p.payload));
                 int dropped = beforeFilter - payloads.size();
                 if (dropped > 0) {
                     logInfo(scanLabel + ": Filtered out " + dropped + " off-target payload(s) "
@@ -728,6 +747,11 @@ public class AiVulnAnalyzer implements ScanModule {
                     // Replace {COLLAB} placeholders with real tracked Collaborator payloads
                     FuzzPayload resolvedPayload = resolveCollaboratorPlaceholders(payload, exchange.getUrl(), reqRespRef, targetModuleId);
                     HttpRequest modified = injectPayload(originalReqResp.request(), resolvedPayload);
+                    if ("nosqli-scanner".equals(targetModuleId)
+                            && sameRequest(originalReqResp.request(), modified)) {
+                        logInfo(scanLabel + ": Skipped a NoSQL payload that did not safely modify the JSON target");
+                        continue;
+                    }
                     long startTime = System.currentTimeMillis();
                     HttpRequestResponse response = StepperHttp.sendRequest(modified);
                     long elapsed = System.currentTimeMillis() - startTime;
@@ -871,6 +895,8 @@ public class AiVulnAnalyzer implements ScanModule {
                             ), originalRequest.url(), reqRespRef, targetModuleId);
 
                     HttpRequest modified = injectPayload(originalRequest, bypassPayload);
+                    if ("nosqli-scanner".equals(targetModuleId)
+                            && sameRequest(originalRequest, modified)) continue;
                     long startTime = System.currentTimeMillis();
                     HttpRequestResponse response = StepperHttp.sendRequest(modified);
                     long elapsed = System.currentTimeMillis() - startTime;
@@ -935,7 +961,9 @@ public class AiVulnAnalyzer implements ScanModule {
             // Filter off-target payloads in adaptive rounds too
             if (targetModuleId != null) {
                 String expectedType = getAttackType(targetModuleId);
-                payloads.removeIf(p -> !isMatchingAttackType(p.attackType, expectedType));
+                payloads.removeIf(p -> !isMatchingAttackType(p.attackType, expectedType)
+                        || "nosqli".equals(expectedType)
+                        && !isSafeNoSqlJsonPayload(p.injectionPoint, p.payload));
             }
 
             if (payloads.isEmpty()) {
@@ -954,6 +982,8 @@ public class AiVulnAnalyzer implements ScanModule {
                     AtomicReference<HttpRequestResponse> reqRespRef = new AtomicReference<>();
                     FuzzPayload resolved = resolveCollaboratorPlaceholders(payload, originalRequest.url(), reqRespRef, targetModuleId);
                     HttpRequest modified = injectPayload(originalRequest, resolved);
+                    if ("nosqli-scanner".equals(targetModuleId)
+                            && sameRequest(originalRequest, modified)) continue;
                     long startTime = System.currentTimeMillis();
                     HttpRequestResponse response = StepperHttp.sendRequest(modified);
                     long elapsed = System.currentTimeMillis() - startTime;
@@ -1150,6 +1180,11 @@ public class AiVulnAnalyzer implements ScanModule {
             String focusRule = focus != null
                     ? "\nSCOPE: Review these results ONLY for " + focus.displayName()
                     + ". Do not report any other vulnerability class.\n"
+                    + ("nosqli-scanner".equals(targetModuleId)
+                    ? "For NoSQL, require matching behavior from both a $ne/$eq control pair and an "
+                    + "$regex broad/impossible pair. Reflection, WAF rejection, response-length-only "
+                    + "changes, or one unconfirmed response are not proof.\n"
+                    : "")
                     : "";
             String prompt = """
                     You are a senior penetration tester analyzing the results of automated security testing.
@@ -1331,21 +1366,30 @@ public class AiVulnAnalyzer implements ScanModule {
 
     private HttpRequest injectPayload(HttpRequest original, FuzzPayload payload) {
         String injectionPoint = payload.injectionPoint == null ? "" : payload.injectionPoint.toLowerCase(Locale.ROOT);
+        boolean noSqlOperator = isMatchingAttackType(payload.attackType, "nosqli");
+        if (noSqlOperator && !isSafeNoSqlJsonPayload(injectionPoint, payload.payload)) {
+            return original;
+        }
         return switch (injectionPoint) {
             case "query", "url" -> original.withParameter(
                     HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.URL));
             case "body" -> {
                 if (isJsonRequest(original)) {
                     String originalBody = original.bodyToString();
-                    String modifiedBody = injectJsonValue(originalBody, payload.parameter, payload.payload);
+                    String modifiedBody = noSqlOperator
+                            ? injectNoSqlJsonPayload(originalBody, payload.parameter, payload.payload)
+                            : injectJsonValue(originalBody, payload.parameter, payload.payload);
                     yield modifiedBody.equals(originalBody) ? original : original.withBody(modifiedBody);
                 }
+                if (noSqlOperator) yield original;
                 yield original.withParameter(
                         HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.BODY));
             }
             case "json" -> {
                 String originalBody = original.bodyToString();
-                String modifiedBody = injectJsonValue(originalBody, payload.parameter, payload.payload);
+                String modifiedBody = noSqlOperator
+                        ? injectNoSqlJsonPayload(originalBody, payload.parameter, payload.payload)
+                        : injectJsonValue(originalBody, payload.parameter, payload.payload);
                 yield modifiedBody.equals(originalBody) ? original : original.withBody(modifiedBody);
             }
             // "xml" explicitly means a complete replacement document. This avoids
@@ -1359,6 +1403,16 @@ public class AiVulnAnalyzer implements ScanModule {
             default -> original.withParameter(
                     HttpParameter.parameter(payload.parameter, PayloadEncoder.encode(payload.payload), HttpParameterType.URL));
         };
+    }
+
+    private static boolean sameRequest(HttpRequest first, HttpRequest second) {
+        if (first == second) return true;
+        if (first == null || second == null) return false;
+        try {
+            return Arrays.equals(first.toByteArray().getBytes(), second.toByteArray().getBytes());
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private static boolean isJsonRequest(HttpRequest request) {
@@ -1376,6 +1430,73 @@ public class AiVulnAnalyzer implements ScanModule {
      * display/leaf name is accepted only when it identifies exactly one target.
      */
     static String injectJsonValue(String body, String requestedParameter, String payload) {
+        return injectJsonElement(body, requestedParameter, new JsonPrimitive(payload));
+    }
+
+    /**
+     * NoSQL AI payloads are deliberately limited to non-executable operator
+     * objects. This prevents an LLM from turning targeted testing into $where
+     * JavaScript execution or an unrelated generic fuzzing pass.
+     */
+    static boolean isSafeNoSqlJsonPayload(String injectionPoint, String payload) {
+        if (injectionPoint == null || payload == null || payload.length() > 1_024) return false;
+        String point = injectionPoint.trim().toLowerCase(Locale.ROOT);
+        if (!point.equals("json") && !point.equals("body")) return false;
+        if (!hasBoundedJsonNesting(payload, 2)) return false;
+        try {
+            JsonElement parsed = JsonParser.parseString(payload);
+            if (!parsed.isJsonObject()) return false;
+            JsonObject object = parsed.getAsJsonObject();
+            if (object.size() != 1) return false;
+            Map.Entry<String, JsonElement> entry = object.entrySet().iterator().next();
+            if (!Set.of("$eq", "$ne", "$regex").contains(entry.getKey())) return false;
+            JsonElement value = entry.getValue();
+            if (!(value.isJsonNull() || value.isJsonPrimitive())) return false;
+            if ("$regex".equals(entry.getKey())) {
+                return value.isJsonPrimitive()
+                        && value.getAsJsonPrimitive().isString()
+                        && SAFE_NOSQL_REGEX.matcher(value.getAsString()).matches();
+            }
+            return !value.isJsonPrimitive()
+                    || !value.getAsJsonPrimitive().isString()
+                    || value.getAsString().length() <= 512;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private static boolean hasBoundedJsonNesting(String value, int limit) {
+        int depth = 0;
+        boolean quoted = false;
+        boolean escaped = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') quoted = false;
+            } else if (c == '"') {
+                quoted = true;
+            } else if (c == '{' || c == '[') {
+                if (++depth > limit) return false;
+            } else if (c == '}' || c == ']') {
+                if (--depth < 0) return false;
+            }
+        }
+        return depth == 0 && !quoted;
+    }
+
+    static String injectNoSqlJsonPayload(String body, String requestedParameter, String payload) {
+        if (!isSafeNoSqlJsonPayload("json", payload)) return body;
+        try {
+            return injectJsonElement(body, requestedParameter, JsonParser.parseString(payload));
+        } catch (JsonParseException ignored) {
+            return body;
+        }
+    }
+
+    private static String injectJsonElement(
+            String body, String requestedParameter, JsonElement replacement) {
         if (body == null || requestedParameter == null || requestedParameter.isBlank()) return body;
         try {
             List<JsonScanSupport.Target> targets = JsonScanSupport.extractTargets(body);
@@ -1383,7 +1504,7 @@ public class AiVulnAnalyzer implements ScanModule {
 
             for (JsonScanSupport.Target target : targets) {
                 if (target.identityName().equals(requested)) {
-                    return JsonScanSupport.replaceValue(body, target.path(), payload);
+                    return JsonScanSupport.replaceElement(body, target.path(), replacement);
                 }
             }
 
@@ -1391,7 +1512,7 @@ public class AiVulnAnalyzer implements ScanModule {
                     .filter(target -> target.matchesParameterName(requested))
                     .toList();
             if (matches.size() != 1) return body;
-            return JsonScanSupport.replaceValue(body, matches.get(0).path(), payload);
+            return JsonScanSupport.replaceElement(body, matches.get(0).path(), replacement);
         } catch (RuntimeException ignored) {
             return body;
         }

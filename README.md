@@ -7,7 +7,7 @@
 Turn any request into a deliberate security test with parameter-level targeting,<br/>
 session automation, technology-aware probes, OOB detection, and optional AI analysis.
 
-[![Release](https://img.shields.io/badge/release-v1.83-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.84-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
 [![Java](https://img.shields.io/badge/Java-17%2B-f59e0b?style=for-the-badge&logo=openjdk&logoColor=white&labelColor=111827)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Burp-Montoya_API-f97316?style=for-the-badge&labelColor=111827)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge&color=22c55e&labelColor=111827)](LICENSE)
@@ -24,7 +24,7 @@ session automation, technology-aware probes, OOB detection, and optional AI anal
 
 <table>
   <tr>
-    <td align="center"><strong>13</strong><br/>active scanning engines</td>
+    <td align="center"><strong>14</strong><br/>active scanning engines</td>
     <td align="center"><strong>10</strong><br/>technology-aware scanners</td>
     <td align="center"><strong>7</strong><br/>passive analyzers</td>
     <td align="center"><strong>5</strong><br/>framework tools</td>
@@ -90,6 +90,7 @@ Tick the parameters and modules you want, then start the scan. Static assets suc
 | Engine | Coverage highlights |
 |:--|:--|
 | **SQL injection** | Error, UNION, time-based, and OOB probes across major DBMS families; REST path support. |
+| **NoSQL operator injection** | Safe <code>$eq</code>/<code>$ne</code> and <code>$regex</code> control pairs for query, form, and nested JSON inputs; findings require stable independent confirmation. |
 | **Command injection** | Output, timing, and OOB confirmation for Unix, Windows, and server-side JavaScript contexts. |
 | **SSRF** | Collaborator/OOB callbacks, localhost bypasses, DNS rebinding, and protocol-oriented payloads. |
 | **SSTI** | Fingerprints and probes for 20 template-engine families with reflection guards. |
@@ -384,6 +385,17 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 ## 🗒️ Release notes
 
 <details open>
+<summary><strong>v1.84 — Conservative NoSQL operator injection</strong></summary>
+
+- Added a dedicated NoSQL operator-injection scanner for query, form, and nested JSON values using non-executable <code>$eq</code>/<code>$ne</code> and <code>$regex</code> control pairs.
+- Findings require a stable baseline, repeatable true/false behavior, and confirmation by an independent operator family; reflected payloads, WAF responses, and response-length-only changes are rejected.
+- Added request-safety guards for mutating paths, destructive action parameters, unknown POST endpoints, pathological JSON, bounded probe counts, throttling, and cancellation.
+- Added a module-specific Targeted AI Test path that preserves operator objects structurally and rejects <code>$where</code>, JavaScript, unsafe regular expressions, non-JSON injection points, and unrelated payloads.
+- Verified the complete project with 157 tests and a clean shaded-JAR build.
+
+</details>
+
+<details>
 <summary><strong>v1.83 — Full scanner hardening and verified release</strong></summary>
 
 - Audited every active scanner, passive analyzer, OOB path, session workflow, and shared scan primitive; added regression coverage for the confirmed failure modes.

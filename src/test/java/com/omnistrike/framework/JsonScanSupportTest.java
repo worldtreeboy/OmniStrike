@@ -9,6 +9,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JsonScanSupportTest {
     @Test
@@ -54,6 +55,18 @@ class JsonScanSupportTest {
                 "{\"enabled\":true,\"optional\":null}");
         assertEquals(List.of("enabled", "optional"),
                 targets.stream().map(JsonScanSupport.Target::displayName).toList());
+    }
+
+    @Test
+    void replacesScalarWithARealJsonObjectRatherThanAQuotedString() {
+        var operator = new com.google.gson.JsonObject();
+        operator.addProperty("$ne", "canary");
+        String changed = JsonScanSupport.replaceElement(
+                "{\"username\":\"alice\"}", List.of("username"), operator);
+
+        JsonElement value = JsonParser.parseString(changed).getAsJsonObject().get("username");
+        assertTrue(value.isJsonObject());
+        assertEquals("canary", value.getAsJsonObject().get("$ne").getAsString());
     }
 
     @Test

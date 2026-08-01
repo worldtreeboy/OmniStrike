@@ -72,4 +72,44 @@ class AiVulnAnalyzerJsonTest {
         assertTrue(prompt.contains("OOB TESTING IS MANDATORY"));
         assertTrue(prompt.contains("Never exfiltrate target data"));
     }
+
+    @Test
+    void noSqlPromptIsFocusedAndForbidsExecutableOperators() {
+        AiVulnAnalyzer analyzer = new AiVulnAnalyzer();
+
+        String prompt = analyzer.buildFuzzPrompt("nosqli-scanner");
+
+        assertTrue(prompt.contains("Generate ONLY NoSQL Operator Injection payloads"));
+        assertTrue(prompt.contains("attack_type set to exactly \"nosqli\""));
+        assertTrue(prompt.contains("$where"));
+        assertTrue(prompt.contains("JSON TARGETS ONLY"));
+    }
+
+    @Test
+    void acceptsOnlyBoundedNonExecutableNoSqlOperatorObjects() {
+        assertTrue(AiVulnAnalyzer.isSafeNoSqlJsonPayload("json", "{\"$ne\":\"canary\"}"));
+        assertTrue(AiVulnAnalyzer.isSafeNoSqlJsonPayload("body", "{\"$regex\":\".*\"}"));
+        assertTrue(AiVulnAnalyzer.isSafeNoSqlJsonPayload("json", "{\"$regex\":\"^omni-123$\"}"));
+        assertFalse(AiVulnAnalyzer.isSafeNoSqlJsonPayload("query", "{\"$ne\":null}"));
+        assertFalse(AiVulnAnalyzer.isSafeNoSqlJsonPayload("json", "{\"$where\":\"sleep(5)\"}"));
+        assertFalse(AiVulnAnalyzer.isSafeNoSqlJsonPayload("json", "{\"$ne\":{\"$gt\":0}}"));
+        assertFalse(AiVulnAnalyzer.isSafeNoSqlJsonPayload("json", "{\"$ne\":1,\"$eq\":2}"));
+        assertFalse(AiVulnAnalyzer.isSafeNoSqlJsonPayload("json", "{\"$regex\":\"(a+)+$\"}"));
+        assertFalse(AiVulnAnalyzer.isSafeNoSqlJsonPayload("json",
+                "{\"$ne\":" + "[".repeat(130) + "0" + "]".repeat(130) + "}"));
+    }
+
+    @Test
+    void insertsNoSqlPayloadAsAnObjectAndPreservesSiblings() {
+        String json = "{\"account\":{\"username\":\"alice\",\"active\":true}}";
+
+        String modified = AiVulnAnalyzer.injectNoSqlJsonPayload(
+                json, "/account/username", "{\"$ne\":\"omni-canary\"}");
+
+        var account = JsonParser.parseString(modified).getAsJsonObject().getAsJsonObject("account");
+        assertEquals("omni-canary", account.getAsJsonObject("username").get("$ne").getAsString());
+        assertTrue(account.get("active").getAsBoolean());
+        assertEquals(json, AiVulnAnalyzer.injectNoSqlJsonPayload(
+                json, "/account/username", "{\"$where\":\"return true\"}"));
+    }
 }

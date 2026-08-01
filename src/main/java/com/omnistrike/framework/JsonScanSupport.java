@@ -97,8 +97,13 @@ public final class JsonScanSupport {
     }
 
     public static String replaceValue(String json, List<Object> path, String value) {
+        return replaceElement(json, path, new JsonPrimitive(value));
+    }
+
+    /** Structurally replaces a JSON leaf with an object, array, primitive, or null. */
+    public static String replaceElement(String json, List<Object> path, JsonElement replacement) {
         try {
-            if (path == null || path.isEmpty()) return json;
+            if (path == null || path.isEmpty() || replacement == null) return json;
             requireSafeNesting(json);
             JsonElement root = JsonParser.parseString(json);
             JsonElement current = root;
@@ -116,12 +121,11 @@ public final class JsonScanSupport {
             }
 
             Object leaf = path.get(path.size() - 1);
-            JsonPrimitive replacement = new JsonPrimitive(value);
             if (leaf instanceof String key && current.isJsonObject() && current.getAsJsonObject().has(key)) {
-                current.getAsJsonObject().add(key, replacement);
+                current.getAsJsonObject().add(key, replacement.deepCopy());
             } else if (leaf instanceof Integer index && current.isJsonArray()
                     && index >= 0 && index < current.getAsJsonArray().size()) {
-                current.getAsJsonArray().set(index, replacement);
+                current.getAsJsonArray().set(index, replacement.deepCopy());
             } else {
                 return json;
             }

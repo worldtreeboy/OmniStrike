@@ -21,13 +21,13 @@ import com.omnistrike.ui.MainPanel;
 import javax.swing.*;
 
 /**
- * OmniStrike v1.83 — Entry Point
+ * OmniStrike v1.84 — Entry Point
  *
  * A unified multi-module vulnerability scanning framework for Burp Suite:
  *   AI Analysis: AI Vulnerability Analyzer (Claude, Gemini, Codex, OpenCode CLI)
  *   Recon (Passive): Client-Side Analyzer, Endpoint Finder, Subdomain Collector, Security Header Analyzer,
  *       Technology Fingerprinter, Sensitive Data Exposure
- *   Injection (Active): SQLi Detector, SSTI Scanner, SSRF Scanner, XSS Scanner,
+ *   Injection (Active): SQLi Detector, NoSQL Operator Injection, SSTI Scanner, SSRF Scanner, XSS Scanner,
  *       Command Injection, Deserialization Scanner, GraphQL Tool, XXE Scanner,
  *       CORS Misconfiguration, Cache Poisoning, Host Header Injection, Prototype Pollution, Path Traversal,
  *       HTTP Parameter Pollution
@@ -50,7 +50,7 @@ public class OmniStrikeExtension implements BurpExtension {
     @Override
     public void initialize(MontoyaApi api) {
         api.extension().setName("OmniStrike");
-        api.logging().logToOutput("=== OmniStrike v1.83 initializing ===");
+        api.logging().logToOutput("=== OmniStrike v1.84 initializing ===");
 
         // Core framework components
         findingsStore = new FindingsStore();
@@ -121,6 +121,10 @@ public class OmniStrikeExtension implements BurpExtension {
         SmartSqliDetector sqli = new SmartSqliDetector();
         sqli.setDependencies(dedup, findingsStore, collaboratorManager);
         registry.registerModule(sqli);
+
+        NoSqlInjectionScanner nosqli = new NoSqlInjectionScanner();
+        nosqli.setDependencies(dedup, findingsStore);
+        registry.registerModule(nosqli);
 
         SstiScanner ssti = new SstiScanner();
         ssti.setDependencies(dedup, findingsStore, collaboratorManager);
@@ -402,7 +406,7 @@ public class OmniStrikeExtension implements BurpExtension {
             catch (NullPointerException ignored) {}
         });
 
-        api.logging().logToOutput("=== OmniStrike v1.83 ready ===");
+        api.logging().logToOutput("=== OmniStrike v1.84 ready ===");
         String oobMode = switch (collaboratorManager.getMode()) {
             case BURP_COLLABORATOR -> "Burp Collaborator";
             case CUSTOM_OOB -> "Custom OOB (configure listener in UI)";
