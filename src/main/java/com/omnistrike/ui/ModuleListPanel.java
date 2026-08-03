@@ -400,6 +400,15 @@ public class ModuleListPanel extends JPanel {
         }
     }
 
+    /** Clears the sidebar highlight when the workspace artwork is displayed. */
+    public void clearSelection() {
+        selectedModuleId = null;
+        for (JPanel entry : moduleEntries.values()) {
+            styleEntry(entry, false);
+            entry.repaint();
+        }
+    }
+
     private void styleEntry(JPanel entry, boolean selected) {
         entry.setOpaque(true);
         entry.setBackground(selected ? BG_HOVER : BG_PANEL);

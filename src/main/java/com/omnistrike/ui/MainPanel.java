@@ -162,6 +162,9 @@ public class MainPanel extends JPanel {
                 PrivacyManager.isAiRedactionEnabled() ? "AI PRIVACY ON" : "AI PRIVACY OFF",
                 PrivacyManager.isAiRedactionEnabled() ? NEON_GREEN : NEON_RED);
         JLabel versionChip = CyberTheme.createSeverityBadge("v1.86", NEON_MAGENTA);
+        JButton mascotButton = new JButton("\u2744 Artwork");
+        CyberTheme.styleButton(mascotButton, NEON_CYAN);
+        mascotButton.setToolTipText("Show or switch the full-screen workspace artwork");
         JButton controlsButton = new JButton(controlsExpanded ? "Hide controls" : "Controls");
         CyberTheme.styleButton(controlsButton, NEON_CYAN);
         controlsButton.setToolTipText("Show or hide scan profile, OOB, session, and theme controls");
@@ -176,6 +179,7 @@ public class MainPanel extends JPanel {
         heroStatus.add(workflowChip);
         heroStatus.add(privacyStateLabel);
         heroStatus.add(versionChip);
+        heroStatus.add(mascotButton);
         heroStatus.add(controlsButton);
         hero.add(heroStatus, BorderLayout.EAST);
         topContainer.add(hero);
@@ -782,41 +786,14 @@ public class MainPanel extends JPanel {
         }
 
         // Placeholder when no module selected
-        JPanel placeholder = new JPanel(new GridBagLayout());
-        placeholder.setBackground(BG_DARK);
-        JPanel welcomeCard = new CyberTheme.HeroPanel();
-        welcomeCard.setLayout(new BoxLayout(welcomeCard, BoxLayout.Y_AXIS));
-        welcomeCard.setBorder(BorderFactory.createCompoundBorder(
-                new CyberTheme.RoundedLineBorder(BORDER, 1, 22),
-                BorderFactory.createEmptyBorder(30, 38, 30, 38)));
-        JLabel welcomeMark = new JLabel("◇");
-        welcomeMark.setFont(UI_TITLE.deriveFont(34f));
-        welcomeMark.setForeground(NEON_CYAN);
-        welcomeMark.setAlignmentX(Component.CENTER_ALIGNMENT);
-        JLabel welcomeTitle = new JLabel("Choose your workspace");
-        welcomeTitle.setForeground(FG_PRIMARY);
-        welcomeTitle.setFont(UI_TITLE.deriveFont(24f));
-        welcomeTitle.setAlignmentX(Component.CENTER_ALIGNMENT);
-        JLabel welcomeText = new JLabel(
-                "<html><div style='text-align:center'>Select a module to inspect findings, configure workflows,<br>or prepare a focused right-click assessment.</div></html>");
-        welcomeText.setForeground(FG_SECONDARY);
-        welcomeText.setFont(UI_FONT);
-        welcomeText.setAlignmentX(Component.CENTER_ALIGNMENT);
-        JPanel welcomeChips = new JPanel(new FlowLayout(FlowLayout.CENTER, 8, 0));
-        welcomeChips.setOpaque(false);
-        welcomeChips.add(CyberTheme.createSeverityBadge("CONTROLLED", NEON_BLUE));
-        welcomeChips.add(CyberTheme.createSeverityBadge("PRIVATE", NEON_GREEN));
-        welcomeChips.add(CyberTheme.createSeverityBadge("EVIDENCE-DRIVEN", NEON_MAGENTA));
-        welcomeCard.add(welcomeMark);
-        welcomeCard.add(Box.createVerticalStrut(8));
-        welcomeCard.add(welcomeTitle);
-        welcomeCard.add(Box.createVerticalStrut(8));
-        welcomeCard.add(welcomeText);
-        welcomeCard.add(Box.createVerticalStrut(18));
-        welcomeCard.add(welcomeChips);
-        placeholder.add(welcomeCard);
+        MascotBackdropPanel placeholder = new MascotBackdropPanel();
         moduleDetailContainer.add(placeholder, "none");
         cardLayout.show(moduleDetailContainer, "none");
+        mascotButton.addActionListener(e -> {
+            String artworkName = placeholder.nextArtwork();
+            mascotButton.setToolTipText("Showing " + artworkName + " — click to switch artwork");
+            showMascotWorkspace();
+        });
 
         JSplitPane centerSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 moduleListPanel, moduleDetailContainer);
@@ -1507,6 +1484,13 @@ public class MainPanel extends JPanel {
     private void showModulePanel(String moduleId) {
         cardLayout.show(moduleDetailContainer, moduleId);
         logPanel.log("INFO", "UI", "Viewing module: " + moduleId);
+    }
+
+    private void showMascotWorkspace() {
+        moduleListPanel.clearSelection();
+        cardLayout.show(moduleDetailContainer, "none");
+        moduleDetailContainer.revalidate();
+        moduleDetailContainer.repaint();
     }
 
     /**

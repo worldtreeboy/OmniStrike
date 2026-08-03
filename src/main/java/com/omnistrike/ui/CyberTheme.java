@@ -46,6 +46,8 @@ public final class CyberTheme {
     private static final String BUTTON_FILLED_KEY = "OmniStrike.buttonFilled";
     private static final String TITLED_NAME_KEY = "OmniStrike.titledName";
     private static final String TITLED_ACCENT_KEY = "OmniStrike.titledAccent";
+    private static final String HTTP_MESSAGE_AREA_KEY = "OmniStrike.httpMessageArea";
+    private static final double BODY_TEXT_MIN_CONTRAST = 7.0;
 
     // ── Core Backgrounds (mutable — updated by GlobalThemeManager) ─────────
     public static Color BG_DARK     = new Color(0x0D, 0x0D, 0x1A);  // near-black with blue tint
@@ -343,13 +345,80 @@ public final class CyberTheme {
 
     /** Style a text area. */
     public static void styleTextArea(JTextArea area) {
+        if (Boolean.TRUE.equals(area.getClientProperty(HTTP_MESSAGE_AREA_KEY))) {
+            styleHttpMessageArea(area);
+            return;
+        }
         if (nativeMode) return;
         area.setBackground(BG_INPUT);
-        area.setForeground(FG_PRIMARY);
+        area.setForeground(ensureContrast(FG_PRIMARY, BG_INPUT, BODY_TEXT_MIN_CONTRAST));
         area.setCaretColor(NEON_CYAN);
         area.setFont(MONO_FONT);
         area.setSelectionColor(BG_HOVER);
-        area.setSelectedTextColor(NEON_CYAN);
+        area.setSelectedTextColor(ensureContrast(FG_PRIMARY, BG_HOVER, BODY_TEXT_MIN_CONTRAST));
+    }
+
+    /**
+     * Style request/response and evidence viewers for long-form readability.
+     * The client property lets palette changes retain this stronger treatment
+     * instead of downgrading the viewer through the generic recursive styler.
+     */
+    public static void styleHttpMessageArea(JTextArea area) {
+        area.putClientProperty(HTTP_MESSAGE_AREA_KEY, Boolean.TRUE);
+        if (nativeMode) return;
+        area.setBackground(BG_INPUT);
+        area.setForeground(ensureContrast(FG_PRIMARY, BG_INPUT, BODY_TEXT_MIN_CONTRAST));
+        area.setCaretColor(NEON_CYAN);
+        area.setSelectionColor(BG_HOVER);
+        area.setSelectedTextColor(ensureContrast(FG_PRIMARY, BG_HOVER, BODY_TEXT_MIN_CONTRAST));
+        area.setFont(MONO_FONT.deriveFont(13f));
+        area.setMargin(new Insets(9, 10, 9, 10));
+    }
+
+    /** Returns a color meeting the requested WCAG contrast ratio against background. */
+    static Color ensureContrast(Color preferred, Color background, double minimumRatio) {
+        if (preferred == null || background == null || contrastRatio(preferred, background) >= minimumRatio) {
+            return preferred;
+        }
+
+        Color target = relativeLuminance(background) < 0.5 ? Color.WHITE : Color.BLACK;
+        for (int step = 1; step <= 20; step++) {
+            float amount = step / 20.0f;
+            Color candidate = blend(preferred, target, amount);
+            if (contrastRatio(candidate, background) >= minimumRatio) {
+                return candidate;
+            }
+        }
+        return target;
+    }
+
+    static double contrastRatio(Color first, Color second) {
+        double firstLuminance = relativeLuminance(first);
+        double secondLuminance = relativeLuminance(second);
+        double lighter = Math.max(firstLuminance, secondLuminance);
+        double darker = Math.min(firstLuminance, secondLuminance);
+        return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    private static double relativeLuminance(Color color) {
+        return 0.2126 * linearChannel(color.getRed())
+                + 0.7152 * linearChannel(color.getGreen())
+                + 0.0722 * linearChannel(color.getBlue());
+    }
+
+    private static double linearChannel(int channel) {
+        double normalized = channel / 255.0;
+        return normalized <= 0.04045
+                ? normalized / 12.92
+                : Math.pow((normalized + 0.055) / 1.055, 2.4);
+    }
+
+    private static Color blend(Color from, Color to, float amount) {
+        float inverse = 1.0f - amount;
+        return new Color(
+                Math.round(from.getRed() * inverse + to.getRed() * amount),
+                Math.round(from.getGreen() * inverse + to.getGreen() * amount),
+                Math.round(from.getBlue() * inverse + to.getBlue() * amount));
     }
 
     /** Style a combo box. */

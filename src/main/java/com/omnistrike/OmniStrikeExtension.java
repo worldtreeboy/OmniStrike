@@ -367,6 +367,9 @@ public class OmniStrikeExtension implements BurpExtension {
                                 mainPanel.getLogPanel().log("INFO", module, message)));
             }
             api.logging().logToOutput("UI tab registered. Theme: " + startupThemeName + ".");
+            // Suite-tab registration can create Swing components after the initial
+            // startup pass. Refresh once attached so persisted GLOBAL scope works.
+            SwingUtilities.invokeLater(GlobalThemeManager::reapplyCurrentTheme);
         });
 
         // ==================== CLEANUP ON UNLOAD ====================

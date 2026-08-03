@@ -128,22 +128,14 @@ public class RequestResponsePanel extends JPanel {
         // Request area (left)
         requestArea = new JTextArea();
         requestArea.setEditable(false);
-        requestArea.setBackground(BG_INPUT);
-        requestArea.setForeground(NEON_GREEN);
-        requestArea.setCaretColor(NEON_GREEN);
-        requestArea.setFont(MONO_FONT);
-        requestArea.setLineWrap(true);
-        requestArea.setWrapStyleWord(true);
+        CyberTheme.styleHttpMessageArea(requestArea);
+        requestArea.setLineWrap(false);
 
         // Response area (right)
         responseArea = new JTextArea();
         responseArea.setEditable(false);
-        responseArea.setBackground(BG_INPUT);
-        responseArea.setForeground(NEON_CYAN);
-        responseArea.setCaretColor(NEON_CYAN);
-        responseArea.setFont(MONO_FONT);
-        responseArea.setLineWrap(true);
-        responseArea.setWrapStyleWord(true);
+        CyberTheme.styleHttpMessageArea(responseArea);
+        responseArea.setLineWrap(false);
 
         // Labels for request/response panes
         JPanel requestPanel = new JPanel(new BorderLayout());

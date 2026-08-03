@@ -3,6 +3,11 @@ package com.omnistrike.ui;
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
 import javax.swing.table.JTableHeader;
+import javax.swing.text.AttributeSet;
+import javax.swing.text.Element;
+import javax.swing.text.SimpleAttributeSet;
+import javax.swing.text.StyleConstants;
+import javax.swing.text.StyledDocument;
 import javax.swing.text.JTextComponent;
 import java.awt.*;
 import java.util.HashMap;
@@ -326,7 +331,12 @@ public final class GlobalThemeManager {
      */
     public static void changeScope(ThemeScope newScope) {
         if (applyingTheme) return;
-        if (currentScope == newScope) return;
+        if (currentScope == newScope) {
+            // Burp can create more Swing components after the startup theme pass.
+            // Selecting the already-persisted scope must still refresh those views.
+            reapplyCurrentTheme();
+            return;
+        }
         ThemeScope oldScope = currentScope;
         currentScope = newScope;
         if (currentPalette == null) return;
@@ -646,6 +656,7 @@ public final class GlobalThemeManager {
         UIManager.put("@selectionBackground", p.bgHover);
         UIManager.put("@selectionForeground", p.accentPrimary);
         UIManager.put("@accentColor", p.accentPrimary);
+
     }
 
     // ═════════════════════════════════════════════════════════════════════
@@ -656,7 +667,7 @@ public final class GlobalThemeManager {
      * Recursively walk a component tree and force-set colors based on component type.
      * This overrides any colors that were hardcoded by Burp Suite's own panels.
      */
-    private static void forceThemeRecursive(Component comp, ThemePalette p) {
+    static void forceThemeRecursive(Component comp, ThemePalette p) {
         try {
             forceColors(comp, p);
         } catch (Exception ignored) {}
@@ -702,6 +713,25 @@ public final class GlobalThemeManager {
         }
     }
 
+    /** Reapplies the active palette to the current scope and any newly-created UI. */
+    public static void reapplyCurrentTheme() {
+        if (applyingTheme || currentPalette == null) return;
+        applyingTheme = true;
+        try {
+            ++themeGeneration;
+            if (currentScope == ThemeScope.GLOBAL) {
+                applyUIManagerOverrides(currentPalette);
+                walkAllFrames(currentPalette);
+            } else if (omniStrikeRoot != null) {
+                CyberTheme.applyRecursive(omniStrikeRoot);
+                omniStrikeRoot.revalidate();
+                omniStrikeRoot.repaint();
+            }
+        } finally {
+            applyingTheme = false;
+        }
+    }
+
     /**
      * Force-set colors on a single component based on its type.
      */
@@ -718,11 +748,13 @@ public final class GlobalThemeManager {
 
         // ── JTextComponent (TextField, TextArea, TextPane, EditorPane, PasswordField) ──
         if (comp instanceof JTextComponent tc) {
+            Color readableForeground = CyberTheme.ensureContrast(p.fgPrimary, p.bgInput, 7.0);
             tc.setBackground(p.bgInput);
-            tc.setForeground(p.fgPrimary);
+            tc.setForeground(readableForeground);
             tc.setCaretColor(p.accentPrimary);
             tc.setSelectionColor(p.bgHover);
-            tc.setSelectedTextColor(p.accentPrimary);
+            tc.setSelectedTextColor(CyberTheme.ensureContrast(p.fgPrimary, p.bgHover, 7.0));
+            ensureStyledDocumentContrast(tc, p.bgInput, readableForeground);
             return;
         }
 
@@ -847,6 +879,48 @@ public final class GlobalThemeManager {
         // ── Fallback: any other component ──
         comp.setBackground(p.bgDark);
         comp.setForeground(p.fgPrimary);
+    }
+
+    /**
+     * Styled HTTP editors can keep per-token foreground attributes after their
+     * background changes. Lift only low-contrast token colors so global themes
+     * remain readable without flattening already-visible syntax highlighting.
+     */
+    private static void ensureStyledDocumentContrast(JTextComponent textComponent,
+                                                     Color background,
+                                                     Color fallbackForeground) {
+        if (!(textComponent.getDocument() instanceof StyledDocument document)
+                || document.getLength() == 0) return;
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater(() ->
+                    ensureStyledDocumentContrast(textComponent, background, fallbackForeground));
+            return;
+        }
+
+        int documentLength = document.getLength();
+        int offset = 0;
+        int runs = 0;
+        while (offset < documentLength && runs++ < 4096) {
+            Element element = document.getCharacterElement(offset);
+            int end = Math.min(documentLength, Math.max(offset + 1, element.getEndOffset()));
+            AttributeSet attributes = element.getAttributes();
+            Color current = attributes.getAttribute(StyleConstants.Foreground) instanceof Color color
+                    ? color : fallbackForeground;
+            Color readable = CyberTheme.ensureContrast(current, background, 7.0);
+            if (!readable.equals(current)) {
+                SimpleAttributeSet replacement = new SimpleAttributeSet();
+                StyleConstants.setForeground(replacement, readable);
+                document.setCharacterAttributes(offset, end - offset, replacement, false);
+            }
+            offset = end;
+        }
+
+        // Pathological documents with thousands of style runs still get a safe fallback.
+        if (offset < documentLength) {
+            SimpleAttributeSet replacement = new SimpleAttributeSet();
+            StyleConstants.setForeground(replacement, fallbackForeground);
+            document.setCharacterAttributes(offset, documentLength - offset, replacement, false);
+        }
     }
 
     /**
