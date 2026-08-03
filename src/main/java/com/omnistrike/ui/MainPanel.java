@@ -161,7 +161,7 @@ public class MainPanel extends JPanel {
         JLabel privacyStateLabel = CyberTheme.createSeverityBadge(
                 PrivacyManager.isAiRedactionEnabled() ? "AI PRIVACY ON" : "AI PRIVACY OFF",
                 PrivacyManager.isAiRedactionEnabled() ? NEON_GREEN : NEON_RED);
-        JLabel versionChip = CyberTheme.createSeverityBadge("v1.86", NEON_MAGENTA);
+        JLabel versionChip = CyberTheme.createSeverityBadge("v1.87", NEON_MAGENTA);
         JButton mascotButton = new JButton("\u2744 Artwork");
         CyberTheme.styleButton(mascotButton, NEON_CYAN);
         mascotButton.setToolTipText("Show or switch the full-screen workspace artwork");

@@ -7,7 +7,7 @@
 Turn any request into a deliberate security test with parameter-level targeting,<br/>
 session automation, technology-aware probes, OOB detection, and optional AI analysis.
 
-[![Release](https://img.shields.io/badge/release-v1.86-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
+[![Release](https://img.shields.io/badge/release-v1.87-8b5cf6?style=for-the-badge&labelColor=111827)](https://github.com/worldtreeboy/OmniStrike/releases/latest)
 [![Java](https://img.shields.io/badge/Java-17%2B-f59e0b?style=for-the-badge&logo=openjdk&logoColor=white&labelColor=111827)](https://adoptium.net/)
 [![Burp Suite](https://img.shields.io/badge/Burp-Montoya_API-f97316?style=for-the-badge&labelColor=111827)](https://portswigger.net/burp)
 [![License](https://img.shields.io/github/license/worldtreeboy/OmniStrike?style=for-the-badge&color=22c55e&labelColor=111827)](LICENSE)
@@ -16,6 +16,7 @@ session automation, technology-aware probes, OOB detection, and optional AI anal
 [Quick start](#-quick-start) ·
 [Scanner catalog](#-scanner-catalog) ·
 [Stepper](#-stepper) ·
+[Interface](#-interface--themes) ·
 [Build](#-build-from-source)
 
 </div>
@@ -346,6 +347,15 @@ The model proposes tests; OmniStrike still controls request mutation, authentica
 | **Mask UI Data** | Optionally masks captured target data across views, copies, and exports. |
 | **Themes** | 29 UI themes, scoped to OmniStrike or optionally applied globally. |
 
+## 🎨 Interface & themes
+
+OmniStrike combines a purpose-built scanning workspace with Burp-friendly theming. **Burp Default** remains available at any time, while 29 included palettes can be applied only to OmniStrike or across the wider Burp interface.
+
+- **Readable HTTP evidence.** Request and response viewers use a crisp 13 px monospace font, preserve long lines without wrapping, and enforce high-contrast text and selections.
+- **Reliable global themes.** Global mode recolors existing and newly created Burp components while protecting syntax-highlighted token contrast instead of flattening useful colors.
+- **Full-bleed artwork.** The welcome workspace includes two bundled scenes—Frostbyte and Nightblade. Press **❄ Artwork** to alternate between them; selecting a scanner immediately returns to the working view.
+- **Responsive rendering.** Artwork is scaled and cached for the current viewport, keeping visual changes smooth without affecting scan behavior.
+
 ## 🏗️ Build from source
 
 ### Requirements
@@ -399,6 +409,18 @@ Bug reports and feature ideas are welcome in [GitHub Issues](https://github.com/
 ## 🗒️ Release notes
 
 <details open>
+<summary><strong>v1.87 — A sharper, brighter OmniStrike workspace</strong></summary>
+
+- Added a full-bleed welcome workspace with two bundled artwork scenes and a one-click **❄ Artwork** switcher.
+- Removed the welcome overlay that obscured the artwork while preserving immediate module selection and normal scanner navigation.
+- Restored comprehensive global theme coverage and added automatic reapplication for Burp components created after startup.
+- Raised request, response, selection, and syntax-token readability to a minimum 7:1 contrast target while preserving useful syntax colors.
+- Improved HTTP evidence panes with a 13 px monospace font, comfortable margins, and unwrapped request/response lines.
+- Verified the complete project with 198 tests, zero failures, and a clean shaded-JAR build.
+
+</details>
+
+<details>
 <summary><strong>v1.86 — Stateful scan preparation and analyzer correctness</strong></summary>
 
 - Reworked Stepper preparation for active scanning: matched OmniStrike probes now fail closed when prerequisites fail, time out, are paused, or leave required variables unresolved.
