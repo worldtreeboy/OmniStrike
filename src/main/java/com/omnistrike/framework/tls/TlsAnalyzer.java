@@ -219,6 +219,7 @@ public class TlsAnalyzer {
             if (existing == null) break;
             if (!existing.future.isDone()) {
                 log("Analysis already in progress for " + cacheKey);
+                if (onComplete != null) onComplete.accept(null);
                 return;
             }
             if (active.replace(cacheKey, existing, handle)) break;
